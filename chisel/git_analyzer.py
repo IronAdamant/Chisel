@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 from itertools import combinations
 
 
+_BLAME_HEADER_RE = re.compile(
+    r"^([0-9a-f]{40})\s+(\d+)\s+(\d+)(?:\s+(\d+))?"
+)
+
+
 class GitAnalyzer:
     """Parses git log/blame output and computes churn, ownership, and co-change metrics.
 
@@ -142,12 +147,8 @@ class GitAnalyzer:
         # Cache: commit_hash -> {author, author_email, date}
         commit_info = {}
 
-        commit_header_re = re.compile(
-            r"^([0-9a-f]{40})\s+(\d+)\s+(\d+)(?:\s+(\d+))?"
-        )
-
         for line in raw.split("\n"):
-            m = commit_header_re.match(line)
+            m = _BLAME_HEADER_RE.match(line)
             if m:
                 commit_hash = m.group(1)
                 final_line = int(m.group(3))

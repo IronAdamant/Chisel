@@ -103,7 +103,7 @@ _TOOL_SCHEMAS = {
     },
     "ownership": {
         "name": "ownership",
-        "description": "Get ownership breakdown (blame-based) for a file.",
+        "description": "Get code ownership breakdown showing original authors (blame-based). Each entry has role='original_author'.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -172,7 +172,7 @@ _TOOL_SCHEMAS = {
     },
     "who_reviews": {
         "name": "who_reviews",
-        "description": "Suggest reviewers for a file based on blame and commit history.",
+        "description": "Suggest reviewers for a file based on recent commit activity. Each entry has role='suggested_reviewer' — these are not original authors but active maintainers best suited to review changes.",
         "parameters": {
             "type": "object",
             "properties": {

@@ -189,7 +189,7 @@ class TestDependencyExtraction:
             "    result = foo()\n"
             "    bar(result)\n"
         )
-        deps = mapper.extract_test_dependencies("test_f.py", content, "pytest")
+        deps = mapper.extract_test_dependencies("test_f.py", content)
         names = [d["name"] for d in deps]
         assert "os" in names
         assert "foo" in names
@@ -197,7 +197,7 @@ class TestDependencyExtraction:
 
     def test_python_import_types(self, mapper):
         content = "from mymod import helper\nhelper()\n"
-        deps = mapper.extract_test_dependencies("test_f.py", content, "pytest")
+        deps = mapper.extract_test_dependencies("test_f.py", content)
         import_deps = [d for d in deps if d["dep_type"] == "import"]
         call_deps = [d for d in deps if d["dep_type"] == "call"]
         assert any(d["name"] == "helper" for d in import_deps)
@@ -205,20 +205,20 @@ class TestDependencyExtraction:
 
     def test_js_imports(self, mapper):
         content = 'import { helper } from "./helper";\nhelper();\n'
-        deps = mapper.extract_test_dependencies("test.test.js", content, "jest")
+        deps = mapper.extract_test_dependencies("test.test.js", content)
         names = [d["name"] for d in deps]
         assert "helper" in names
 
     def test_go_imports(self, mapper):
         content = 'package main\n\nimport (\n\t"testing"\n\t"mymod/pkg"\n)\n'
-        deps = mapper.extract_test_dependencies("main_test.go", content, "go")
+        deps = mapper.extract_test_dependencies("main_test.go", content)
         names = [d["name"] for d in deps]
         assert "testing" in names
         assert "pkg" in names
 
     def test_rust_use(self, mapper):
         content = "use std::collections::{HashMap, Vec};\nuse crate::engine;\n"
-        deps = mapper.extract_test_dependencies("lib.rs", content, "rust")
+        deps = mapper.extract_test_dependencies("lib.rs", content)
         names = [d["name"] for d in deps]
         assert "HashMap" in names
         assert "Vec" in names

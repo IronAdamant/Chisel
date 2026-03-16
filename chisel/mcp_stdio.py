@@ -14,6 +14,7 @@ Requires the optional ``mcp`` dependency:
 """
 
 import asyncio
+import json
 import os
 import sys
 
@@ -26,24 +27,7 @@ except ImportError:
     _MCP_AVAILABLE = False
 
 from chisel.engine import ChiselEngine
-from chisel.mcp_server import _TOOL_SCHEMAS
-
-# ------------------------------------------------------------------ #
-# Tool dispatch — maps tool name to (engine_method, [arg_names])
-# ------------------------------------------------------------------ #
-
-_TOOL_DISPATCH = {
-    "analyze": ("tool_analyze", ["directory", "force"]),
-    "impact": ("tool_impact", ["files", "functions"]),
-    "suggest_tests": ("tool_suggest_tests", ["file_path", "diff"]),
-    "churn": ("tool_churn", ["file_path", "unit_name"]),
-    "ownership": ("tool_ownership", ["file_path"]),
-    "coupling": ("tool_coupling", ["file_path", "min_count"]),
-    "risk_map": ("tool_risk_map", ["directory"]),
-    "stale_tests": ("tool_stale_tests", []),
-    "history": ("tool_history", ["file_path"]),
-    "who_reviews": ("tool_who_reviews", ["file_path"]),
-}
+from chisel.mcp_server import _TOOL_DISPATCH, _TOOL_SCHEMAS
 
 
 def create_server(storage_dir=None, project_dir=None):
@@ -109,7 +93,6 @@ def create_server(storage_dir=None, project_dir=None):
         except Exception as exc:
             return [TextContent(type="text", text=f"Error: {exc}")]
 
-        import json
         text = json.dumps(result, indent=2, default=str)
         return [TextContent(type="text", text=text)]
 

@@ -1,8 +1,6 @@
 """Tests for chisel.ast_utils -- multi-language AST extraction."""
 
 import hashlib
-import os
-import tempfile
 import textwrap
 
 import pytest
@@ -213,9 +211,11 @@ class TestStripStringsAndComments:
         result = _strip_strings_and_comments("code() // } comment")
         assert "}" not in result
 
-    def test_line_comment_hash(self):
+    def test_hash_not_treated_as_comment(self):
+        # '#' is only a comment in Python, which uses _py_block_end instead.
+        # For JS/TS/Go/Rust (which use _strip_strings_and_comments), '#' is not a comment.
         result = _strip_strings_and_comments("code() # } comment")
-        assert "}" not in result
+        assert "}" in result
 
     def test_escaped_quote(self):
         result = _strip_strings_and_comments(r'x = "\"{" + y')

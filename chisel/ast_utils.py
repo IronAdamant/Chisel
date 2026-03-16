@@ -12,6 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+# Directories to always skip when walking the project tree.
+_SKIP_DIRS = {
+    ".git", "node_modules", "__pycache__", ".tox", ".venv", "venv",
+    "env", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist",
+    "build", ".eggs", "target",
+}
+
 
 @dataclass
 class CodeUnit:
@@ -116,8 +123,8 @@ def _strip_strings_and_comments(line: str) -> str:
         # Single-line comment markers
         if ch == "/" and i + 1 < length and line[i + 1] == "/":
             break
-        if ch == "#":
-            break
+        # Note: '#' is only a comment in Python, which uses _py_block_end
+        # instead of _find_block_end, so we do not treat '#' as a comment here.
         # Quoted strings
         if ch in ('"', "'", "`"):
             quote = ch

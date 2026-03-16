@@ -28,13 +28,17 @@ chisel/
 - **Co-change threshold**: Only pairs with >= 3 co-commits stored.
 - **Blame caching**: Cached by file content hash, invalidated on change.
 - **Incremental updates**: File content hashes tracked in `file_hashes` table.
+- **Persistent connection**: Storage uses a single SQLite connection (`check_same_thread=False`) with RWLock for thread safety.
+- **Ownership vs Reviewers**: `ownership` = blame-based (who wrote the code, `role: "original_author"`). `who_reviews` = commit-activity-based (who maintains it, `role: "suggested_reviewer"`).
+- **Shared constants**: `_SKIP_DIRS` lives in `ast_utils.py`, imported by `engine.py` and `test_mapper.py`.
 
 ## Dev Commands
 
 ```bash
 pip install -e ".[dev]" --break-system-packages   # Arch Linux
-pytest tests/ -v --tb=short                       # full suite (305 tests)
+pytest tests/ -v --tb=short                       # full suite (313 tests)
 chisel analyze .                                  # analyze current project
+chisel analyze src/                               # analyze subdirectory only
 chisel serve --port 8377                          # HTTP MCP server
 ```
 
@@ -46,7 +50,7 @@ test_mapper.py → ast_utils.py
 impact.py → storage.py
 cli.py → engine.py, mcp_server.py, mcp_stdio.py
 mcp_server.py → engine.py
-mcp_stdio.py → engine.py
+mcp_stdio.py → engine.py, mcp_server.py
 ```
 
 ## 10 MCP Tools

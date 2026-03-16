@@ -117,34 +117,6 @@ def _print_json(data, file=None):
     print(json.dumps(data, indent=2, default=str), file=file or sys.stdout)
 
 
-def _print_table(rows, columns, file=None):
-    """Print a list of dicts as a simple aligned table."""
-    out = file or sys.stdout
-    if not rows:
-        print("No results.", file=out)
-        return
-
-    # Compute column widths
-    widths = {}
-    for col in columns:
-        widths[col] = max(
-            len(col),
-            max((len(str(row.get(col, ""))) for row in rows), default=0),
-        )
-
-    # Header
-    header = "  ".join(col.ljust(widths[col]) for col in columns)
-    print(header, file=out)
-    print("  ".join("-" * widths[col] for col in columns), file=out)
-
-    # Rows
-    for row in rows:
-        line = "  ".join(
-            str(row.get(col, "")).ljust(widths[col]) for col in columns
-        )
-        print(line, file=out)
-
-
 def _print_dict(data, file=None):
     """Print a dict as key: value lines."""
     out = file or sys.stdout
@@ -344,8 +316,10 @@ def cmd_who_reviews(args):
             print(f"Suggested reviewers for {args.file}:")
             for item in result:
                 author = item.get("author", "unknown")
-                pct = item.get("percentage", item.get("line_count", ""))
-                print(f"  {author}: {pct}")
+                commits = item.get("recent_commits", "")
+                days = item.get("days_since_last_commit", "?")
+                pct = item.get("percentage", "")
+                print(f"  {author}: {pct}% ({commits} commits, {days}d ago)")
     return result
 
 
@@ -413,8 +387,7 @@ def main(argv=None):
         parser.print_help()
         return None
 
-    handler(args)
-    return None
+    return handler(args)
 
 
 if __name__ == "__main__":

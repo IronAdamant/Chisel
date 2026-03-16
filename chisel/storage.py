@@ -14,16 +14,28 @@ class Storage:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.base_dir / "chisel.db"
+        self._conn = self._create_connection()
         self._init_database()
 
-    def _connect(self):
-        conn = sqlite3.connect(str(self.db_path), timeout=10)
+    def _create_connection(self):
+        """Create and configure the SQLite connection (called once)."""
+        conn = sqlite3.connect(str(self.db_path), timeout=10, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         # FK enforcement disabled — Chisel manages integrity at application level
         # and stale test detection relies on orphaned edge references.
         return conn
+
+    def _connect(self):
+        """Return the persistent connection for transaction management."""
+        return self._conn
+
+    def close(self):
+        """Close the persistent database connection."""
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
     def _init_database(self):
         with self._connect() as conn:
@@ -242,7 +254,7 @@ class Storage:
             row = conn.execute(
                 "SELECT MAX(date) as max_date FROM commits"
             ).fetchone()
-            return row["max_date"] if row else None
+            return row["max_date"]
 
     # --- commit_files ---
 

@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from chisel.ast_utils import compute_file_hash, extract_code_units
+from chisel.ast_utils import _SKIP_DIRS, compute_file_hash, extract_code_units
 from chisel.git_analyzer import GitAnalyzer
 from chisel.impact import ImpactAnalyzer
 from chisel.rwlock import RWLock
@@ -16,13 +16,6 @@ _CODE_EXTENSIONS = {
     ".py", ".pyw", ".js", ".jsx", ".mjs", ".cjs",
     ".ts", ".tsx", ".go", ".rs",
 }
-
-_SKIP_DIRS = {
-    ".git", "node_modules", "__pycache__", ".tox", ".venv", "venv",
-    "env", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist",
-    "build", ".eggs", "target",
-}
-
 
 class ChiselEngine:
     """High-level orchestrator for Chisel operations.
@@ -43,16 +36,13 @@ class ChiselEngine:
     # Full analysis
     # ------------------------------------------------------------------ #
 
-    def analyze(self, force=False):
+    def analyze(self, directory=None, force=False):
         """Full rebuild of all data under a write lock.
 
-        Steps:
-        1. Scan files, compute hashes
-        2. Parse code units for changed files (or all if force)
-        3. Discover + parse test files
-        4. Parse git log, compute churn/co-changes
-        5. Parse git blame for changed files
-        6. Build test edges
+        Args:
+            directory: Optional subdirectory to scope code scanning.
+                       Git log and test discovery remain project-wide.
+            force: Force re-analysis of all files even if unchanged.
 
         Returns:
             Dict summarizing the analysis results.
@@ -68,7 +58,7 @@ class ChiselEngine:
             }
 
             # 1. Scan code files
-            code_files = self._scan_code_files()
+            code_files = self._scan_code_files(directory=directory)
             changed_files = []
             for fpath in code_files:
                 rel = os.path.relpath(fpath, self.project_dir)
@@ -81,7 +71,7 @@ class ChiselEngine:
 
             # 2. Parse code units for changed files
             all_code_units = []
-            for fpath, rel, _ in changed_files:
+            for fpath, rel, new_hash in changed_files:
                 content = Path(fpath).read_text(encoding="utf-8", errors="replace")
                 self.storage.delete_code_units_by_file(rel)
                 units = extract_code_units(fpath, content)
@@ -90,16 +80,10 @@ class ChiselEngine:
                     self.storage.upsert_code_unit(
                         cid, rel, u.name, u.unit_type,
                         u.line_start, u.line_end,
-                        compute_file_hash(fpath),
+                        new_hash,
                     )
                     all_code_units.append(u)
                 stats["code_units_found"] += len(units)
-
-            # Also gather unchanged code units from storage
-            for fpath in code_files:
-                rel = os.path.relpath(fpath, self.project_dir)
-                existing = self.storage.get_code_units_by_file(rel)
-                all_code_units_dicts = existing  # for edge building later
 
             # 3. Discover + parse test files
             test_files = self.mapper.discover_test_files()
@@ -302,7 +286,7 @@ class ChiselEngine:
 
     def tool_analyze(self, directory=None, force=False):
         """MCP tool: full analysis."""
-        return self.analyze(force=force)
+        return self.analyze(directory=directory, force=force)
 
     def tool_impact(self, files, functions=None):
         """MCP tool: get impacted tests for changed files."""
@@ -323,9 +307,9 @@ class ChiselEngine:
             return self.storage.get_all_churn_stats(file_path)
 
     def tool_ownership(self, file_path):
-        """MCP tool: get ownership breakdown."""
+        """MCP tool: get blame-based code ownership."""
         with self.lock.read_lock():
-            return self.impact.who_reviews(file_path)
+            return self.impact.get_ownership(file_path)
 
     def tool_coupling(self, file_path, min_count=3):
         """MCP tool: get co-change coupling partners."""
@@ -348,18 +332,32 @@ class ChiselEngine:
             return self.storage.get_commits_for_file(file_path)
 
     def tool_who_reviews(self, file_path):
-        """MCP tool: reviewer suggestions."""
+        """MCP tool: suggest reviewers based on recent commit activity."""
         with self.lock.read_lock():
-            return self.impact.who_reviews(file_path)
+            return self.impact.suggest_reviewers(file_path)
 
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
 
-    def _scan_code_files(self):
-        """Walk project tree and return all code file paths."""
+    def close(self):
+        """Close the underlying storage connection."""
+        self.storage.close()
+
+    def _scan_code_files(self, directory=None):
+        """Walk project tree and return all code file paths.
+
+        Args:
+            directory: Optional subdirectory to scope the scan.
+                       Resolved relative to project_dir.
+        """
+        start_dir = self.project_dir
+        if directory and directory != ".":
+            candidate = os.path.normpath(os.path.join(self.project_dir, directory))
+            if os.path.isdir(candidate):
+                start_dir = candidate
         files = []
-        for root, dirs, filenames in os.walk(self.project_dir):
+        for root, dirs, filenames in os.walk(start_dir):
             dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
             for fname in filenames:
                 if Path(fname).suffix in _CODE_EXTENSIONS:

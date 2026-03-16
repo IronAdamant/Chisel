@@ -5,17 +5,11 @@ import os
 import re
 from pathlib import Path
 
-from chisel.ast_utils import CodeUnit, compute_file_hash, detect_language, extract_code_units
+from chisel.ast_utils import (
+    CodeUnit, _SKIP_DIRS, compute_file_hash, detect_language, extract_code_units,
+)
 
-
-# Directories to always skip when walking the project tree.
-_SKIP_DIRS = {
-    ".git", "node_modules", "__pycache__", ".tox", ".venv", "venv",
-    "env", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist",
-    "build", ".eggs", "target",
-}
-
-# Framework detection patterns: (glob pattern, framework name)
+# Framework detection patterns: (regex pattern, framework name)
 _FRAMEWORK_PATTERNS = [
     # Python / pytest
     (re.compile(r"^test_.*\.py$"), "pytest"),
@@ -125,7 +119,7 @@ class TestMapper:
     # Dependency extraction
     # ------------------------------------------------------------------ #
 
-    def extract_test_dependencies(self, file_path, content, framework):
+    def extract_test_dependencies(self, file_path, content):
         """Extract imports and call targets from a test file.
 
         Returns a list of dependency dicts: {name, dep_type}
@@ -179,7 +173,7 @@ class TestMapper:
             except OSError:
                 continue
 
-            deps = self.extract_test_dependencies(file_path, content, framework)
+            deps = self.extract_test_dependencies(file_path, content)
             seen = set()
             for dep in deps:
                 for cid in name_to_ids.get(dep["name"], []):
@@ -203,11 +197,9 @@ def _is_test_name(name, framework):
     """Check if a code unit name looks like a test."""
     # Strip class prefix for methods like MyClass.test_foo
     base = name.rsplit(".", 1)[-1] if "." in name else name
-    if framework in ("pytest",):
+    if framework == "pytest":
         return base.startswith("test_") or base.startswith("Test")
-    if framework == "jest":
-        return base in ("describe", "it", "test") or base.startswith("test")
-    if framework == "playwright":
+    if framework in ("jest", "playwright"):
         return base in ("describe", "it", "test") or base.startswith("test")
     if framework == "go":
         return base.startswith("Test") or base.startswith("Benchmark")
@@ -329,15 +321,18 @@ _GO_IMPORT_BLOCK_RE = re.compile(r"import\s*\((.*?)\)", re.DOTALL)
 _GO_IMPORT_SINGLE_RE = re.compile(r'^import\s+"([^"]+)"', re.MULTILINE)
 
 
+_GO_IMPORT_LINE_RE = re.compile(r'"([^"]+)"')
+
+
 def _extract_go_deps(content):
     """Extract imports from Go content."""
     deps = []
     for m in _GO_IMPORT_BLOCK_RE.finditer(content):
         block = m.group(1)
         for line in block.strip().split("\n"):
-            line = line.strip().strip('"')
-            if line:
-                pkg = line.rsplit("/", 1)[-1]
+            im = _GO_IMPORT_LINE_RE.search(line)
+            if im:
+                pkg = im.group(1).rsplit("/", 1)[-1]
                 deps.append({"name": pkg, "dep_type": "import"})
 
     for m in _GO_IMPORT_SINGLE_RE.finditer(content):

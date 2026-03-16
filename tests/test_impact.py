@@ -8,7 +8,9 @@ from chisel.storage import Storage
 
 @pytest.fixture
 def storage(tmp_path):
-    return Storage(base_dir=tmp_path / "chisel_data")
+    s = Storage(base_dir=tmp_path / "chisel_data")
+    yield s
+    s.close()
 
 
 @pytest.fixture
@@ -171,22 +173,46 @@ class TestRiskMap:
         assert "lib.py" not in files
 
 
-class TestWhoReviews:
+class TestGetOwnership:
     def test_returns_authors(self, storage, analyzer):
         _seed_basic_data(storage)
-        reviewers = analyzer.who_reviews("app.py")
-        assert len(reviewers) > 0
-        authors = [r["author"] for r in reviewers]
+        owners = analyzer.get_ownership("app.py")
+        assert len(owners) > 0
+        authors = [r["author"] for r in owners]
         assert "Alice" in authors
 
     def test_percentages_sum_to_100(self, storage, analyzer):
         _seed_basic_data(storage)
-        reviewers = analyzer.who_reviews("app.py")
-        total = sum(r["percentage"] for r in reviewers)
+        owners = analyzer.get_ownership("app.py")
+        total = sum(r["percentage"] for r in owners)
         assert abs(total - 100.0) < 0.1
 
+    def test_role_is_original_author(self, storage, analyzer):
+        _seed_basic_data(storage)
+        owners = analyzer.get_ownership("app.py")
+        for o in owners:
+            assert o["role"] == "original_author"
+
     def test_unknown_file(self, storage, analyzer):
-        assert analyzer.who_reviews("nonexistent.py") == []
+        assert analyzer.get_ownership("nonexistent.py") == []
+
+
+class TestSuggestReviewers:
+    def test_returns_reviewers_from_commits(self, storage, analyzer):
+        _seed_basic_data(storage)
+        storage.upsert_commit("c1", "Alice", "a@b.com", "2026-03-10T00:00:00+00:00", "fix")
+        storage.upsert_commit_file("c1", "app.py", 10, 2)
+        storage.upsert_commit("c2", "Bob", "b@b.com", "2026-03-12T00:00:00+00:00", "refactor")
+        storage.upsert_commit_file("c2", "app.py", 5, 3)
+        reviewers = analyzer.suggest_reviewers("app.py")
+        assert len(reviewers) > 0
+        assert all(r["role"] == "suggested_reviewer" for r in reviewers)
+        authors = [r["author"] for r in reviewers]
+        assert "Alice" in authors
+        assert "Bob" in authors
+
+    def test_unknown_file(self, storage, analyzer):
+        assert analyzer.suggest_reviewers("nonexistent.py") == []
 
 
 class TestAuthorConcentration:
