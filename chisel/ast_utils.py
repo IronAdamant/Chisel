@@ -240,7 +240,7 @@ def _py_block_end(lines: List[str], start_idx: int, indent: int) -> int:
             continue
         line_indent = len(lines[i]) - len(lines[i].lstrip())
         if line_indent <= indent:
-            return i  # 1-based: previous non-blank line is the end
+            return i  # 1-based line number of last line in block (may include trailing blank)
     return len(lines)
 
 
@@ -260,31 +260,31 @@ _JS_ARROW_RE = re.compile(
 )
 
 
-def _extract_js_ts(file_path: str, content: str) -> List[CodeUnit]:
-    """Extract code units from JavaScript or TypeScript source."""
+def _extract_brace_lang(
+    file_path: str, content: str, patterns: list,
+) -> List[CodeUnit]:
+    """Extract code units from a brace-delimited language.
+
+    Args:
+        patterns: list of (compiled_regex, unit_type) tuples.
+                  unit_type is a string, OR a callable(match) -> (name, type).
+    """
     units: List[CodeUnit] = []
     lines = content.splitlines()
 
     for idx, line in enumerate(lines):
         lineno = idx + 1
-
-        m = _JS_NAMED_FUNC_RE.match(line)
-        if m:
-            end = _find_block_end(lines, idx)
-            units.append(CodeUnit(file_path, m.group("name"), "function", lineno, end))
-            continue
-
-        m = _JS_CLASS_RE.match(line)
-        if m:
-            end = _find_block_end(lines, idx)
-            units.append(CodeUnit(file_path, m.group("name"), "class", lineno, end))
-            continue
-
-        m = _JS_ARROW_RE.match(line)
-        if m:
-            end = _find_block_end(lines, idx)
-            units.append(CodeUnit(file_path, m.group("name"), "function", lineno, end))
-            continue
+        for regex, unit_type in patterns:
+            m = regex.match(line)
+            if m:
+                end = _find_block_end(lines, idx)
+                if callable(unit_type):
+                    name, utype = unit_type(m)
+                else:
+                    name = m.group("name")
+                    utype = unit_type
+                units.append(CodeUnit(file_path, name, utype, lineno, end))
+                break
 
     return units
 
@@ -299,31 +299,6 @@ _GO_FUNC_RE = re.compile(
 _GO_TYPE_RE = re.compile(
     r"^\s*type\s+(?P<name>[A-Za-z_]\w*)\s+(?P<kind>struct|interface)\b",
 )
-
-
-def _extract_go(file_path: str, content: str) -> List[CodeUnit]:
-    """Extract code units from Go source."""
-    units: List[CodeUnit] = []
-    lines = content.splitlines()
-
-    for idx, line in enumerate(lines):
-        lineno = idx + 1
-
-        m = _GO_FUNC_RE.match(line)
-        if m:
-            end = _find_block_end(lines, idx)
-            units.append(CodeUnit(file_path, m.group("name"), "function", lineno, end))
-            continue
-
-        m = _GO_TYPE_RE.match(line)
-        if m:
-            end = _find_block_end(lines, idx)
-            kind = m.group("kind")  # "struct" or "interface"
-            units.append(CodeUnit(file_path, m.group("name"), kind, lineno, end))
-            continue
-
-    return units
-
 
 # ---------------------------------------------------------------------------
 # Rust extraction
@@ -344,41 +319,42 @@ _RS_IMPL_RE = re.compile(
     r"(?P<name>[A-Za-z_]\w*(?:\s*<[^>]*>)?)",
 )
 
+# ---------------------------------------------------------------------------
+# Per-language pattern tables
+# ---------------------------------------------------------------------------
+
+_JS_TS_PATTERNS = [
+    (_JS_NAMED_FUNC_RE, "function"),
+    (_JS_CLASS_RE, "class"),
+    (_JS_ARROW_RE, "function"),
+]
+
+_GO_PATTERNS = [
+    (_GO_FUNC_RE, "function"),
+    (_GO_TYPE_RE, lambda m: (m.group("name"), m.group("kind"))),
+]
+
+_RS_PATTERNS = [
+    (_RS_FN_RE, "function"),
+    (_RS_STRUCT_RE, "struct"),
+    (_RS_ENUM_RE, "enum"),
+    (_RS_IMPL_RE, lambda m: (m.group("name").strip(), "impl")),
+]
+
+
+def _extract_js_ts(file_path: str, content: str) -> List[CodeUnit]:
+    """Extract code units from JavaScript or TypeScript source."""
+    return _extract_brace_lang(file_path, content, _JS_TS_PATTERNS)
+
+
+def _extract_go(file_path: str, content: str) -> List[CodeUnit]:
+    """Extract code units from Go source."""
+    return _extract_brace_lang(file_path, content, _GO_PATTERNS)
+
 
 def _extract_rust(file_path: str, content: str) -> List[CodeUnit]:
     """Extract code units from Rust source."""
-    units: List[CodeUnit] = []
-    lines = content.splitlines()
-
-    for idx, line in enumerate(lines):
-        lineno = idx + 1
-
-        m = _RS_FN_RE.match(line)
-        if m:
-            end = _find_block_end(lines, idx)
-            units.append(CodeUnit(file_path, m.group("name"), "function", lineno, end))
-            continue
-
-        m = _RS_STRUCT_RE.match(line)
-        if m:
-            end = _find_block_end(lines, idx)
-            units.append(CodeUnit(file_path, m.group("name"), "struct", lineno, end))
-            continue
-
-        m = _RS_ENUM_RE.match(line)
-        if m:
-            end = _find_block_end(lines, idx)
-            units.append(CodeUnit(file_path, m.group("name"), "enum", lineno, end))
-            continue
-
-        m = _RS_IMPL_RE.match(line)
-        if m:
-            end = _find_block_end(lines, idx)
-            name = m.group("name").strip()
-            units.append(CodeUnit(file_path, name, "impl", lineno, end))
-            continue
-
-    return units
+    return _extract_brace_lang(file_path, content, _RS_PATTERNS)
 
 
 # ---------------------------------------------------------------------------

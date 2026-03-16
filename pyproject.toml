@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chisel"
-version = "0.3.1"
+version = "0.3.2"
 description = "Test impact analysis and code intelligence for LLM agents"
 requires-python = ">=3.9"
 license = "MIT"

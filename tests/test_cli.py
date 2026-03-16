@@ -253,7 +253,7 @@ class TestHandlerOutputFormats:
     def test_cmd_suggest_tests_human(self, mock_cls, capsys):
         engine = _make_engine_mock()
         engine.tool_suggest_tests.return_value = [
-            {"name": "test_bar", "score": 0.9},
+            {"name": "test_bar", "relevance": 0.9},
         ]
         mock_cls.return_value = engine
 
@@ -367,7 +367,7 @@ class TestHandlerOutputFormats:
     def test_cmd_stale_tests_human(self, mock_cls, capsys):
         engine = _make_engine_mock()
         engine.tool_stale_tests.return_value = [
-            {"test_id": "test_old", "reason": "code changed"},
+            {"test_id": "test_old", "edge_type": "import"},
         ]
         mock_cls.return_value = engine
 
@@ -429,7 +429,8 @@ class TestHandlerOutputFormats:
     def test_cmd_who_reviews_human(self, mock_cls, capsys):
         engine = _make_engine_mock()
         engine.tool_who_reviews.return_value = [
-            {"author": "Carol", "percentage": 55},
+            {"author": "Carol", "percentage": 55, "recent_commits": 10,
+             "days_since_last_commit": 3},
         ]
         mock_cls.return_value = engine
 
@@ -526,7 +527,7 @@ class TestMain:
     @patch("chisel.cli.ChiselEngine")
     def test_main_suggest_tests(self, mock_cls):
         engine = _make_engine_mock()
-        engine.tool_suggest_tests.return_value = [{"name": "test_x"}]
+        engine.tool_suggest_tests.return_value = [{"name": "test_x", "relevance": 0.8}]
         mock_cls.return_value = engine
 
         main(["suggest-tests", "--project-dir", "/tmp/p", "app.py"])
@@ -536,7 +537,7 @@ class TestMain:
     @patch("chisel.cli.ChiselEngine")
     def test_main_ownership(self, mock_cls):
         engine = _make_engine_mock()
-        engine.tool_ownership.return_value = [{"author": "A"}]
+        engine.tool_ownership.return_value = [{"author": "A", "percentage": 100.0}]
         mock_cls.return_value = engine
 
         main(["ownership", "--project-dir", "/tmp/p", "app.py"])
@@ -566,7 +567,7 @@ class TestMain:
     @patch("chisel.cli.ChiselEngine")
     def test_main_history(self, mock_cls):
         engine = _make_engine_mock()
-        engine.tool_history.return_value = [{"hash": "aaa"}]
+        engine.tool_history.return_value = [{"hash": "aaa", "date": "2026-01-01", "author": "X", "message": "init"}]
         mock_cls.return_value = engine
 
         main(["history", "--project-dir", "/tmp/p", "app.py"])

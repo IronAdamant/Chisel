@@ -87,7 +87,9 @@ def create_server(storage_dir=None, project_dir=None):
         project_dir = os.getcwd()
 
     engine = ChiselEngine(project_dir, storage_dir=storage_dir)
-    return _configure_server(engine)
+    server = _configure_server(engine)
+    server._engine = engine  # Expose for caller cleanup
+    return server
 
 
 async def _run_server():

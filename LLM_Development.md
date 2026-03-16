@@ -87,6 +87,41 @@ Major cleanup pass: refactored storage to use a single persistent connection, di
 
 ---
 
+## v0.3.2 -- 2026-03-17 -- Deep Code Review Round 3: Semantic Bugs, Dead Code, Refactoring
+
+### Summary
+
+Third comprehensive code review using 10 parallel agents to audit every module, cross-validate inter-module contracts, and identify semantic bugs. Fixed 7 bugs (including 2 logic errors that silently produced wrong results), consolidated duplicate code, and hardened error handling.
+
+### Bugs fixed
+
+- **`impact.py`**: `changed_functions or None` converted an empty list `[]` to `None`, causing `get_impacted_tests()` to return ALL tests when the caller explicitly said "no functions changed" (should return none). Root cause: Python's `[] or None` evaluates to `None` because empty list is falsy.
+- **`impact.py`**: `get_risk_map(directory="src")` used bare `startswith("src")` which incorrectly matched paths like `src_backup/file.py`. Changed to `startswith("src/")` with proper path boundary.
+- **`cli.py`**: `cmd_stale_tests` displayed a nonexistent `"reason"` field (always blank). The actual field from `detect_stale_tests()` is `"edge_type"`. This was masked by the old defensive `.get("reason", "")` fallback.
+- **`mcp_server.py`**: `ChiselMCPServer.stop()` closed the engine but didn't set `self._engine = None`, leaving a stale reference. Inconsistent with `_httpd` and `_thread` cleanup.
+- **`mcp_stdio.py`**: `create_server()` created a `ChiselEngine` captured in a closure with no cleanup path. Engine now stored as `server._engine` for caller cleanup.
+- **`git_analyzer.py`**: `compute_churn()` called `_parse_iso_date()` without try-except, so a malformed commit date would crash the entire churn computation. `compute_co_changes()` already had the guard — now both are consistent.
+- **`tests/test_cli.py`**: 6 test mocks had incorrect field names (`score` vs `relevance`, `reason` vs `edge_type`, missing `percentage`/`recent_commits`/`date`/`author`/`message`). These never failed because the old CLI code used defensive fallback chains that silently returned defaults.
+
+### Code consolidated
+
+- **`ast_utils.py`**: Replaced 3 near-identical functions (`_extract_js_ts`, `_extract_go`, `_extract_rust`) with a shared `_extract_brace_lang(file_path, content, patterns)` helper. Each language now defines a pattern table (`_JS_TS_PATTERNS`, `_GO_PATTERNS`, `_RS_PATTERNS`) — a list of `(regex, unit_type)` tuples where `unit_type` can be a string or a `callable(match) -> (name, type)` for dynamic extraction (Go's `kind` group, Rust's `impl` name stripping). Net reduction: ~50 lines.
+- **`storage.py`**: Deduplicated the identical 6-line SELECT/JOIN clause in `get_direct_impacted_tests()` into a local `base_sql` variable shared by both query paths.
+
+### Dead code removed
+
+- **`cli.py`**: Removed `_print_result()` function (only used once by `cmd_churn`, dict branch was unreachable). Inlined the list iteration.
+- **`cli.py`**: Stripped all `.get("x", .get("y", ...))` defensive fallback chains across 10 command handlers. The engine returns well-defined dicts — the fallbacks masked field name mismatches (proven by the test mock fixes above).
+
+### Test fixes
+
+- Updated 6 CLI test mocks to use correct field names matching actual engine output contracts.
+- Updated `test_risk_map_with_directory` to use directory-style paths (`src/app.py`) instead of exploiting the old buggy prefix behavior.
+- Fixed misleading comment on `_py_block_end` return value.
+- 334 tests (count unchanged).
+
+---
+
 ## v0.3.1 -- 2026-03-17 -- Comprehensive Code Review and Bug Fixes
 
 ### Summary

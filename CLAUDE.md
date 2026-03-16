@@ -8,7 +8,7 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 chisel/
   engine.py         — Orchestrator. Owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock.
   storage.py        — SQLite persistence (WAL mode). 9 tables. Uses _fetchall/_fetchone/_execute helpers.
-  ast_utils.py      — Multi-lang AST extraction (Python/JS/TS/Go/Rust). CodeUnit dataclass.
+  ast_utils.py      — Multi-lang AST extraction (Python/JS/TS/Go/Rust). CodeUnit dataclass. _extract_brace_lang() shared by JS/TS/Go/Rust.
   git_analyzer.py   — Parses git log/blame via subprocess. Computes churn, ownership, co-change.
   test_mapper.py    — Test file discovery, framework detection, dependency extraction, edge building.
   impact.py         — Impact analysis, risk scoring, stale test detection, reviewer suggestions.
@@ -36,7 +36,7 @@ chisel/
 
 ```bash
 pip install -e ".[dev]" --break-system-packages   # Arch Linux
-pytest tests/ -v --tb=short                       # full suite (334 tests)
+pytest tests/ -v --tb=short                       # full suite
 chisel analyze .                                  # analyze current project
 chisel analyze src/                               # analyze subdirectory only
 chisel serve --port 8377                          # HTTP MCP server

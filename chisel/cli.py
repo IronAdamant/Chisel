@@ -116,23 +116,6 @@ def _print_json(data):
     print(json.dumps(data, indent=2, default=str))
 
 
-def _print_result(data):
-    """Print a dict or list of dicts as key: value lines."""
-    if not data:
-        print("No results.")
-        return
-    if isinstance(data, dict):
-        for key, value in data.items():
-            print(f"{key}: {value}")
-    elif isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict):
-                for key, value in item.items():
-                    print(f"  {key}: {value}")
-                print()
-            else:
-                print(f"  {item}")
-
 
 # ------------------------------------------------------------------ #
 # Command handlers
@@ -164,9 +147,7 @@ def cmd_impact(args):
             else:
                 print("Impacted tests:")
                 for item in result:
-                    test_id = item.get("test_id", item.get("id", "unknown"))
-                    reason = item.get("reason", item.get("edge_type", ""))
-                    print(f"  {test_id}  ({reason})")
+                    print(f"  {item['test_id']}  ({item['reason']})")
         return result
 
 
@@ -182,9 +163,7 @@ def cmd_suggest_tests(args):
             else:
                 print("Suggested tests:")
                 for item in result:
-                    name = item.get("name", item.get("test_id", "unknown"))
-                    score = item.get("relevance", item.get("score", ""))
-                    print(f"  {name}  (score: {score})")
+                    print(f"  {item['name']}  (score: {item['relevance']})")
         return result
 
 
@@ -199,7 +178,10 @@ def cmd_churn(args):
                 print("No churn data available.")
             else:
                 print(f"Churn stats for {args.file}:")
-                _print_result(result)
+                for item in result:
+                    for key, value in item.items():
+                        print(f"  {key}: {value}")
+                    print()
         return result
 
 
@@ -215,9 +197,7 @@ def cmd_ownership(args):
             else:
                 print(f"Ownership for {args.file}:")
                 for item in result:
-                    author = item.get("author", "unknown")
-                    pct = item.get("percentage", item.get("line_count", ""))
-                    print(f"  {author}: {pct}")
+                    print(f"  {item['author']}: {item['percentage']}")
         return result
 
 
@@ -233,9 +213,7 @@ def cmd_coupling(args):
             else:
                 print(f"Co-change coupling for {args.file}:")
                 for item in result:
-                    partner = item.get("file_b", item.get("partner", "unknown"))
-                    count = item.get("co_commit_count", item.get("count", ""))
-                    print(f"  {partner}  ({count} co-commits)")
+                    print(f"  {item['file_b']}  ({item['co_commit_count']} co-commits)")
         return result
 
 
@@ -251,9 +229,7 @@ def cmd_risk_map(args):
             else:
                 print("Risk map:")
                 for item in result:
-                    fpath = item.get("file_path", item.get("file", "unknown"))
-                    score = item.get("risk_score", item.get("score", ""))
-                    print(f"  {fpath}: {score}")
+                    print(f"  {item['file_path']}: {item['risk_score']}")
         return result
 
 
@@ -269,9 +245,7 @@ def cmd_stale_tests(args):
             else:
                 print("Stale tests:")
                 for item in result:
-                    test_id = item.get("test_id", item.get("id", "unknown"))
-                    reason = item.get("reason", "")
-                    print(f"  {test_id}  ({reason})")
+                    print(f"  {item['test_id']}  ({item['edge_type']})")
         return result
 
 
@@ -287,12 +261,8 @@ def cmd_history(args):
             else:
                 print(f"History for {args.file}:")
                 for item in result:
-                    commit_hash = item.get("hash", item.get("commit_hash", ""))
-                    short = commit_hash[:8] if commit_hash else "?"
-                    author = item.get("author", "")
-                    date = item.get("date", "")
-                    msg = item.get("message", "")
-                    print(f"  {short}  {date}  {author}  {msg}")
+                    short = item["hash"][:8]
+                    print(f"  {short}  {item['date']}  {item['author']}  {item['message']}")
         return result
 
 
@@ -308,11 +278,8 @@ def cmd_who_reviews(args):
             else:
                 print(f"Suggested reviewers for {args.file}:")
                 for item in result:
-                    author = item.get("author", "unknown")
-                    commits = item.get("recent_commits", "")
                     days = item.get("days_since_last_commit", "?")
-                    pct = item.get("percentage", "")
-                    print(f"  {author}: {pct}% ({commits} commits, {days}d ago)")
+                    print(f"  {item['author']}: {item['percentage']}% ({item['recent_commits']} commits, {days}d ago)")
         return result
 
 

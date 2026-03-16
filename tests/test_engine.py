@@ -1,4 +1,6 @@
-"""Tests for chisel.engine — full integration with temp git repo + test files."""
+"""Tests for chisel.engine — integration + unit tests for private methods."""
+
+import os
 
 import pytest
 
@@ -146,3 +148,276 @@ class TestToolMethods:
         engine.analyze()
         result = engine.tool_who_reviews("app.py")
         assert isinstance(result, list)
+
+
+# ------------------------------------------------------------------ #
+# Unit tests for private methods
+# ------------------------------------------------------------------ #
+
+
+class TestScanCodeFiles:
+    def test_finds_py_files(self, engine, git_project):
+        files = engine._scan_code_files()
+        basenames = [os.path.basename(f) for f in files]
+        assert "app.py" in basenames
+
+    def test_returns_sorted(self, engine):
+        files = engine._scan_code_files()
+        assert files == sorted(files)
+
+    def test_skips_pycache(self, engine, git_project):
+        cache_dir = git_project / "__pycache__"
+        cache_dir.mkdir()
+        (cache_dir / "cached.py").write_text("x = 1\n")
+        files = engine._scan_code_files()
+        assert not any("__pycache__" in f for f in files)
+
+    def test_skips_non_code_extensions(self, engine, git_project):
+        (git_project / "notes.md").write_text("# notes")
+        (git_project / "data.json").write_text("{}")
+        files = engine._scan_code_files()
+        exts = {os.path.splitext(f)[1] for f in files}
+        assert ".md" not in exts
+        assert ".json" not in exts
+
+    def test_directory_scopes_scan(self, engine, git_project):
+        sub = git_project / "subpkg"
+        sub.mkdir()
+        (sub / "mod.py").write_text("def f(): pass\n")
+        all_files = engine._scan_code_files()
+        scoped = engine._scan_code_files(directory="subpkg")
+        assert len(scoped) < len(all_files)
+        assert any("mod.py" in f for f in scoped)
+        assert not any("app.py" in f for f in scoped)
+
+    def test_nonexistent_directory_falls_back(self, engine):
+        """Non-existent directory falls back to project root."""
+        fallback = engine._scan_code_files(directory="no_such_dir")
+        default = engine._scan_code_files()
+        assert fallback == default
+
+
+class TestFindChangedFiles:
+    def test_all_files_on_first_run(self, engine):
+        code_files = engine._scan_code_files()
+        changed = engine._find_changed_files(code_files)
+        # First run: no hashes stored, everything is "changed"
+        assert len(changed) == len(code_files)
+        # Each entry is (abs_path, rel_path, hash)
+        _, rel, h = changed[0]
+        assert isinstance(rel, str)
+        assert len(h) == 64  # SHA-256 hex
+
+    def test_nothing_changed_after_store(self, engine):
+        code_files = engine._scan_code_files()
+        changed = engine._find_changed_files(code_files)
+        # Store the hashes
+        for _, rel, new_hash in changed:
+            engine.storage.set_file_hash(rel, new_hash)
+        # Second run: nothing changed
+        changed2 = engine._find_changed_files(code_files)
+        assert changed2 == []
+
+    def test_detects_modification(self, engine, git_project):
+        code_files = engine._scan_code_files()
+        changed = engine._find_changed_files(code_files)
+        for _, rel, h in changed:
+            engine.storage.set_file_hash(rel, h)
+
+        # Modify one file
+        (git_project / "app.py").write_text("def changed(): pass\n")
+        changed2 = engine._find_changed_files(code_files)
+        rels = [rel for _, rel, _ in changed2]
+        assert "app.py" in rels
+        assert len(changed2) == 1
+
+    def test_force_returns_all(self, engine):
+        code_files = engine._scan_code_files()
+        # Store hashes first
+        changed = engine._find_changed_files(code_files)
+        for _, rel, h in changed:
+            engine.storage.set_file_hash(rel, h)
+        # Force: returns all even though nothing changed
+        forced = engine._find_changed_files(code_files, force=True)
+        assert len(forced) == len(code_files)
+
+
+class TestParseAndStoreCodeUnits:
+    def test_stores_units_and_returns_count(self, engine):
+        code_files = engine._scan_code_files()
+        changed = engine._find_changed_files(code_files)
+        count = engine._parse_and_store_code_units(changed)
+        assert count > 0
+        # Verify units exist in DB
+        units = engine.storage.get_code_units_by_file("app.py")
+        assert len(units) > 0
+
+    def test_updates_file_hashes(self, engine):
+        code_files = engine._scan_code_files()
+        changed = engine._find_changed_files(code_files)
+        engine._parse_and_store_code_units(changed)
+        h = engine.storage.get_file_hash("app.py")
+        assert h is not None and len(h) == 64
+
+    def test_replaces_old_units_on_reparse(self, engine, git_project):
+        code_files = engine._scan_code_files()
+        changed = engine._find_changed_files(code_files)
+        engine._parse_and_store_code_units(changed)
+        old_units = engine.storage.get_code_units_by_file("app.py")
+
+        # Modify and reparse
+        (git_project / "app.py").write_text("def only_one(): pass\n")
+        changed2 = engine._find_changed_files(code_files)
+        engine._parse_and_store_code_units(changed2)
+        new_units = engine.storage.get_code_units_by_file("app.py")
+        names = [u["name"] for u in new_units]
+        assert names == ["only_one"]
+        assert len(new_units) < len(old_units)
+
+    def test_empty_changed_files(self, engine):
+        count = engine._parse_and_store_code_units([])
+        assert count == 0
+
+
+class TestStoreCommits:
+    def test_stores_commits_and_files(self, engine):
+        commits = [{
+            "hash": "abc123", "author": "A", "author_email": "a@x.com",
+            "date": "2026-01-15", "message": "init",
+            "files": [{"path": "app.py", "insertions": 10, "deletions": 0}],
+        }]
+        engine._store_commits(commits)
+        stored = engine.storage.get_commit("abc123")
+        assert stored is not None
+        assert stored["author"] == "A"
+        # Commit file entry
+        file_commits = engine.storage.get_commits_for_file("app.py")
+        assert any(c["hash"] == "abc123" for c in file_commits)
+
+    def test_handles_no_files(self, engine):
+        commits = [{
+            "hash": "def456", "author": "B", "author_email": "b@x.com",
+            "date": "2026-02-01", "message": "empty",
+        }]
+        engine._store_commits(commits)
+        assert engine.storage.get_commit("def456") is not None
+
+    def test_idempotent_upsert(self, engine):
+        commit = {
+            "hash": "aaa111", "author": "C", "author_email": "c@x.com",
+            "date": "2026-03-01", "message": "first", "files": [],
+        }
+        engine._store_commits([commit])
+        commit["message"] = "updated"
+        engine._store_commits([commit])
+        stored = engine.storage.get_commit("aaa111")
+        assert stored["message"] == "updated"
+
+
+class TestStoreBlame:
+    def test_stores_blame_blocks(self, engine, git_project, run_git):
+        engine.analyze()
+        h = engine.storage.get_file_hash("app.py")
+        blame = engine.storage.get_blame("app.py", h)
+        assert len(blame) > 0
+        assert blame[0]["author"] == "TestUser"
+
+    def test_invalidates_old_blame(self, engine, git_project, run_git):
+        engine.analyze()
+        h1 = engine.storage.get_file_hash("app.py")
+        blame1 = engine.storage.get_blame("app.py", h1)
+
+        # Modify, recommit, re-run blame
+        src = git_project / "app.py"
+        src.write_text("def new_only(): pass\n")
+        run_git(git_project, "add", "-A")
+        run_git(git_project, "commit", "-m", "replace")
+        code_files = engine._scan_code_files()
+        changed = engine._find_changed_files(code_files)
+        engine._parse_and_store_code_units(changed)
+        engine._store_blame(changed)
+        h2 = engine.storage.get_file_hash("app.py")
+        # Old hash blame should be gone
+        assert engine.storage.get_blame("app.py", h1) == []
+        # New hash blame should exist
+        assert len(engine.storage.get_blame("app.py", h2)) > 0
+
+    def test_handles_git_error_gracefully(self, engine, tmp_path):
+        """Blame for a file not in git doesn't crash."""
+        fake = tmp_path / "nocommit.py"
+        fake.write_text("x = 1\n")
+        from chisel.ast_utils import compute_file_hash
+        h = compute_file_hash(str(fake))
+        # This should not raise — RuntimeError is caught internally
+        engine._store_blame([(str(fake), "nocommit.py", h)])
+
+
+class TestComputeChurnAndCoupling:
+    def test_stores_file_level_churn(self, engine, git_project):
+        engine.analyze()
+        stat = engine.storage.get_churn_stat("app.py")
+        assert stat is not None
+        assert stat["commit_count"] >= 1
+        assert stat["churn_score"] > 0
+
+    def test_stores_unit_level_churn(self, engine, git_project):
+        engine.analyze()
+        stat = engine.storage.get_churn_stat("app.py", "process_data")
+        assert stat is not None
+        assert stat["commit_count"] >= 1
+
+    def test_skips_classes_for_unit_churn(self, engine, git_project):
+        """Unit-level churn only runs for functions, not classes."""
+        src = git_project / "app.py"
+        content = src.read_text()
+        src.write_text(content + "\nclass MyClass:\n    def method(self): pass\n")
+        engine.analyze(force=True)
+        # Class should not get its own churn stat
+        assert engine.storage.get_churn_stat("app.py", "MyClass") is None
+
+
+class TestDiscoverAndBuildEdges:
+    def test_returns_correct_tuple(self, engine, git_project):
+        engine.analyze()
+        code_files = engine._scan_code_files()
+        # Run again to test in isolation
+        units, tf_count, edge_count = engine._discover_and_build_edges(code_files)
+        assert isinstance(units, list)
+        assert tf_count >= 1
+        assert edge_count >= 1
+
+    def test_stores_test_units(self, engine, git_project):
+        engine.analyze()
+        tests = engine.storage.get_all_test_units()
+        names = [t["name"] for t in tests]
+        assert "test_process_data" in names
+
+    def test_stores_edges(self, engine, git_project):
+        engine.analyze()
+        tests = engine.storage.get_all_test_units()
+        test_with_edges = [
+            t for t in tests if t["name"] == "test_process_data"
+        ]
+        assert len(test_with_edges) == 1
+        edges = engine.storage.get_edges_for_test(test_with_edges[0]["id"])
+        assert len(edges) > 0
+
+    def test_replaces_units_on_rediscovery(self, engine, git_project, run_git):
+        """Modifying a test file replaces its old test units."""
+        engine.analyze()
+        old_names = [t["name"] for t in engine.storage.get_all_test_units()]
+        assert "test_process_data" in old_names
+
+        # Rewrite the test file with different functions
+        (git_project / "tests" / "test_app.py").write_text(
+            "def test_replacement(): pass\n"
+        )
+        run_git(git_project, "add", "-A")
+        run_git(git_project, "commit", "-m", "rewrite tests")
+
+        code_files = engine._scan_code_files()
+        engine._discover_and_build_edges(code_files)
+        new_names = [t["name"] for t in engine.storage.get_all_test_units()]
+        assert "test_replacement" in new_names
+        # Old test units for test_app.py were deleted and replaced
+        assert "test_process_data" not in new_names

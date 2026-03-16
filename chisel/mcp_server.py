@@ -391,6 +391,7 @@ class ChiselMCPServer:
             self._thread = None
         if self._engine is not None:
             self._engine.close()
+            self._engine = None
 
     def get_url(self):
         """Return the base URL the server is listening on."""

@@ -33,7 +33,7 @@ class ImpactAnalyzer:
         # Direct hits via single JOIN query per file
         for file_path in changed_files:
             hits = self.storage.get_direct_impacted_tests(
-                file_path, changed_functions or None,
+                file_path, changed_functions,
             )
             for hit in hits:
                 new_score = hit["weight"]
@@ -180,9 +180,10 @@ class ImpactAnalyzer:
             List of dicts: {file_path, risk_score, breakdown}
         """
         all_churn = self.storage.get_all_churn_stats()
+        dir_prefix = directory.rstrip("/") + "/" if directory else ""
         files = set()
         for stat in all_churn:
-            if not directory or stat["file_path"].startswith(directory):
+            if not directory or stat["file_path"].startswith(dir_prefix):
                 files.add(stat["file_path"])
 
         risk_map = []

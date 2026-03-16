@@ -138,6 +138,147 @@ class TestMainUnavailable:
 # Tests: create_server when mcp IS available (mocked)
 # ------------------------------------------------------------------ #
 
+# ------------------------------------------------------------------ #
+# Tests: _configure_server handlers (list_tools, call_tool)
+# ------------------------------------------------------------------ #
+
+class TestConfigureServerHandlers:
+    """Test the async handlers registered by _configure_server."""
+
+    def test_list_tools_returns_tool_objects(self, tmp_path):
+        """list_tools handler should return Tool objects for all schemas."""
+        from mcp.types import ListToolsRequest
+        from chisel.engine import ChiselEngine
+        from chisel.mcp_stdio import _configure_server
+        from chisel.mcp_server import _TOOL_SCHEMAS
+
+        engine = ChiselEngine(str(tmp_path), storage_dir=str(tmp_path / "db"))
+        try:
+            server = _configure_server(engine)
+            handler = server.request_handlers[ListToolsRequest]
+            req = ListToolsRequest()
+
+            async def run():
+                return await handler(req)
+
+            import asyncio
+            result = asyncio.run(run())
+            tools = result.root.tools
+            assert len(tools) == len(_TOOL_SCHEMAS)
+            names = {t.name for t in tools}
+            assert "analyze" in names
+            assert "impact" in names
+        finally:
+            engine.close()
+
+    def test_call_tool_dispatches_and_returns_text(self, tmp_path):
+        """call_tool handler should dispatch to engine and return TextContent."""
+        import asyncio
+        import json
+        from mcp.types import CallToolRequest, CallToolRequestParams
+        from chisel.engine import ChiselEngine
+        from chisel.mcp_stdio import _configure_server
+
+        engine = ChiselEngine(str(tmp_path), storage_dir=str(tmp_path / "db"))
+        try:
+            server = _configure_server(engine)
+            handler = server.request_handlers[CallToolRequest]
+            req = CallToolRequest(
+                params=CallToolRequestParams(name="stale_tests", arguments={}),
+            )
+
+            async def run():
+                return await handler(req)
+
+            result = asyncio.run(run())
+            content = result.root.content
+            assert len(content) == 1
+            assert content[0].type == "text"
+            parsed = json.loads(content[0].text)
+            assert isinstance(parsed, list)
+        finally:
+            engine.close()
+
+    def test_call_tool_returns_error_on_unknown_tool(self, tmp_path):
+        """call_tool handler should return error text for unknown tools."""
+        import asyncio
+        from mcp.types import CallToolRequest, CallToolRequestParams
+        from chisel.engine import ChiselEngine
+        from chisel.mcp_stdio import _configure_server
+
+        engine = ChiselEngine(str(tmp_path), storage_dir=str(tmp_path / "db"))
+        try:
+            server = _configure_server(engine)
+            handler = server.request_handlers[CallToolRequest]
+            req = CallToolRequest(
+                params=CallToolRequestParams(name="no_such_tool", arguments={}),
+            )
+
+            async def run():
+                return await handler(req)
+
+            result = asyncio.run(run())
+            assert "Error:" in result.root.content[0].text
+        finally:
+            engine.close()
+
+
+# ------------------------------------------------------------------ #
+# Tests: _run_server lifecycle and main()
+# ------------------------------------------------------------------ #
+
+class TestRunServer:
+    def test_run_server_closes_engine_on_exit(self, tmp_path, monkeypatch):
+        """_run_server should close the engine even when server exits normally."""
+        import asyncio
+        from chisel import mcp_stdio
+
+        monkeypatch.setenv("CHISEL_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("CHISEL_STORAGE_DIR", str(tmp_path / "db"))
+
+        closed = []
+        original_close = mcp_stdio.ChiselEngine.close
+
+        def tracked_close(self_eng):
+            closed.append(True)
+            original_close(self_eng)
+
+        # Mock the server returned by _configure_server
+        fake_server = mock.MagicMock()
+        fake_server.run = mock.AsyncMock()
+        fake_server.create_initialization_options.return_value = {}
+
+        fake_ctx = mock.MagicMock()
+        fake_ctx.__aenter__ = mock.AsyncMock(
+            return_value=(mock.AsyncMock(), mock.AsyncMock())
+        )
+        fake_ctx.__aexit__ = mock.AsyncMock(return_value=False)
+
+        with mock.patch.object(mcp_stdio.ChiselEngine, "close", tracked_close), \
+             mock.patch.object(mcp_stdio, "_configure_server", return_value=fake_server), \
+             mock.patch.object(mcp_stdio, "stdio_server", return_value=fake_ctx, create=True):
+            asyncio.run(mcp_stdio._run_server())
+
+        assert len(closed) == 1
+
+    def test_main_calls_asyncio_run_when_available(self):
+        """main() should call asyncio.run(_run_server) when mcp is available."""
+        from chisel import mcp_stdio
+
+        original_avail = mcp_stdio._MCP_AVAILABLE
+        try:
+            mcp_stdio._MCP_AVAILABLE = True
+            with mock.patch("asyncio.run") as mock_run:
+                mcp_stdio.main()
+                mock_run.assert_called_once()
+        finally:
+            mcp_stdio._MCP_AVAILABLE = original_avail
+
+
+# ------------------------------------------------------------------ #
+# Tests: create_server when mcp IS available (mocked)
+# ------------------------------------------------------------------ #
+
 class TestCreateServerAvailable:
     def test_create_server_returns_server_with_engine(self, tmp_path):
         """When mcp is available, create_server should create an engine

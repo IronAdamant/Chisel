@@ -225,6 +225,114 @@ class TestDependencyExtraction:
         assert "engine" in names
 
 
+class TestParseTestFileEdgeCases:
+    def test_rust_test_file(self, mapper, project):
+        test_file = str(project / "src" / "lib.rs")
+        units = mapper.parse_test_file(test_file)
+        names = [u["name"] for u in units]
+        assert "test_add" in names
+        for u in units:
+            assert u["framework"] == "rust"
+
+    def test_unreadable_file_returns_empty(self, mapper, tmp_path):
+        missing = str(tmp_path / "gone" / "test_ghost.py")
+        units = mapper.parse_test_file(missing)
+        assert units == []
+
+    def test_unknown_language_deps_returns_empty(self, mapper):
+        deps = mapper.extract_test_dependencies("data.csv", "a,b,c\n1,2,3")
+        assert deps == []
+
+
+class TestIsTestNameEdgeCases:
+    def test_jest_describe_it_test(self):
+        from chisel.test_mapper import _is_test_name
+        assert _is_test_name("describe", "jest") is True
+        assert _is_test_name("it", "jest") is True
+        assert _is_test_name("test", "jest") is True
+        assert _is_test_name("testHelper", "jest") is True
+        assert _is_test_name("helper", "jest") is False
+
+    def test_playwright_same_as_jest(self):
+        from chisel.test_mapper import _is_test_name
+        assert _is_test_name("describe", "playwright") is True
+        assert _is_test_name("test", "playwright") is True
+
+    def test_rust_test_names(self):
+        from chisel.test_mapper import _is_test_name
+        assert _is_test_name("test_add", "rust") is True
+        assert _is_test_name("test_", "rust") is True
+        assert _is_test_name("helper", "rust") is False
+
+    def test_unknown_framework_returns_false(self):
+        from chisel.test_mapper import _is_test_name
+        assert _is_test_name("test_foo", "unknown_fw") is False
+
+
+class TestCheckHelpers:
+    def test_check_playwright_oserror_falls_back_to_jest(self):
+        from chisel.test_mapper import _check_playwright
+        result = _check_playwright("/nonexistent/path/spec.ts")
+        assert result == "jest"
+
+    def test_check_rust_test_oserror_returns_false(self):
+        from chisel.test_mapper import _check_rust_test
+        assert _check_rust_test("/nonexistent/path/lib.rs") is False
+
+    def test_check_playwright_without_playwright_content(self, tmp_path):
+        from chisel.test_mapper import _check_playwright
+        spec = tmp_path / "basic.spec.ts"
+        spec.write_text('describe("test", () => {});\n')
+        assert _check_playwright(str(spec)) == "jest"
+
+
+class TestDepExtractionEdgeCases:
+    def test_python_syntax_error_fallback(self, mapper):
+        """SyntaxError in Python falls back to regex extraction."""
+        content = "from mymod import helper\ndef broken(\n"
+        deps = mapper.extract_test_dependencies("test_bad.py", content)
+        names = [d["name"] for d in deps]
+        # Regex fallback should still find the import
+        assert "helper" in names
+
+    def test_python_regex_finds_calls(self, mapper):
+        content = "import os\nfoo()\nbar(x)\n"
+        # Force regex path via SyntaxError
+        bad_content = content + "def broken(\n"
+        deps = mapper.extract_test_dependencies("test_f.py", bad_content)
+        names = [d["name"] for d in deps]
+        assert "foo" in names
+        assert "bar" in names
+
+    def test_go_single_import(self, mapper):
+        content = 'package main\n\nimport "fmt"\n\nfunc TestFmt(t *testing.T) {}\n'
+        deps = mapper.extract_test_dependencies("main_test.go", content)
+        names = [d["name"] for d in deps]
+        assert "fmt" in names
+
+    def test_js_named_imports(self, mapper):
+        content = 'import { alpha, beta as b } from "./utils";\nalpha();\n'
+        deps = mapper.extract_test_dependencies("test.test.js", content)
+        names = [d["name"] for d in deps]
+        assert "alpha" in names
+        assert "beta" in names  # "beta as b" extracts "beta"
+
+
+class TestBuildEdgesEdgeCases:
+    def test_unreadable_test_file(self, mapper, tmp_path):
+        """Edge building skips test files that can't be read."""
+        test_units = [{
+            "id": "gone/test_x.py:test_x",
+            "file_path": "gone/test_x.py",
+            "name": "test_x",
+            "framework": "pytest",
+            "line_start": 1, "line_end": 2, "content_hash": "abc",
+        }]
+        code_units = [CodeUnit("mod.py", "foo", "function", 1, 2)]
+        edges = mapper.build_test_edges(test_units, code_units)
+        assert edges == []
+
+
 class TestBuildEdges:
     def test_basic_edge_building(self, mapper):
         test_units = [{

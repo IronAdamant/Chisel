@@ -343,7 +343,11 @@ class GitAnalyzer:
             total_ins += file_info["insertions"]
             total_del += file_info["deletions"]
 
-            commit_date = _parse_iso_date(commit["date"])
+            try:
+                commit_date = _parse_iso_date(commit["date"])
+            except (ValueError, TypeError):
+                continue
+
             days_since = max((now - commit_date).total_seconds() / 86400, 0)
             churn_score += 1.0 / (1.0 + days_since)
 

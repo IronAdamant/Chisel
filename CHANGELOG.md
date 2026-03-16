@@ -5,6 +5,29 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-03-17
+
+### Fixed
+
+- `impact.py`: `changed_functions or None` silently converted empty list `[]` to `None`, causing `get_impacted_tests()` to return ALL tests instead of none when no functions changed
+- `impact.py`: `get_risk_map(directory="src")` matched files like `src_backup/file.py` due to bare prefix check — now uses path-boundary-safe `startswith(dir + "/")`
+- `cli.py`: `cmd_stale_tests` printed nonexistent `"reason"` field (always empty) instead of `"edge_type"`
+- `mcp_server.py`: `ChiselMCPServer.stop()` did not set `self._engine = None` after close, inconsistent with `_httpd`/`_thread` cleanup
+- `mcp_stdio.py`: `create_server()` leaked engine with no cleanup path — engine now stored as `server._engine`
+- `git_analyzer.py`: `compute_churn()` crashed on malformed commit dates — added try-except consistent with `compute_co_changes()`
+- `tests/test_cli.py`: 6 test mocks had wrong field names (`score` instead of `relevance`, `reason` instead of `edge_type`, missing required fields), masked by now-removed defensive fallbacks
+
+### Changed
+
+- `ast_utils.py`: Consolidated 3 near-identical brace-language extractors (`_extract_js_ts`, `_extract_go`, `_extract_rust`) into shared `_extract_brace_lang()` with per-language pattern tables
+- `storage.py`: Deduplicated identical SELECT/JOIN clause in `get_direct_impacted_tests()` into local `base_sql` variable
+- `cli.py`: Simplified all output handlers by removing defensive `.get("x", .get("y", ...))` fallback chains — data contracts from engine are well-defined
+- `ast_utils.py`: Fixed misleading comment on `_py_block_end` return value
+
+### Removed
+
+- `cli.py`: `_print_result()` function — used only once, dict branch was unreachable dead code
+
 ## [0.3.1] - 2026-03-17
 
 ### Fixed

@@ -371,31 +371,23 @@ class Storage:
 
     def get_direct_impacted_tests(self, file_path, changed_functions=None):
         """Find tests with edges to code units in a file, via a single JOIN."""
+        base_sql = """SELECT tu.id AS test_id, tu.file_path,
+                             tu.name, cu.name AS code_name,
+                             te.edge_type, te.weight
+                      FROM code_units cu
+                      JOIN test_edges te ON cu.id = te.code_id
+                      JOIN test_units tu ON te.test_id = tu.id
+                      WHERE cu.file_path = ?"""
         if changed_functions is not None and len(changed_functions) > 0:
             placeholders = ",".join("?" for _ in changed_functions)
             return self._fetchall(
-                f"""SELECT tu.id AS test_id, tu.file_path,
-                           tu.name, cu.name AS code_name,
-                           te.edge_type, te.weight
-                    FROM code_units cu
-                    JOIN test_edges te ON cu.id = te.code_id
-                    JOIN test_units tu ON te.test_id = tu.id
-                    WHERE cu.file_path = ? AND cu.name IN ({placeholders})""",
+                f"{base_sql} AND cu.name IN ({placeholders})",
                 (file_path, *changed_functions),
             )
         if changed_functions is not None:
             # Explicit empty list means no functions changed — return nothing
             return []
-        return self._fetchall(
-            """SELECT tu.id AS test_id, tu.file_path,
-                      tu.name, cu.name AS code_name,
-                      te.edge_type, te.weight
-               FROM code_units cu
-               JOIN test_edges te ON cu.id = te.code_id
-               JOIN test_units tu ON te.test_id = tu.id
-               WHERE cu.file_path = ?""",
-            (file_path,),
-        )
+        return self._fetchall(base_sql, (file_path,))
 
     def delete_test_units_by_file(self, file_path):
         self._execute("DELETE FROM test_units WHERE file_path = ?", (file_path,))

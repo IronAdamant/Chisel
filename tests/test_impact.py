@@ -165,12 +165,13 @@ class TestRiskMap:
         assert risk_map[0]["risk_score"] >= risk_map[1]["risk_score"]
 
     def test_risk_map_with_directory(self, storage, analyzer):
-        _seed_basic_data(storage)
-        # Only app.py starts with "app"
-        risk_map = analyzer.get_risk_map(directory="app")
+        # Seed with directory-style paths to test proper path boundary matching
+        storage.upsert_churn_stat("src/app.py", "", churn_score=3.0)
+        storage.upsert_churn_stat("lib/helper.py", "", churn_score=2.0)
+        risk_map = analyzer.get_risk_map(directory="src")
         files = [r["file_path"] for r in risk_map]
-        assert "app.py" in files
-        assert "lib.py" not in files
+        assert "src/app.py" in files
+        assert "lib/helper.py" not in files
 
 
 class TestGetOwnership:
