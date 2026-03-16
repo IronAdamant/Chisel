@@ -1,0 +1,56 @@
+# Chisel — CLAUDE.md
+
+Test impact analysis and code intelligence for LLM agents. Zero external dependencies.
+
+## Architecture
+
+```
+chisel/
+  engine.py         — Orchestrator. Owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock.
+  storage.py        — SQLite persistence (WAL mode). 9 tables: code_units, test_units, test_edges,
+                      commits, commit_files, blame_cache, co_changes, churn_stats, file_hashes.
+  ast_utils.py      — Multi-lang AST extraction (Python/JS/TS/Go/Rust). CodeUnit dataclass.
+  git_analyzer.py   — Parses git log/blame via subprocess. Computes churn, ownership, co-change.
+  test_mapper.py    — Test file discovery, framework detection, dependency extraction, edge building.
+  impact.py         — Impact analysis, risk scoring, stale test detection, reviewer suggestions.
+  cli.py            — argparse CLI (12 subcommands). Entry point: chisel.cli:main
+  mcp_server.py     — HTTP MCP server (GET /tools, /health, POST /call). ThreadedHTTPServer.
+  mcp_stdio.py      — stdio MCP server (requires optional 'mcp' package).
+  rwlock.py         — Read-write lock for concurrent access.
+```
+
+## Key Design Decisions
+
+- **Zero deps**: stdlib only. `ast` for Python, regex for JS/TS/Go/Rust. `subprocess.run(["git", ...])` for git.
+- **FK enforcement disabled** in SQLite: stale test detection relies on orphaned edge refs; re-analysis deletes/recreates code_units freely.
+- **Churn formula**: `sum(1 / (1 + days_since_commit))` — recent changes weigh heavily.
+- **Risk formula**: `0.4*churn + 0.3*coupling_breadth + 0.2*(1-test_coverage) + 0.1*author_concentration`
+- **Co-change threshold**: Only pairs with >= 3 co-commits stored.
+- **Blame caching**: Cached by file content hash, invalidated on change.
+- **Incremental updates**: File content hashes tracked in `file_hashes` table.
+
+## Dev Commands
+
+```bash
+pip install -e ".[dev]" --break-system-packages   # Arch Linux
+pytest tests/ -v --tb=short                       # full suite (305 tests)
+chisel analyze .                                  # analyze current project
+chisel serve --port 8377                          # HTTP MCP server
+```
+
+## Module Dependency Graph
+
+```
+engine.py → storage.py, ast_utils.py, git_analyzer.py, test_mapper.py, impact.py, rwlock.py
+test_mapper.py → ast_utils.py
+impact.py → storage.py
+cli.py → engine.py, mcp_server.py, mcp_stdio.py
+mcp_server.py → engine.py
+mcp_stdio.py → engine.py
+```
+
+## 10 MCP Tools
+
+`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`
+
+Each wired through: engine.tool_*() → CLI subcommand, HTTP POST /call, stdio MCP.
