@@ -27,6 +27,10 @@ def create_parser():
         "--json", action="store_true", dest="json_output",
         help="Output results as JSON",
     )
+    shared.add_argument(
+        "--limit", type=int, default=None,
+        help="Maximum number of results to return",
+    )
 
     parser = argparse.ArgumentParser(
         prog="chisel",
@@ -110,6 +114,17 @@ def create_parser():
     p_gaps.add_argument("--directory", default=None,
                         help="Scope to a directory")
 
+    # record-result
+    p_record = sub.add_parser("record-result", parents=[shared],
+                              help="Record a test result (pass/fail)")
+    p_record.add_argument("test_id", help="Test ID")
+    p_record.add_argument("--passed", action="store_true", default=False,
+                          help="Mark test as passed")
+    p_record.add_argument("--failed", action="store_true", default=False,
+                          help="Mark test as failed")
+    p_record.add_argument("--duration", type=int, default=None,
+                          help="Duration in milliseconds")
+
     # serve
     p_serve = sub.add_parser("serve", parents=[shared],
                              help="Start HTTP server")
@@ -134,6 +149,13 @@ def _print_json(data):
     print(json.dumps(data, indent=2, default=str))
 
 
+def _limit(result, args):
+    """Apply --limit to list results."""
+    if args.limit is not None and isinstance(result, list):
+        return result[:args.limit]
+    return result
+
+
 
 # ------------------------------------------------------------------ #
 # Command handlers
@@ -156,7 +178,7 @@ def cmd_analyze(args):
 def cmd_impact(args):
     """Handle the 'impact' subcommand."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_impact(args.files)
+        result = _limit(engine.tool_impact(args.files), args)
         if args.json_output:
             _print_json(result)
         else:
@@ -172,7 +194,7 @@ def cmd_impact(args):
 def cmd_suggest_tests(args):
     """Handle the 'suggest-tests' subcommand."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_suggest_tests(args.file)
+        result = _limit(engine.tool_suggest_tests(args.file), args)
         if args.json_output:
             _print_json(result)
         else:
@@ -188,7 +210,7 @@ def cmd_suggest_tests(args):
 def cmd_churn(args):
     """Handle the 'churn' subcommand."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_churn(args.file, unit_name=args.unit)
+        result = _limit(engine.tool_churn(args.file, unit_name=args.unit), args)
         if args.json_output:
             _print_json(result)
         else:
@@ -206,7 +228,7 @@ def cmd_churn(args):
 def cmd_ownership(args):
     """Handle the 'ownership' subcommand."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_ownership(args.file)
+        result = _limit(engine.tool_ownership(args.file), args)
         if args.json_output:
             _print_json(result)
         else:
@@ -222,7 +244,7 @@ def cmd_ownership(args):
 def cmd_coupling(args):
     """Handle the 'coupling' subcommand."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_coupling(args.file, min_count=args.min_count)
+        result = _limit(engine.tool_coupling(args.file, min_count=args.min_count), args)
         if args.json_output:
             _print_json(result)
         else:
@@ -238,7 +260,7 @@ def cmd_coupling(args):
 def cmd_risk_map(args):
     """Handle the 'risk-map' subcommand."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_risk_map(directory=args.directory)
+        result = _limit(engine.tool_risk_map(directory=args.directory), args)
         if args.json_output:
             _print_json(result)
         else:
@@ -254,7 +276,7 @@ def cmd_risk_map(args):
 def cmd_stale_tests(args):
     """Handle the 'stale-tests' subcommand."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_stale_tests()
+        result = _limit(engine.tool_stale_tests(), args)
         if args.json_output:
             _print_json(result)
         else:
@@ -270,7 +292,7 @@ def cmd_stale_tests(args):
 def cmd_history(args):
     """Handle the 'history' subcommand."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_history(args.file)
+        result = _limit(engine.tool_history(args.file), args)
         if args.json_output:
             _print_json(result)
         else:
@@ -287,7 +309,7 @@ def cmd_history(args):
 def cmd_who_reviews(args):
     """Handle the 'who-reviews' subcommand."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_who_reviews(args.file)
+        result = _limit(engine.tool_who_reviews(args.file), args)
         if args.json_output:
             _print_json(result)
         else:
@@ -304,7 +326,7 @@ def cmd_who_reviews(args):
 def cmd_diff_impact(args):
     """Handle the 'diff-impact' subcommand."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_diff_impact(ref=args.ref)
+        result = _limit(engine.tool_diff_impact(ref=args.ref), args)
         if args.json_output:
             _print_json(result)
         else:
@@ -334,7 +356,7 @@ def cmd_update(args):
 def cmd_test_gaps(args):
     """Handle the 'test-gaps' subcommand."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_test_gaps(file_path=args.file, directory=args.directory)
+        result = _limit(engine.tool_test_gaps(file_path=args.file, directory=args.directory), args)
         if args.json_output:
             _print_json(result)
         else:
@@ -347,6 +369,21 @@ def cmd_test_gaps(args):
                     print(f"  {item['file_path']}:{item['name']} "
                           f"({item['unit_type']}, lines {item['line_start']}-{item['line_end']}"
                           f", churn: {churn})")
+        return result
+
+
+def cmd_record_result(args):
+    """Handle the 'record-result' subcommand."""
+    passed = args.passed or not args.failed  # default to passed if neither flag
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_record_result(
+            args.test_id, passed, duration_ms=args.duration,
+        )
+        if args.json_output:
+            _print_json(result)
+        else:
+            status = "PASSED" if passed else "FAILED"
+            print(f"Recorded: {args.test_id} — {status}")
         return result
 
 
@@ -390,6 +427,7 @@ _COMMANDS = {
     "diff-impact": cmd_diff_impact,
     "update": cmd_update,
     "test-gaps": cmd_test_gaps,
+    "record-result": cmd_record_result,
     "serve": cmd_serve,
     "serve-mcp": cmd_serve_mcp,
 }

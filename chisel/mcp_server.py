@@ -18,7 +18,7 @@ from chisel.engine import ChiselEngine
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------ #
-# Tool schemas — JSON Schema definitions for all 13 engine tools
+# Tool schemas — JSON Schema definitions for all 14 engine tools
 # ------------------------------------------------------------------ #
 
 _TOOL_SCHEMAS = {
@@ -180,6 +180,28 @@ _TOOL_SCHEMAS = {
             "required": ["file_path"],
         },
     },
+    "record_result": {
+        "name": "record_result",
+        "description": "Record a test result (pass/fail) for future prioritization.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "test_id": {
+                    "type": "string",
+                    "description": "The test ID (e.g. 'tests/test_app.py:test_foo').",
+                },
+                "passed": {
+                    "type": "boolean",
+                    "description": "Whether the test passed.",
+                },
+                "duration_ms": {
+                    "type": "integer",
+                    "description": "Optional test duration in milliseconds.",
+                },
+            },
+            "required": ["test_id", "passed"],
+        },
+    },
     "diff_impact": {
         "name": "diff_impact",
         "description": (
@@ -223,6 +245,10 @@ _TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Scope to a directory (file_path takes precedence).",
                 },
+                "exclude_tests": {
+                    "type": "boolean",
+                    "description": "Exclude units from test files (default: true).",
+                },
             },
             "required": [],
         },
@@ -246,8 +272,18 @@ _TOOL_DISPATCH = {
     "who_reviews": ("tool_who_reviews", ["file_path"]),
     "diff_impact": ("tool_diff_impact", ["ref"]),
     "update": ("tool_update", []),
-    "test_gaps": ("tool_test_gaps", ["file_path", "directory"]),
+    "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests"]),
+    "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
 }
+
+# Inject 'limit' parameter into all list-returning tool schemas.
+_LIMIT_PROP = {
+    "type": "integer",
+    "description": "Maximum number of results to return.",
+}
+for _name, _schema in _TOOL_SCHEMAS.items():
+    if _name not in ("analyze", "update", "record_result"):
+        _schema["parameters"]["properties"]["limit"] = _LIMIT_PROP
 
 
 def dispatch_tool(engine, tool_name, arguments):
@@ -262,8 +298,12 @@ def dispatch_tool(engine, tool_name, arguments):
             f"Unknown tool: {tool_name!r}. Available: {sorted(_TOOL_DISPATCH)}"
         )
     method_name, allowed_args = _TOOL_DISPATCH[tool_name]
+    limit = arguments.get("limit")
     kwargs = {k: v for k, v in arguments.items() if k in allowed_args and v is not None}
-    return getattr(engine, method_name)(**kwargs)
+    result = getattr(engine, method_name)(**kwargs)
+    if limit is not None and isinstance(result, list):
+        result = result[:int(limit)]
+    return result
 
 
 # ------------------------------------------------------------------ #

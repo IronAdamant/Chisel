@@ -53,12 +53,15 @@ mcp_server.py → engine.py
 mcp_stdio.py → engine.py, mcp_server.py
 ```
 
-## 13 MCP Tools
+## 14 MCP Tools
 
-`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`, `diff_impact`, `update`, `test_gaps`
+`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`, `diff_impact`, `update`, `test_gaps`, `record_result`
 
 Each wired through: engine.tool_*() → CLI subcommand, HTTP POST /call, stdio MCP.
 
-- **`diff_impact`**: Auto-detects changed files/functions from `git diff` and returns impacted tests. No manual file list needed.
+- **`diff_impact`**: Auto-detects changed files/functions from `git diff` and returns impacted tests. Branch-aware: on feature branches diffs against main; on main diffs against HEAD.
 - **`update`**: Incremental re-analysis — only re-processes changed files and new commits.
-- **`test_gaps`**: Finds code units with zero test coverage, prioritized by churn risk. Use after `analyze` to see what tests need writing.
+- **`test_gaps`**: Finds code units with zero test coverage, prioritized by churn risk. Excludes test files by default.
+- **`record_result`**: Records test pass/fail outcomes for future prioritization.
+- **`limit` parameter**: All list-returning tools accept `limit` to cap result size.
+- **Adaptive coupling threshold**: `max(3, total_commits // 4)` — scales with project maturity.

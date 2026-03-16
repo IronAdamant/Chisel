@@ -177,8 +177,14 @@ class ChiselEngine:
         with self.lock.read_lock():
             return self.impact.suggest_reviewers(file_path)
 
-    def tool_diff_impact(self, ref="HEAD"):
-        """MCP tool: auto-detect changes from git diff and return impacted tests."""
+    def tool_diff_impact(self, ref=None):
+        """MCP tool: auto-detect changes from git diff and return impacted tests.
+
+        If ref is not provided, auto-detects: on a feature branch diffs against
+        main/master; on main diffs against HEAD (unstaged changes).
+        """
+        if ref is None:
+            ref = self._detect_diff_base()
         changed_files = self.git.get_changed_files(ref)
         if not changed_files:
             return []
@@ -197,14 +203,42 @@ class ChiselEngine:
         """MCP tool: incremental re-analysis of changed files."""
         return self.update()
 
-    def tool_test_gaps(self, file_path=None, directory=None):
+    def tool_test_gaps(self, file_path=None, directory=None, exclude_tests=True):
         """MCP tool: find code units with no test coverage."""
         with self.lock.read_lock():
-            return self.impact.get_test_gaps(file_path, directory)
+            return self.impact.get_test_gaps(file_path, directory, exclude_tests)
+
+    def tool_record_result(self, test_id, passed, duration_ms=None):
+        """MCP tool: record a test result (pass/fail) for future prioritization."""
+        with self.lock.write_lock():
+            self.storage.record_test_result(test_id, passed, duration_ms)
+            return {"test_id": test_id, "passed": passed, "recorded": True}
 
     # ------------------------------------------------------------------ #
     # Shared internal helpers
     # ------------------------------------------------------------------ #
+
+    def _detect_diff_base(self):
+        """Auto-detect the best git ref for diff_impact.
+
+        On a feature branch, diffs against main/master for full branch impact.
+        On main/master, diffs against HEAD for unstaged changes.
+        """
+        try:
+            branch = self.git._run_git(
+                ["rev-parse", "--abbrev-ref", "HEAD"],
+            ).strip()
+            if branch in ("main", "master"):
+                return "HEAD"
+            for name in ("main", "master"):
+                try:
+                    self.git._run_git(["rev-parse", "--verify", name])
+                    return name
+                except RuntimeError:
+                    continue
+            return "HEAD"
+        except RuntimeError:
+            return "HEAD"
 
     def _find_changed_files(self, code_files, force=False):
         """Compare content hashes to identify changed code files.
@@ -293,7 +327,8 @@ class ChiselEngine:
                             fc["churn_score"],
                         )
 
-        co_changes = self.git.compute_co_changes(commits, min_count=3)
+        adaptive_min = max(3, len(commits) // 4)
+        co_changes = self.git.compute_co_changes(commits, min_count=adaptive_min)
         for cc in co_changes:
             self.storage.upsert_co_change(
                 cc["file_a"], cc["file_b"],

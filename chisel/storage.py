@@ -133,6 +133,16 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_blame_cache_hash ON blame_cache(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_churn_stats_file ON churn_stats(file_path);
                 CREATE INDEX IF NOT EXISTS idx_co_changes_file_b ON co_changes(file_b);
+
+                CREATE TABLE IF NOT EXISTS test_results (
+                    test_id TEXT,
+                    passed INTEGER NOT NULL,
+                    duration_ms INTEGER,
+                    recorded_at TEXT,
+                    PRIMARY KEY (test_id, recorded_at)
+                );
+                CREATE INDEX IF NOT EXISTS idx_test_results_test
+                    ON test_results(test_id);
             """)
 
     # --- Query helpers ---
@@ -395,8 +405,12 @@ class Storage:
     def delete_test_edges_by_test(self, test_id):
         self._execute("DELETE FROM test_edges WHERE test_id = ?", (test_id,))
 
-    def get_untested_code_units(self, file_path=None, directory=None):
+    def get_untested_code_units(self, file_path=None, directory=None,
+                               exclude_tests=True):
         """Find code units with no test edges, joined with churn data.
+
+        Args:
+            exclude_tests: If True, exclude units from test files.
 
         Returns list of dicts sorted by churn_score descending.
         """
@@ -409,18 +423,35 @@ class Storage:
                   LEFT JOIN churn_stats cs
                       ON cu.file_path = cs.file_path AND cs.unit_name = cu.name
                   WHERE te.code_id IS NULL"""
+        if exclude_tests:
+            base += (" AND cu.file_path NOT IN"
+                     " (SELECT DISTINCT file_path FROM test_units)")
+        params = ()
         if file_path:
-            return self._fetchall(
-                base + " AND cu.file_path = ? ORDER BY churn_score DESC",
-                (file_path,),
-            )
-        if directory:
+            base += " AND cu.file_path = ?"
+            params = (file_path,)
+        elif directory:
             prefix = directory.rstrip("/") + "/"
-            return self._fetchall(
-                base + " AND cu.file_path LIKE ? ORDER BY churn_score DESC",
-                (prefix + "%",),
-            )
-        return self._fetchall(base + " ORDER BY churn_score DESC")
+            base += " AND cu.file_path LIKE ?"
+            params = (prefix + "%",)
+        return self._fetchall(base + " ORDER BY churn_score DESC", params)
+
+    # --- test_results ---
+
+    def record_test_result(self, test_id, passed, duration_ms=None):
+        self._execute(
+            """INSERT INTO test_results (test_id, passed, duration_ms, recorded_at)
+               VALUES (?, ?, ?, ?)""",
+            (test_id, 1 if passed else 0, duration_ms, self._now()),
+        )
+
+    def get_test_results(self, test_id, limit=10):
+        return self._fetchall(
+            """SELECT test_id, passed, duration_ms, recorded_at
+               FROM test_results WHERE test_id = ?
+               ORDER BY recorded_at DESC LIMIT ?""",
+            (test_id, limit),
+        )
 
     # --- file_hashes ---
 
