@@ -92,6 +92,24 @@ def create_parser():
                            help="Suggest reviewers for a file")
     p_who.add_argument("file", help="File path")
 
+    # diff-impact
+    p_diff = sub.add_parser("diff-impact", parents=[shared],
+                            help="Auto-detect changes and show impacted tests")
+    p_diff.add_argument("--ref", default="HEAD",
+                        help="Git ref to diff against (default: HEAD)")
+
+    # update
+    sub.add_parser("update", parents=[shared],
+                   help="Incremental re-analysis of changed files")
+
+    # test-gaps
+    p_gaps = sub.add_parser("test-gaps", parents=[shared],
+                            help="Find code units with no test coverage")
+    p_gaps.add_argument("file", nargs="?", default=None,
+                        help="Scope to a single file")
+    p_gaps.add_argument("--directory", default=None,
+                        help="Scope to a directory")
+
     # serve
     p_serve = sub.add_parser("serve", parents=[shared],
                              help="Start HTTP server")
@@ -283,6 +301,55 @@ def cmd_who_reviews(args):
         return result
 
 
+def cmd_diff_impact(args):
+    """Handle the 'diff-impact' subcommand."""
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_diff_impact(ref=args.ref)
+        if args.json_output:
+            _print_json(result)
+        else:
+            if not result:
+                print("No impacted tests (or no changes detected).")
+            else:
+                print("Impacted tests from diff:")
+                for item in result:
+                    print(f"  {item['test_id']}  ({item['reason']})")
+        return result
+
+
+def cmd_update(args):
+    """Handle the 'update' subcommand."""
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_update()
+        if args.json_output:
+            _print_json(result)
+        else:
+            print("Incremental update complete:")
+            for key, value in result.items():
+                label = key.replace("_", " ").title()
+                print(f"  {label}: {value}")
+        return result
+
+
+def cmd_test_gaps(args):
+    """Handle the 'test-gaps' subcommand."""
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_test_gaps(file_path=args.file, directory=args.directory)
+        if args.json_output:
+            _print_json(result)
+        else:
+            if not result:
+                print("No untested code units found.")
+            else:
+                print(f"Untested code units ({len(result)}):")
+                for item in result:
+                    churn = item.get("churn_score", 0)
+                    print(f"  {item['file_path']}:{item['name']} "
+                          f"({item['unit_type']}, lines {item['line_start']}-{item['line_end']}"
+                          f", churn: {churn})")
+        return result
+
+
 def cmd_serve(args):
     """Handle the 'serve' subcommand."""
     from chisel.mcp_server import ChiselMCPServer
@@ -320,6 +387,9 @@ _COMMANDS = {
     "stale-tests": cmd_stale_tests,
     "history": cmd_history,
     "who-reviews": cmd_who_reviews,
+    "diff-impact": cmd_diff_impact,
+    "update": cmd_update,
+    "test-gaps": cmd_test_gaps,
     "serve": cmd_serve,
     "serve-mcp": cmd_serve_mcp,
 }

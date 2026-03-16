@@ -395,6 +395,33 @@ class Storage:
     def delete_test_edges_by_test(self, test_id):
         self._execute("DELETE FROM test_edges WHERE test_id = ?", (test_id,))
 
+    def get_untested_code_units(self, file_path=None, directory=None):
+        """Find code units with no test edges, joined with churn data.
+
+        Returns list of dicts sorted by churn_score descending.
+        """
+        base = """SELECT cu.id, cu.file_path, cu.name, cu.unit_type,
+                         cu.line_start, cu.line_end,
+                         COALESCE(cs.churn_score, 0) AS churn_score,
+                         COALESCE(cs.commit_count, 0) AS commit_count
+                  FROM code_units cu
+                  LEFT JOIN test_edges te ON cu.id = te.code_id
+                  LEFT JOIN churn_stats cs
+                      ON cu.file_path = cs.file_path AND cs.unit_name = cu.name
+                  WHERE te.code_id IS NULL"""
+        if file_path:
+            return self._fetchall(
+                base + " AND cu.file_path = ? ORDER BY churn_score DESC",
+                (file_path,),
+            )
+        if directory:
+            prefix = directory.rstrip("/") + "/"
+            return self._fetchall(
+                base + " AND cu.file_path LIKE ? ORDER BY churn_score DESC",
+                (prefix + "%",),
+            )
+        return self._fetchall(base + " ORDER BY churn_score DESC")
+
     # --- file_hashes ---
 
     def set_file_hash(self, file_path, content_hash):

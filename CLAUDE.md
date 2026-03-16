@@ -53,8 +53,12 @@ mcp_server.py → engine.py
 mcp_stdio.py → engine.py, mcp_server.py
 ```
 
-## 10 MCP Tools
+## 13 MCP Tools
 
-`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`
+`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`, `diff_impact`, `update`, `test_gaps`
 
 Each wired through: engine.tool_*() → CLI subcommand, HTTP POST /call, stdio MCP.
+
+- **`diff_impact`**: Auto-detects changed files/functions from `git diff` and returns impacted tests. No manual file list needed.
+- **`update`**: Incremental re-analysis — only re-processes changed files and new commits.
+- **`test_gaps`**: Finds code units with zero test coverage, prioritized by churn risk. Use after `analyze` to see what tests need writing.

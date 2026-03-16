@@ -149,6 +149,47 @@ class TestToolMethods:
         result = engine.tool_who_reviews("app.py")
         assert isinstance(result, list)
 
+    def test_tool_update(self, engine):
+        engine.analyze()
+        result = engine.tool_update()
+        assert isinstance(result, dict)
+        assert "files_updated" in result
+        assert "new_commits" in result
+
+    def test_tool_test_gaps(self, engine):
+        engine.analyze()
+        result = engine.tool_test_gaps()
+        assert isinstance(result, list)
+        # format_output has no test coverage in the fixture
+        names = [item["name"] for item in result]
+        assert "format_output" in names
+
+    def test_tool_test_gaps_scoped_by_file(self, engine):
+        engine.analyze()
+        result = engine.tool_test_gaps(file_path="app.py")
+        assert isinstance(result, list)
+        # All results should be from app.py
+        for item in result:
+            assert item["file_path"] == "app.py"
+
+    def test_tool_diff_impact_no_changes(self, engine):
+        engine.analyze()
+        # After analyze with clean working tree, no diff changes
+        result = engine.tool_diff_impact()
+        assert isinstance(result, list)
+
+    def test_tool_diff_impact_with_changes(self, engine, git_project):
+        engine.analyze()
+        # Create unstaged changes
+        src = git_project / "app.py"
+        content = src.read_text()
+        src.write_text(content + "\ndef brand_new(): pass\n")
+        result = engine.tool_diff_impact()
+        assert isinstance(result, list)
+        # Should find tests impacted by app.py changes
+        if result:
+            assert all("test_id" in item for item in result)
+
 
 # ------------------------------------------------------------------ #
 # Unit tests for private methods

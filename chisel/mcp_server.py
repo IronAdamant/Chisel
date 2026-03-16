@@ -18,7 +18,7 @@ from chisel.engine import ChiselEngine
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------ #
-# Tool schemas — JSON Schema definitions for all 10 engine tools
+# Tool schemas — JSON Schema definitions for all 13 engine tools
 # ------------------------------------------------------------------ #
 
 _TOOL_SCHEMAS = {
@@ -180,6 +180,53 @@ _TOOL_SCHEMAS = {
             "required": ["file_path"],
         },
     },
+    "diff_impact": {
+        "name": "diff_impact",
+        "description": (
+            "Auto-detect changed files and functions from git diff, "
+            "then return impacted tests. No need to specify files manually."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "Git ref to diff against (default: HEAD for unstaged changes).",
+                },
+            },
+            "required": [],
+        },
+    },
+    "update": {
+        "name": "update",
+        "description": "Incremental re-analysis — only re-process changed files and new commits since last analysis.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    "test_gaps": {
+        "name": "test_gaps",
+        "description": (
+            "Find code units (functions, classes) with no test coverage, "
+            "prioritized by churn risk. Use after analyze to see what new tests need to be written."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Scope to a single file.",
+                },
+                "directory": {
+                    "type": "string",
+                    "description": "Scope to a directory (file_path takes precedence).",
+                },
+            },
+            "required": [],
+        },
+    },
 }
 
 # ------------------------------------------------------------------ #
@@ -197,6 +244,9 @@ _TOOL_DISPATCH = {
     "stale_tests": ("tool_stale_tests", []),
     "history": ("tool_history", ["file_path"]),
     "who_reviews": ("tool_who_reviews", ["file_path"]),
+    "diff_impact": ("tool_diff_impact", ["ref"]),
+    "update": ("tool_update", []),
+    "test_gaps": ("tool_test_gaps", ["file_path", "directory"]),
 }
 
 

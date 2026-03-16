@@ -177,6 +177,31 @@ class ChiselEngine:
         with self.lock.read_lock():
             return self.impact.suggest_reviewers(file_path)
 
+    def tool_diff_impact(self, ref="HEAD"):
+        """MCP tool: auto-detect changes from git diff and return impacted tests."""
+        changed_files = self.git.get_changed_files(ref)
+        if not changed_files:
+            return []
+        functions = []
+        for fp in changed_files:
+            try:
+                functions.extend(self.git.get_changed_functions(fp, ref))
+            except RuntimeError:
+                pass
+        with self.lock.read_lock():
+            return self.impact.get_impacted_tests(
+                changed_files, functions if functions else None,
+            )
+
+    def tool_update(self):
+        """MCP tool: incremental re-analysis of changed files."""
+        return self.update()
+
+    def tool_test_gaps(self, file_path=None, directory=None):
+        """MCP tool: find code units with no test coverage."""
+        with self.lock.read_lock():
+            return self.impact.get_test_gaps(file_path, directory)
+
     # ------------------------------------------------------------------ #
     # Shared internal helpers
     # ------------------------------------------------------------------ #

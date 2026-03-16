@@ -170,6 +170,26 @@ class ImpactAnalyzer:
         ]
 
     # ------------------------------------------------------------------ #
+    # Test gap detection
+    # ------------------------------------------------------------------ #
+
+    def get_test_gaps(self, file_path=None, directory=None):
+        """Find code units that have no test coverage, prioritized by churn.
+
+        Args:
+            file_path: Scope to a single file.
+            directory: Scope to a directory (file_path takes precedence).
+
+        Returns:
+            List of dicts: {id, file_path, name, unit_type, line_start,
+                            line_end, churn_score, commit_count}
+        """
+        return self.storage.get_untested_code_units(
+            file_path=file_path,
+            directory=directory if not file_path else None,
+        )
+
+    # ------------------------------------------------------------------ #
     # Risk map
     # ------------------------------------------------------------------ #
 

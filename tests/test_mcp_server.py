@@ -92,7 +92,7 @@ class TestToolDiscovery:
 
     def test_tool_count(self, base_url):
         status, body = _request(base_url, "GET", "/tools")
-        assert len(body["tools"]) == 10
+        assert len(body["tools"]) == 13
 
 
 # ------------------------------------------------------------------ #

@@ -585,6 +585,49 @@ class TestMain:
         engine.tool_who_reviews.assert_called_once_with("app.py")
 
     @patch("chisel.cli.ChiselEngine")
+    def test_main_diff_impact(self, mock_cls):
+        engine = _make_engine_mock()
+        engine.tool_diff_impact.return_value = []
+        mock_cls.return_value = engine
+
+        main(["diff-impact", "--project-dir", "/tmp/p"])
+
+        engine.tool_diff_impact.assert_called_once_with(ref="HEAD")
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_main_update(self, mock_cls):
+        engine = _make_engine_mock()
+        engine.tool_update.return_value = {"files_updated": 0, "new_commits": 0}
+        mock_cls.return_value = engine
+
+        main(["update", "--project-dir", "/tmp/p"])
+
+        engine.tool_update.assert_called_once()
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_main_test_gaps(self, mock_cls):
+        engine = _make_engine_mock()
+        engine.tool_test_gaps.return_value = []
+        mock_cls.return_value = engine
+
+        main(["test-gaps", "--project-dir", "/tmp/p"])
+
+        engine.tool_test_gaps.assert_called_once_with(file_path=None, directory=None)
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_main_test_gaps_with_file(self, mock_cls):
+        engine = _make_engine_mock()
+        engine.tool_test_gaps.return_value = [
+            {"file_path": "app.py", "name": "foo", "unit_type": "function",
+             "line_start": 1, "line_end": 5, "churn_score": 2.0},
+        ]
+        mock_cls.return_value = engine
+
+        main(["test-gaps", "--project-dir", "/tmp/p", "app.py"])
+
+        engine.tool_test_gaps.assert_called_once_with(file_path="app.py", directory=None)
+
+    @patch("chisel.cli.ChiselEngine")
     def test_main_analyze_force(self, mock_cls):
         engine = _make_engine_mock()
         engine.tool_analyze.return_value = {}
