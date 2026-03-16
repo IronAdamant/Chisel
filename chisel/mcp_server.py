@@ -67,17 +67,13 @@ _TOOL_SCHEMAS = {
     },
     "suggest_tests": {
         "name": "suggest_tests",
-        "description": "Suggest tests to run for a given file, optionally with a diff.",
+        "description": "Suggest tests to run for a given file.",
         "parameters": {
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
                     "description": "Path to the file to suggest tests for.",
-                },
-                "diff": {
-                    "type": "string",
-                    "description": "Optional unified diff content.",
                 },
             },
             "required": ["file_path"],
@@ -193,7 +189,7 @@ _TOOL_SCHEMAS = {
 _TOOL_DISPATCH = {
     "analyze": ("tool_analyze", ["directory", "force"]),
     "impact": ("tool_impact", ["files", "functions"]),
-    "suggest_tests": ("tool_suggest_tests", ["file_path", "diff"]),
+    "suggest_tests": ("tool_suggest_tests", ["file_path"]),
     "churn": ("tool_churn", ["file_path", "unit_name"]),
     "ownership": ("tool_ownership", ["file_path"]),
     "coupling": ("tool_coupling", ["file_path", "min_count"]),
@@ -202,6 +198,22 @@ _TOOL_DISPATCH = {
     "history": ("tool_history", ["file_path"]),
     "who_reviews": ("tool_who_reviews", ["file_path"]),
 }
+
+
+def dispatch_tool(engine, tool_name, arguments):
+    """Dispatch a tool call to the appropriate engine method.
+
+    Shared by the HTTP and stdio MCP servers so dispatch logic is not
+    duplicated.  Raises ``ValueError`` for unknown tools, ``TypeError``
+    for invalid arguments.
+    """
+    if tool_name not in _TOOL_DISPATCH:
+        raise ValueError(
+            f"Unknown tool: {tool_name!r}. Available: {sorted(_TOOL_DISPATCH)}"
+        )
+    method_name, allowed_args = _TOOL_DISPATCH[tool_name]
+    kwargs = {k: v for k, v in arguments.items() if k in allowed_args and v is not None}
+    return getattr(engine, method_name)(**kwargs)
 
 
 # ------------------------------------------------------------------ #
@@ -257,7 +269,11 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
     def _read_json_body(self):
         """Read and parse the JSON request body. Returns None on failure."""
-        content_length = int(self.headers.get("Content-Length", 0))
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (ValueError, TypeError):
+            self._send_error_json(400, "Invalid Content-Length header")
+            return None
         if content_length == 0:
             self._send_error_json(400, "Empty request body")
             return None
@@ -282,27 +298,16 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             self._send_error_json(400, "Missing 'tool' field in request body")
             return
 
-        if tool_name not in _TOOL_DISPATCH:
-            self._send_error_json(
-                404, f"Unknown tool: {tool_name!r}. Available: {sorted(_TOOL_DISPATCH)}"
-            )
-            return
-
         arguments = body.get("arguments", {})
         if not isinstance(arguments, dict):
             self._send_error_json(400, "'arguments' must be a JSON object")
             return
 
-        method_name, allowed_args = _TOOL_DISPATCH[tool_name]
-        engine = self.server.engine  # type: ChiselEngine
-
-        # Filter arguments to only those the method accepts
-        kwargs = {k: v for k, v in arguments.items() if k in allowed_args and v is not None}
-
         try:
-            method = getattr(engine, method_name)
-            result = method(**kwargs)
+            result = dispatch_tool(self.server.engine, tool_name, arguments)
             self._send_json({"result": result})
+        except ValueError as exc:
+            self._send_error_json(404, str(exc))
         except TypeError as exc:
             self._send_error_json(400, f"Invalid arguments for tool {tool_name!r}: {exc}")
         except Exception as exc:

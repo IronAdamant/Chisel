@@ -87,8 +87,8 @@ class TestGetImpactedTests:
     def test_sorted_by_score(self, storage, analyzer):
         _seed_basic_data(storage)
         result = analyzer.get_impacted_tests(["app.py"])
-        if len(result) >= 2:
-            assert result[0]["score"] >= result[1]["score"]
+        assert len(result) >= 2
+        assert result[0]["score"] >= result[1]["score"]
 
 
 class TestRiskScore:
@@ -161,8 +161,8 @@ class TestRiskMap:
     def test_risk_map_sorted_desc(self, storage, analyzer):
         _seed_basic_data(storage)
         risk_map = analyzer.get_risk_map()
-        if len(risk_map) >= 2:
-            assert risk_map[0]["risk_score"] >= risk_map[1]["risk_score"]
+        assert len(risk_map) >= 2
+        assert risk_map[0]["risk_score"] >= risk_map[1]["risk_score"]
 
     def test_risk_map_with_directory(self, storage, analyzer):
         _seed_basic_data(storage)

@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from chisel.ast_utils import _SKIP_DIRS, compute_file_hash, extract_code_units
+from chisel.ast_utils import _EXTENSION_MAP, _SKIP_DIRS, compute_file_hash, extract_code_units
 from chisel.git_analyzer import GitAnalyzer
 from chisel.impact import ImpactAnalyzer
 from chisel.rwlock import RWLock
@@ -11,11 +11,8 @@ from chisel.storage import Storage
 from chisel.test_mapper import TestMapper
 
 
-# File extensions we scan for code units.
-_CODE_EXTENSIONS = {
-    ".py", ".pyw", ".js", ".jsx", ".mjs", ".cjs",
-    ".ts", ".tsx", ".go", ".rs",
-}
+# Derived from ast_utils._EXTENSION_MAP to avoid duplication.
+_CODE_EXTENSIONS = frozenset(_EXTENSION_MAP)
 
 class ChiselEngine:
     """High-level orchestrator for Chisel operations.
@@ -37,7 +34,10 @@ class ChiselEngine:
     # ------------------------------------------------------------------ #
 
     def analyze(self, directory=None, force=False):
-        """Full rebuild of all data under a write lock.
+        """Full rebuild of all data.
+
+        Git subprocess calls and file scanning run outside the write lock.
+        Only storage mutations hold the lock, minimizing read-blocking time.
 
         Args:
             directory: Optional subdirectory to scope code scanning.
@@ -47,8 +47,17 @@ class ChiselEngine:
         Returns:
             Dict summarizing the analysis results.
         """
+        # Phase 1: collect data (no lock needed — only reads from git/filesystem)
+        code_files = self._scan_code_files(directory=directory)
+
+        commits = None
+        try:
+            commits = self.git.parse_log()
+        except RuntimeError:
+            pass  # Not a git repo or git not available
+
+        # Phase 2: write to storage under lock
         with self.lock.write_lock():
-            code_files = self._scan_code_files(directory=directory)
             changed_files = self._find_changed_files(code_files, force=force)
 
             stats = {
@@ -60,15 +69,11 @@ class ChiselEngine:
                 "commits_parsed": 0,
             }
 
-            try:
-                commits = self.git.parse_log()
+            if commits is not None:
                 stats["commits_parsed"] = len(commits)
                 self._store_commits(commits)
                 self._compute_churn_and_coupling(commits, code_files)
-            except RuntimeError:
-                pass  # Not a git repo or git not available
-
-            self._store_blame(changed_files)
+                self._store_blame(changed_files)
 
             test_units, tf_count, edge_count = self._discover_and_build_edges(code_files)
             stats["test_files_found"] = tf_count
@@ -91,7 +96,6 @@ class ChiselEngine:
             code_files = self._scan_code_files()
             changed_files = self._find_changed_files(code_files)
             self._parse_and_store_code_units(changed_files)
-            self._store_blame(changed_files)
 
             stats = {"files_updated": len(changed_files), "new_commits": 0}
 
@@ -107,6 +111,7 @@ class ChiselEngine:
                 # Recompute churn/coupling when anything changed
                 if new_commits or changed_files:
                     self._compute_churn_and_coupling(all_commits, code_files)
+                self._store_blame(changed_files)
             except RuntimeError:
                 pass
 
@@ -126,10 +131,10 @@ class ChiselEngine:
         with self.lock.read_lock():
             return self.impact.get_impacted_tests(files, functions)
 
-    def tool_suggest_tests(self, file_path, diff=None):
+    def tool_suggest_tests(self, file_path):
         """MCP tool: suggest tests for a file."""
         with self.lock.read_lock():
-            return self.impact.suggest_tests(file_path, diff)
+            return self.impact.suggest_tests(file_path)
 
     def tool_churn(self, file_path, unit_name=None):
         """MCP tool: get churn stats. Always returns a list."""
@@ -278,6 +283,12 @@ class ChiselEngine:
         test_files = self.mapper.discover_test_files()
         all_test_units = []
         for tf in test_files:
+            rel_tf = os.path.relpath(tf, self.project_dir)
+            # Remove stale test units/edges before reinserting
+            old_tests = self.storage.get_test_units_by_file(rel_tf)
+            for ot in old_tests:
+                self.storage.delete_test_edges_by_test(ot["id"])
+            self.storage.delete_test_units_by_file(rel_tf)
             for tu in self.mapper.parse_test_file(tf):
                 self.storage.upsert_test_unit(
                     tu["id"], tu["file_path"], tu["name"], tu["framework"],

@@ -11,6 +11,28 @@ _BLAME_HEADER_RE = re.compile(
     r"^([0-9a-f]{40})\s+\d+\s+(\d+)(?:\s+\d+)?"
 )
 
+_HUNK_RE = re.compile(r"^@@\s+[^@]+\s+@@\s*(.+)$")
+# Patterns to extract the bare name from common declaration styles
+_FUNC_NAME_RE = re.compile(
+    r"(?:def|func|fn|function|async\s+def|async\s+function)"
+    r"\s+(?:\([^)]*\)\s+)?(\w+)"
+)
+
+
+def _parse_iso_date(date_str):
+    """Parse an ISO 8601 date string into a timezone-aware datetime.
+
+    Handles the ``Z`` suffix (not supported by ``fromisoformat`` before
+    Python 3.11) and ensures the result is always timezone-aware (defaults
+    to UTC when no timezone info is present).
+    """
+    if date_str.endswith("Z"):
+        date_str = date_str[:-1] + "+00:00"
+    dt = datetime.fromisoformat(date_str)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
 
 class GitAnalyzer:
     """Parses git log/blame output and computes churn, ownership, and co-change metrics.
@@ -80,7 +102,11 @@ class GitAnalyzer:
         return self._parse_log_output(raw)
 
     def _parse_log_output(self, raw):
-        """Parse raw git log --numstat output into commit dicts."""
+        """Parse raw git log output into commit dicts.
+
+        Handles both ``--numstat`` output (tab-separated stats) and
+        inline diff output from ``git log -L`` (counts ``+``/``-`` lines).
+        """
         commits = []
         blocks = raw.split(self._COMMIT_SEP)
         for block in blocks:
@@ -102,22 +128,36 @@ class GitAnalyzer:
                 "message": parts[4],
                 "files": [],
             }
+            # Count diff +/- lines as fallback for git log -L output
+            diff_ins = 0
+            diff_del = 0
+            has_numstat = False
             for line in lines[1:]:
                 line = line.strip()
                 if not line:
                     continue
                 file_parts = line.split("\t")
-                if len(file_parts) != 3:
-                    continue
-                ins_str, del_str, path = file_parts
-                # Binary files show '-' for insertions/deletions
-                insertions = int(ins_str) if ins_str != "-" else 0
-                deletions = int(del_str) if del_str != "-" else 0
-                commit["files"].append({
-                    "path": path,
-                    "insertions": insertions,
-                    "deletions": deletions,
-                })
+                if len(file_parts) == 3:
+                    ins_str, del_str, path = file_parts
+                    # Binary files show '-' for insertions/deletions
+                    insertions = int(ins_str) if ins_str != "-" else 0
+                    deletions = int(del_str) if del_str != "-" else 0
+                    commit["files"].append({
+                        "path": path,
+                        "insertions": insertions,
+                        "deletions": deletions,
+                    })
+                    has_numstat = True
+                elif not has_numstat:
+                    # Count unified diff +/- lines (skip --- and +++ headers)
+                    if line.startswith("+") and not line.startswith("+++"):
+                        diff_ins += 1
+                    elif line.startswith("-") and not line.startswith("---"):
+                        diff_del += 1
+            # Store diff-counted stats when numstat wasn't available
+            if not has_numstat and (diff_ins or diff_del):
+                commit["_diff_insertions"] = diff_ins
+                commit["_diff_deletions"] = diff_del
             commits.append(commit)
         return commits
 
@@ -259,13 +299,20 @@ class GitAnalyzer:
         # When unit_name is provided, commits are pre-filtered by git log -L.
         # Use all commits directly instead of filtering by file path.
         if unit_name:
-            matching = [(c, {"insertions": 0, "deletions": 0}) for c in commits]
-            # Still try to find file-level stats if available
-            for i, (commit, _) in enumerate(matching):
-                for f in commit.get("files", []):
+            matching = []
+            for c in commits:
+                file_stats = {"insertions": 0, "deletions": 0}
+                # Try numstat first, then fall back to diff-counted stats
+                for f in c.get("files", []):
                     if f["path"] == file_path:
-                        matching[i] = (commit, f)
+                        file_stats = f
                         break
+                else:
+                    file_stats = {
+                        "insertions": c.get("_diff_insertions", 0),
+                        "deletions": c.get("_diff_deletions", 0),
+                    }
+                matching.append((c, file_stats))
         else:
             matching = []
             for commit in commits:
@@ -289,20 +336,19 @@ class GitAnalyzer:
         total_del = 0
         churn_score = 0.0
         last_changed = None
+        last_changed_date = None
 
         for commit, file_info in matching:
             authors.add(commit["author"])
             total_ins += file_info["insertions"]
             total_del += file_info["deletions"]
 
-            commit_date = datetime.fromisoformat(commit["date"])
-            # Ensure timezone-aware comparison
-            if commit_date.tzinfo is None:
-                commit_date = commit_date.replace(tzinfo=timezone.utc)
+            commit_date = _parse_iso_date(commit["date"])
             days_since = max((now - commit_date).total_seconds() / 86400, 0)
             churn_score += 1.0 / (1.0 + days_since)
 
-            if last_changed is None or commit["date"] > last_changed:
+            if last_changed_date is None or commit_date > last_changed_date:
+                last_changed_date = commit_date
                 last_changed = commit["date"]
 
         return {
@@ -372,17 +418,21 @@ class GitAnalyzer:
                 file_a, file_b, co_commit_count, last_co_commit
         """
         pair_counts = defaultdict(int)
-        pair_last = {}
+        pair_last = {}  # (file_a, file_b) -> (date_str, parsed_datetime)
 
         for commit in commits:
             paths = sorted({f["path"] for f in commit.get("files", [])})
             if len(paths) < 2:
                 continue
+            try:
+                commit_dt = _parse_iso_date(commit["date"])
+            except (ValueError, TypeError):
+                commit_dt = None
             for a, b in combinations(paths, 2):
                 pair_counts[(a, b)] += 1
                 existing = pair_last.get((a, b))
-                if existing is None or commit["date"] > existing:
-                    pair_last[(a, b)] = commit["date"]
+                if commit_dt and (existing is None or commit_dt > existing[1]):
+                    pair_last[(a, b)] = (commit["date"], commit_dt)
 
         result = []
         for (a, b), count in pair_counts.items():
@@ -391,7 +441,7 @@ class GitAnalyzer:
                     "file_a": a,
                     "file_b": b,
                     "co_commit_count": count,
-                    "last_co_commit": pair_last[(a, b)],
+                    "last_co_commit": pair_last.get((a, b), (None,))[0],
                 })
 
         result.sort(key=lambda x: x["co_commit_count"], reverse=True)
@@ -432,20 +482,14 @@ class GitAnalyzer:
         We extract the text after the second @@ and parse out just the
         bare function/method name (e.g. ``def foo(...)`` -> ``foo``).
         """
-        hunk_re = re.compile(r"^@@\s+[^@]+\s+@@\s*(.+)$")
-        # Patterns to extract the bare name from common declaration styles
-        name_re = re.compile(
-            r"(?:def|func|fn|function|async\s+def|async\s+function)"
-            r"\s+(?:\([^)]*\)\s+)?(\w+)"
-        )
         functions = []
         seen = set()
         for line in raw.split("\n"):
-            m = hunk_re.match(line)
+            m = _HUNK_RE.match(line)
             if m:
                 context = m.group(1).strip()
                 # Try to extract just the function name
-                nm = name_re.search(context)
+                nm = _FUNC_NAME_RE.search(context)
                 func_name = nm.group(1) if nm else context
                 if func_name and func_name not in seen:
                     seen.add(func_name)

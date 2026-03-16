@@ -195,7 +195,7 @@ class TestMapper:
 def _is_test_name(name, framework):
     """Check if a code unit name looks like a test."""
     # Strip class prefix for methods like MyClass.test_foo
-    base = name.rsplit(".", 1)[-1] if "." in name else name
+    base = name.rsplit(".", 1)[-1]
     if framework == "pytest":
         return base.startswith("test_") or base.startswith("Test")
     if framework in ("jest", "playwright"):

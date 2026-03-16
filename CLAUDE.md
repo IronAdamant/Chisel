@@ -7,15 +7,14 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 ```
 chisel/
   engine.py         — Orchestrator. Owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock.
-  storage.py        — SQLite persistence (WAL mode). 9 tables: code_units, test_units, test_edges,
-                      commits, commit_files, blame_cache, co_changes, churn_stats, file_hashes.
+  storage.py        — SQLite persistence (WAL mode). 9 tables. Uses _fetchall/_fetchone/_execute helpers.
   ast_utils.py      — Multi-lang AST extraction (Python/JS/TS/Go/Rust). CodeUnit dataclass.
   git_analyzer.py   — Parses git log/blame via subprocess. Computes churn, ownership, co-change.
   test_mapper.py    — Test file discovery, framework detection, dependency extraction, edge building.
   impact.py         — Impact analysis, risk scoring, stale test detection, reviewer suggestions.
   cli.py            — argparse CLI (12 subcommands). Entry point: chisel.cli:main
-  mcp_server.py     — HTTP MCP server (GET /tools, /health, POST /call). ThreadedHTTPServer.
-  mcp_stdio.py      — stdio MCP server (requires optional 'mcp' package).
+  mcp_server.py     — HTTP MCP server (GET /tools, /health, POST /call). ThreadedHTTPServer. dispatch_tool() shared by both servers.
+  mcp_stdio.py      — stdio MCP server (requires optional 'mcp' package). _configure_server() for engine lifecycle mgmt.
   rwlock.py         — Read-write lock for concurrent access.
 ```
 
@@ -30,7 +29,8 @@ chisel/
 - **Incremental updates**: File content hashes tracked in `file_hashes` table.
 - **Persistent connection**: Storage uses a single SQLite connection (`check_same_thread=False`) with RWLock for thread safety.
 - **Ownership vs Reviewers**: `ownership` = blame-based (who wrote the code, `role: "original_author"`). `who_reviews` = commit-activity-based (who maintains it, `role: "suggested_reviewer"`).
-- **Shared constants**: `_SKIP_DIRS` lives in `ast_utils.py`, imported by `engine.py` and `test_mapper.py`.
+- **Shared constants**: `_SKIP_DIRS` and `_EXTENSION_MAP` live in `ast_utils.py`. `_CODE_EXTENSIONS` in `engine.py` is derived from `_EXTENSION_MAP`.
+- **Shared dispatch**: `dispatch_tool()` in `mcp_server.py` is used by both HTTP and stdio servers to avoid duplicated dispatch logic.
 
 ## Dev Commands
 

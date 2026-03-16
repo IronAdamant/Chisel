@@ -43,6 +43,7 @@ class TestDatabaseInit:
         expected_indexes = {
             "idx_code_units_file", "idx_test_units_file", "idx_test_edges_code",
             "idx_commit_files_file", "idx_blame_cache_hash", "idx_churn_stats_file",
+            "idx_co_changes_file_b",
         }
         conn = sqlite3.connect(str(storage.db_path))
         indexes = {

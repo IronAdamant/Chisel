@@ -9,6 +9,11 @@ class RWLock:
 
     Uses write-preference: when a writer is waiting, new readers are blocked
     to prevent writer starvation. Existing readers finish normally.
+
+    Note: ``write_lock`` is **not** reentrant — the same thread must not
+    attempt to acquire it while already holding it, or it will deadlock.
+    ``read_lock`` is reentrant only because it increments a counter without
+    tracking thread identity.
     """
 
     def __init__(self):

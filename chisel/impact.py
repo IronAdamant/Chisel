@@ -3,7 +3,7 @@
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from chisel.git_analyzer import GitAnalyzer
+from chisel.git_analyzer import GitAnalyzer, _parse_iso_date
 
 
 class ImpactAnalyzer:
@@ -28,53 +28,43 @@ class ImpactAnalyzer:
         Returns:
             List of dicts: {test_id, file_path, name, reason, score}
         """
-        changed_functions = changed_functions or []
         impacted = {}
 
-        # Direct hits: tests that have edges to code_units in changed files
+        # Direct hits via single JOIN query per file
         for file_path in changed_files:
-            code_units = self.storage.get_code_units_by_file(file_path)
-            for cu in code_units:
-                # If specific functions changed, only include matching units
-                if changed_functions and cu["name"] not in changed_functions:
-                    continue
-                edges = self.storage.get_edges_for_code(cu["id"])
-                for edge in edges:
-                    test = self.storage.get_test_unit(edge["test_id"])
-                    if test:
-                        new_score = edge["weight"]
-                        if test["id"] not in impacted or new_score > impacted[test["id"]]["score"]:
-                            impacted[test["id"]] = {
-                                "test_id": test["id"],
-                                "file_path": test["file_path"],
-                                "name": test["name"],
-                                "reason": f"direct edge to {cu['name']} ({edge['edge_type']})",
-                                "score": new_score,
-                            }
+            hits = self.storage.get_direct_impacted_tests(
+                file_path, changed_functions or None,
+            )
+            for hit in hits:
+                new_score = hit["weight"]
+                if hit["test_id"] not in impacted or new_score > impacted[hit["test_id"]]["score"]:
+                    impacted[hit["test_id"]] = {
+                        "test_id": hit["test_id"],
+                        "file_path": hit["file_path"],
+                        "name": hit["name"],
+                        "reason": f"direct edge to {hit['code_name']} ({hit['edge_type']})",
+                        "score": new_score,
+                    }
 
         # Transitive hits via co-change coupling
         for file_path in changed_files:
             co_changes = self.storage.get_co_changes(file_path, min_count=3)
             for cc in co_changes:
                 coupled_file = cc["file_b"] if cc["file_a"] == file_path else cc["file_a"]
-                coupled_units = self.storage.get_code_units_by_file(coupled_file)
-                for cu in coupled_units:
-                    edges = self.storage.get_edges_for_code(cu["id"])
-                    for edge in edges:
-                        test = self.storage.get_test_unit(edge["test_id"])
-                        if test:
-                            new_score = edge["weight"] * 0.5
-                            if test["id"] not in impacted or new_score > impacted[test["id"]]["score"]:
-                                impacted[test["id"]] = {
-                                    "test_id": test["id"],
-                                    "file_path": test["file_path"],
-                                    "name": test["name"],
-                                    "reason": (
-                                        f"co-change coupling: {file_path} <-> {coupled_file}"
-                                        f" ({cc['co_commit_count']} commits)"
-                                    ),
-                                    "score": new_score,
-                                }
+                hits = self.storage.get_direct_impacted_tests(coupled_file)
+                for hit in hits:
+                    new_score = hit["weight"] * 0.5
+                    if hit["test_id"] not in impacted or new_score > impacted[hit["test_id"]]["score"]:
+                        impacted[hit["test_id"]] = {
+                            "test_id": hit["test_id"],
+                            "file_path": hit["file_path"],
+                            "name": hit["name"],
+                            "reason": (
+                                f"co-change coupling: {file_path} <-> {coupled_file}"
+                                f" ({cc['co_commit_count']} commits)"
+                            ),
+                            "score": new_score,
+                        }
 
         result = list(impacted.values())
         result.sort(key=lambda x: x["score"], reverse=True)
@@ -98,7 +88,7 @@ class ImpactAnalyzer:
         churn_norm = min(churn_raw / 5.0, 1.0)  # normalize: 5.0 score => 1.0
 
         # Coupling breadth component (0-1)
-        co_changes = self.storage.get_co_changes(file_path, min_count=1)
+        co_changes = self.storage.get_co_changes(file_path, min_count=3)
         coupling_norm = min(len(co_changes) / 10.0, 1.0)  # 10+ coupled files => 1.0
 
         # Test coverage component (0-1, inverted)
@@ -138,12 +128,8 @@ class ImpactAnalyzer:
     # Test suggestions
     # ------------------------------------------------------------------ #
 
-    def suggest_tests(self, file_path, diff=None):
+    def suggest_tests(self, file_path):
         """Suggest tests to run for a changed file, ordered by relevance.
-
-        Args:
-            file_path: The changed file path.
-            diff: Optional diff text (unused for now, reserved for future).
 
         Returns:
             List of dicts: {test_id, file_path, name, relevance, reason}
@@ -167,23 +153,21 @@ class ImpactAnalyzer:
     def detect_stale_tests(self):
         """Find tests whose edges point to code units that no longer exist.
 
+        Uses a single LEFT JOIN query instead of per-test lookups.
+
         Returns:
             List of dicts: {test_id, test_name, missing_code_id, edge_type}
         """
-        stale = []
-        all_tests = self.storage.get_all_test_units()
-        for test in all_tests:
-            edges = self.storage.get_edges_for_test(test["id"])
-            for edge in edges:
-                code_unit = self.storage.get_code_unit(edge["code_id"])
-                if code_unit is None:
-                    stale.append({
-                        "test_id": test["id"],
-                        "test_name": test["name"],
-                        "missing_code_id": edge["code_id"],
-                        "edge_type": edge["edge_type"],
-                    })
-        return stale
+        rows = self.storage.get_stale_test_edges()
+        return [
+            {
+                "test_id": r["test_id"],
+                "test_name": r["test_name"],
+                "missing_code_id": r["code_id"],
+                "edge_type": r["edge_type"],
+            }
+            for r in rows
+        ]
 
     # ------------------------------------------------------------------ #
     # Risk map
@@ -198,10 +182,7 @@ class ImpactAnalyzer:
         all_churn = self.storage.get_all_churn_stats()
         files = set()
         for stat in all_churn:
-            if directory:
-                if stat["file_path"].startswith(directory):
-                    files.add(stat["file_path"])
-            else:
+            if not directory or stat["file_path"].startswith(directory):
                 files.add(stat["file_path"])
 
         risk_map = []
@@ -273,9 +254,7 @@ class ImpactAnalyzer:
                 info["last_date"] = commit["date"]
             # Weight by recency: recent commits count more
             try:
-                cdate = datetime.fromisoformat(commit["date"])
-                if cdate.tzinfo is None:
-                    cdate = cdate.replace(tzinfo=timezone.utc)
+                cdate = _parse_iso_date(commit["date"])
                 days = max((now - cdate).total_seconds() / 86400, 0)
                 info["score"] += 1.0 / (1.0 + days)
             except (ValueError, TypeError):
@@ -287,9 +266,7 @@ class ImpactAnalyzer:
             days_since = None
             if info["last_date"]:
                 try:
-                    last = datetime.fromisoformat(info["last_date"])
-                    if last.tzinfo is None:
-                        last = last.replace(tzinfo=timezone.utc)
+                    last = _parse_iso_date(info["last_date"])
                     days_since = round((now - last).total_seconds() / 86400)
                 except (ValueError, TypeError):
                     pass
@@ -318,23 +295,6 @@ def _latest_hash(storage, file_path):
     return storage.get_file_hash(file_path) or ""
 
 
-def _aggregate_blame_lines(blame_data):
-    """Aggregate blame blocks into per-author line counts.
-
-    Returns:
-        (lines_by_author dict, emails dict, total_lines int)
-    """
-    lines_by_author = defaultdict(int)
-    emails = {}
-    total = 0
-    for block in blame_data:
-        n = block["line_end"] - block["line_start"] + 1
-        lines_by_author[block["author"]] += n
-        emails[block["author"]] = block.get("author_email", "")
-        total += n
-    return lines_by_author, emails, total
-
-
 def _author_concentration(blame_data):
     """Compute author concentration (0 = many authors, 1 = single author).
 
@@ -343,7 +303,12 @@ def _author_concentration(blame_data):
     if not blame_data:
         return 1.0  # no data => assume concentrated
 
-    lines_by_author, _, total = _aggregate_blame_lines(blame_data)
+    lines_by_author = defaultdict(int)
+    total = 0
+    for block in blame_data:
+        n = block["line_end"] - block["line_start"] + 1
+        lines_by_author[block["author"]] += n
+        total += n
 
     if total == 0:
         return 1.0

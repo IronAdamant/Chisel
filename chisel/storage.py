@@ -132,200 +132,193 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_commit_files_file ON commit_files(file_path);
                 CREATE INDEX IF NOT EXISTS idx_blame_cache_hash ON blame_cache(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_churn_stats_file ON churn_stats(file_path);
+                CREATE INDEX IF NOT EXISTS idx_co_changes_file_b ON co_changes(file_b);
             """)
 
-    def _now(self):
+    # --- Query helpers ---
+
+    @staticmethod
+    def _now():
         return datetime.now(timezone.utc).isoformat()
+
+    def _fetchall(self, sql, params=()):
+        """Execute a query and return all rows as dicts."""
+        with self._conn as conn:
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    def _fetchone(self, sql, params=()):
+        """Execute a query and return a single row as dict, or None."""
+        with self._conn as conn:
+            row = conn.execute(sql, params).fetchone()
+            return dict(row) if row else None
+
+    def _execute(self, sql, params=()):
+        """Execute a write query within a transaction."""
+        with self._conn as conn:
+            conn.execute(sql, params)
 
     # --- code_units ---
 
     def upsert_code_unit(self, id, file_path, name, unit_type,
                          line_start=None, line_end=None, content_hash=None):
-        with self._conn as conn:
-            conn.execute(
-                """INSERT INTO code_units (id, file_path, name, unit_type,
-                   line_start, line_end, content_hash, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                   file_path=excluded.file_path, name=excluded.name,
-                   unit_type=excluded.unit_type, line_start=excluded.line_start,
-                   line_end=excluded.line_end, content_hash=excluded.content_hash,
-                   updated_at=excluded.updated_at""",
-                (id, file_path, name, unit_type, line_start, line_end,
-                 content_hash, self._now()),
-            )
+        self._execute(
+            """INSERT INTO code_units (id, file_path, name, unit_type,
+               line_start, line_end, content_hash, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+               file_path=excluded.file_path, name=excluded.name,
+               unit_type=excluded.unit_type, line_start=excluded.line_start,
+               line_end=excluded.line_end, content_hash=excluded.content_hash,
+               updated_at=excluded.updated_at""",
+            (id, file_path, name, unit_type, line_start, line_end,
+             content_hash, self._now()),
+        )
 
     def get_code_unit(self, id):
-        with self._conn as conn:
-            row = conn.execute("SELECT * FROM code_units WHERE id = ?", (id,)).fetchone()
-            return dict(row) if row else None
+        return self._fetchone("SELECT * FROM code_units WHERE id = ?", (id,))
 
     def get_code_units_by_file(self, file_path):
-        with self._conn as conn:
-            rows = conn.execute(
-                "SELECT * FROM code_units WHERE file_path = ?", (file_path,)
-            ).fetchall()
-            return [dict(r) for r in rows]
+        return self._fetchall(
+            "SELECT * FROM code_units WHERE file_path = ?", (file_path,),
+        )
 
     def delete_code_units_by_file(self, file_path):
-        with self._conn as conn:
-            conn.execute("DELETE FROM code_units WHERE file_path = ?", (file_path,))
+        self._execute("DELETE FROM code_units WHERE file_path = ?", (file_path,))
 
     # --- test_units ---
 
     def upsert_test_unit(self, id, file_path, name, framework=None,
                          line_start=None, line_end=None, content_hash=None):
-        with self._conn as conn:
-            conn.execute(
-                """INSERT INTO test_units (id, file_path, name, framework,
-                   line_start, line_end, content_hash, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                   file_path=excluded.file_path, name=excluded.name,
-                   framework=excluded.framework, line_start=excluded.line_start,
-                   line_end=excluded.line_end, content_hash=excluded.content_hash,
-                   updated_at=excluded.updated_at""",
-                (id, file_path, name, framework, line_start, line_end,
-                 content_hash, self._now()),
-            )
+        self._execute(
+            """INSERT INTO test_units (id, file_path, name, framework,
+               line_start, line_end, content_hash, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+               file_path=excluded.file_path, name=excluded.name,
+               framework=excluded.framework, line_start=excluded.line_start,
+               line_end=excluded.line_end, content_hash=excluded.content_hash,
+               updated_at=excluded.updated_at""",
+            (id, file_path, name, framework, line_start, line_end,
+             content_hash, self._now()),
+        )
 
     def get_test_unit(self, id):
-        with self._conn as conn:
-            row = conn.execute("SELECT * FROM test_units WHERE id = ?", (id,)).fetchone()
-            return dict(row) if row else None
+        return self._fetchone("SELECT * FROM test_units WHERE id = ?", (id,))
+
+    def get_test_units_by_file(self, file_path):
+        return self._fetchall(
+            "SELECT * FROM test_units WHERE file_path = ?", (file_path,),
+        )
 
     def get_all_test_units(self):
-        with self._conn as conn:
-            rows = conn.execute("SELECT * FROM test_units").fetchall()
-            return [dict(r) for r in rows]
+        return self._fetchall("SELECT * FROM test_units")
 
     # --- test_edges ---
 
     def upsert_test_edge(self, test_id, code_id, edge_type, weight=1.0):
-        with self._conn as conn:
-            conn.execute(
-                """INSERT INTO test_edges (test_id, code_id, edge_type, weight)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(test_id, code_id, edge_type) DO UPDATE SET
-                   weight=excluded.weight""",
-                (test_id, code_id, edge_type, weight),
-            )
+        self._execute(
+            """INSERT INTO test_edges (test_id, code_id, edge_type, weight)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(test_id, code_id, edge_type) DO UPDATE SET
+               weight=excluded.weight""",
+            (test_id, code_id, edge_type, weight),
+        )
 
     def get_edges_for_test(self, test_id):
-        with self._conn as conn:
-            rows = conn.execute(
-                "SELECT * FROM test_edges WHERE test_id = ?", (test_id,)
-            ).fetchall()
-            return [dict(r) for r in rows]
+        return self._fetchall(
+            "SELECT * FROM test_edges WHERE test_id = ?", (test_id,),
+        )
 
     def get_edges_for_code(self, code_id):
-        with self._conn as conn:
-            rows = conn.execute(
-                "SELECT * FROM test_edges WHERE code_id = ?", (code_id,)
-            ).fetchall()
-            return [dict(r) for r in rows]
+        return self._fetchall(
+            "SELECT * FROM test_edges WHERE code_id = ?", (code_id,),
+        )
 
     # --- commits ---
 
     def upsert_commit(self, hash, author=None, author_email=None, date=None, message=None):
-        with self._conn as conn:
-            conn.execute(
-                """INSERT INTO commits (hash, author, author_email, date, message)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(hash) DO UPDATE SET
-                   author=excluded.author, author_email=excluded.author_email,
-                   date=excluded.date, message=excluded.message""",
-                (hash, author, author_email, date, message),
-            )
+        self._execute(
+            """INSERT INTO commits (hash, author, author_email, date, message)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(hash) DO UPDATE SET
+               author=excluded.author, author_email=excluded.author_email,
+               date=excluded.date, message=excluded.message""",
+            (hash, author, author_email, date, message),
+        )
 
     def get_commit(self, hash):
-        with self._conn as conn:
-            row = conn.execute("SELECT * FROM commits WHERE hash = ?", (hash,)).fetchone()
-            return dict(row) if row else None
+        return self._fetchone("SELECT * FROM commits WHERE hash = ?", (hash,))
 
     def get_latest_commit_date(self):
-        with self._conn as conn:
-            row = conn.execute(
-                "SELECT MAX(date) as max_date FROM commits"
-            ).fetchone()
-            return row["max_date"]
+        row = self._fetchone("SELECT MAX(date) as max_date FROM commits")
+        return row["max_date"] if row else None
 
     # --- commit_files ---
 
     def upsert_commit_file(self, commit_hash, file_path, insertions=0, deletions=0):
-        with self._conn as conn:
-            conn.execute(
-                """INSERT INTO commit_files (commit_hash, file_path, insertions, deletions)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(commit_hash, file_path) DO UPDATE SET
-                   insertions=excluded.insertions, deletions=excluded.deletions""",
-                (commit_hash, file_path, insertions, deletions),
-            )
+        self._execute(
+            """INSERT INTO commit_files (commit_hash, file_path, insertions, deletions)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(commit_hash, file_path) DO UPDATE SET
+               insertions=excluded.insertions, deletions=excluded.deletions""",
+            (commit_hash, file_path, insertions, deletions),
+        )
 
     def get_commits_for_file(self, file_path):
-        with self._conn as conn:
-            rows = conn.execute(
-                """SELECT c.*, cf.insertions, cf.deletions FROM commits c
-                   JOIN commit_files cf ON c.hash = cf.commit_hash
-                   WHERE cf.file_path = ? ORDER BY c.date DESC""",
-                (file_path,),
-            ).fetchall()
-            return [dict(r) for r in rows]
+        return self._fetchall(
+            """SELECT c.*, cf.insertions, cf.deletions FROM commits c
+               JOIN commit_files cf ON c.hash = cf.commit_hash
+               WHERE cf.file_path = ? ORDER BY c.date DESC""",
+            (file_path,),
+        )
 
     # --- blame_cache ---
 
     def store_blame(self, file_path, line_start, line_end, commit_hash,
                     author, author_email, date, content_hash):
-        with self._conn as conn:
-            conn.execute(
-                """INSERT INTO blame_cache (file_path, line_start, line_end,
-                   commit_hash, author, author_email, date, content_hash)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(file_path, line_start) DO UPDATE SET
-                   line_end=excluded.line_end, commit_hash=excluded.commit_hash,
-                   author=excluded.author, author_email=excluded.author_email,
-                   date=excluded.date, content_hash=excluded.content_hash""",
-                (file_path, line_start, line_end, commit_hash,
-                 author, author_email, date, content_hash),
-            )
+        self._execute(
+            """INSERT INTO blame_cache (file_path, line_start, line_end,
+               commit_hash, author, author_email, date, content_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(file_path, line_start) DO UPDATE SET
+               line_end=excluded.line_end, commit_hash=excluded.commit_hash,
+               author=excluded.author, author_email=excluded.author_email,
+               date=excluded.date, content_hash=excluded.content_hash""",
+            (file_path, line_start, line_end, commit_hash,
+             author, author_email, date, content_hash),
+        )
 
     def get_blame(self, file_path, content_hash):
-        with self._conn as conn:
-            rows = conn.execute(
-                """SELECT * FROM blame_cache
-                   WHERE file_path = ? AND content_hash = ?
-                   ORDER BY line_start""",
-                (file_path, content_hash),
-            ).fetchall()
-            return [dict(r) for r in rows]
+        return self._fetchall(
+            """SELECT * FROM blame_cache
+               WHERE file_path = ? AND content_hash = ?
+               ORDER BY line_start""",
+            (file_path, content_hash),
+        )
 
     def invalidate_blame(self, file_path):
-        with self._conn as conn:
-            conn.execute("DELETE FROM blame_cache WHERE file_path = ?", (file_path,))
+        self._execute("DELETE FROM blame_cache WHERE file_path = ?", (file_path,))
 
     # --- co_changes ---
 
     def upsert_co_change(self, file_a, file_b, co_commit_count, last_co_commit=None):
         a, b = sorted([file_a, file_b])
-        with self._conn as conn:
-            conn.execute(
-                """INSERT INTO co_changes (file_a, file_b, co_commit_count, last_co_commit)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(file_a, file_b) DO UPDATE SET
-                   co_commit_count=excluded.co_commit_count,
-                   last_co_commit=excluded.last_co_commit""",
-                (a, b, co_commit_count, last_co_commit),
-            )
+        self._execute(
+            """INSERT INTO co_changes (file_a, file_b, co_commit_count, last_co_commit)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(file_a, file_b) DO UPDATE SET
+               co_commit_count=excluded.co_commit_count,
+               last_co_commit=excluded.last_co_commit""",
+            (a, b, co_commit_count, last_co_commit),
+        )
 
     def get_co_changes(self, file_path, min_count=3):
-        with self._conn as conn:
-            rows = conn.execute(
-                """SELECT * FROM co_changes
-                   WHERE (file_a = ? OR file_b = ?) AND co_commit_count >= ?
-                   ORDER BY co_commit_count DESC""",
-                (file_path, file_path, min_count),
-            ).fetchall()
-            return [dict(r) for r in rows]
+        return self._fetchall(
+            """SELECT * FROM co_changes
+               WHERE (file_a = ? OR file_b = ?) AND co_commit_count >= ?
+               ORDER BY co_commit_count DESC""",
+            (file_path, file_path, min_count),
+        )
 
     # --- churn_stats ---
 
@@ -333,61 +326,97 @@ class Storage:
                           distinct_authors=0, total_insertions=0, total_deletions=0,
                           last_changed=None, churn_score=0.0):
         unit_name = unit_name or ""
-        with self._conn as conn:
-            conn.execute(
-                """INSERT INTO churn_stats (file_path, unit_name, commit_count,
-                   distinct_authors, total_insertions, total_deletions,
-                   last_changed, churn_score)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(file_path, unit_name) DO UPDATE SET
-                   commit_count=excluded.commit_count,
-                   distinct_authors=excluded.distinct_authors,
-                   total_insertions=excluded.total_insertions,
-                   total_deletions=excluded.total_deletions,
-                   last_changed=excluded.last_changed,
-                   churn_score=excluded.churn_score""",
-                (file_path, unit_name, commit_count, distinct_authors,
-                 total_insertions, total_deletions, last_changed, churn_score),
-            )
+        self._execute(
+            """INSERT INTO churn_stats (file_path, unit_name, commit_count,
+               distinct_authors, total_insertions, total_deletions,
+               last_changed, churn_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(file_path, unit_name) DO UPDATE SET
+               commit_count=excluded.commit_count,
+               distinct_authors=excluded.distinct_authors,
+               total_insertions=excluded.total_insertions,
+               total_deletions=excluded.total_deletions,
+               last_changed=excluded.last_changed,
+               churn_score=excluded.churn_score""",
+            (file_path, unit_name, commit_count, distinct_authors,
+             total_insertions, total_deletions, last_changed, churn_score),
+        )
 
     def get_churn_stat(self, file_path, unit_name=None):
         unit_name = unit_name or ""
-        with self._conn as conn:
-            row = conn.execute(
-                "SELECT * FROM churn_stats WHERE file_path = ? AND unit_name = ?",
-                (file_path, unit_name),
-            ).fetchone()
-            return dict(row) if row else None
+        return self._fetchone(
+            "SELECT * FROM churn_stats WHERE file_path = ? AND unit_name = ?",
+            (file_path, unit_name),
+        )
 
     def get_all_churn_stats(self, file_path=None):
-        with self._conn as conn:
-            if file_path:
-                rows = conn.execute(
-                    "SELECT * FROM churn_stats WHERE file_path = ? ORDER BY churn_score DESC",
-                    (file_path,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM churn_stats ORDER BY churn_score DESC"
-                ).fetchall()
-            return [dict(r) for r in rows]
+        sql = "SELECT * FROM churn_stats"
+        params = ()
+        if file_path:
+            sql += " WHERE file_path = ?"
+            params = (file_path,)
+        sql += " ORDER BY churn_score DESC"
+        return self._fetchall(sql, params)
+
+    def get_stale_test_edges(self):
+        """Find test edges that point to code units that no longer exist."""
+        return self._fetchall(
+            """SELECT te.test_id, tu.name AS test_name,
+                      te.code_id, te.edge_type
+               FROM test_edges te
+               JOIN test_units tu ON te.test_id = tu.id
+               LEFT JOIN code_units cu ON te.code_id = cu.id
+               WHERE cu.id IS NULL""",
+        )
+
+    def get_direct_impacted_tests(self, file_path, changed_functions=None):
+        """Find tests with edges to code units in a file, via a single JOIN."""
+        if changed_functions is not None and len(changed_functions) > 0:
+            placeholders = ",".join("?" for _ in changed_functions)
+            return self._fetchall(
+                f"""SELECT tu.id AS test_id, tu.file_path,
+                           tu.name, cu.name AS code_name,
+                           te.edge_type, te.weight
+                    FROM code_units cu
+                    JOIN test_edges te ON cu.id = te.code_id
+                    JOIN test_units tu ON te.test_id = tu.id
+                    WHERE cu.file_path = ? AND cu.name IN ({placeholders})""",
+                (file_path, *changed_functions),
+            )
+        if changed_functions is not None:
+            # Explicit empty list means no functions changed — return nothing
+            return []
+        return self._fetchall(
+            """SELECT tu.id AS test_id, tu.file_path,
+                      tu.name, cu.name AS code_name,
+                      te.edge_type, te.weight
+               FROM code_units cu
+               JOIN test_edges te ON cu.id = te.code_id
+               JOIN test_units tu ON te.test_id = tu.id
+               WHERE cu.file_path = ?""",
+            (file_path,),
+        )
+
+    def delete_test_units_by_file(self, file_path):
+        self._execute("DELETE FROM test_units WHERE file_path = ?", (file_path,))
+
+    def delete_test_edges_by_test(self, test_id):
+        self._execute("DELETE FROM test_edges WHERE test_id = ?", (test_id,))
 
     # --- file_hashes ---
 
     def set_file_hash(self, file_path, content_hash):
-        with self._conn as conn:
-            conn.execute(
-                """INSERT INTO file_hashes (file_path, content_hash, updated_at)
-                   VALUES (?, ?, ?)
-                   ON CONFLICT(file_path) DO UPDATE SET
-                   content_hash=excluded.content_hash, updated_at=excluded.updated_at""",
-                (file_path, content_hash, self._now()),
-            )
+        self._execute(
+            """INSERT INTO file_hashes (file_path, content_hash, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(file_path) DO UPDATE SET
+               content_hash=excluded.content_hash, updated_at=excluded.updated_at""",
+            (file_path, content_hash, self._now()),
+        )
 
     def get_file_hash(self, file_path):
-        with self._conn as conn:
-            row = conn.execute(
-                "SELECT content_hash FROM file_hashes WHERE file_path = ?",
-                (file_path,),
-            ).fetchone()
-            return row["content_hash"] if row else None
+        row = self._fetchone(
+            "SELECT content_hash FROM file_hashes WHERE file_path = ?",
+            (file_path,),
+        )
+        return row["content_hash"] if row else None

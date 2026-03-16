@@ -339,7 +339,9 @@ _RS_ENUM_RE = re.compile(
     r"^\s*(?:pub(?:\s*\(\s*\w+\s*\))?\s+)?enum\s+(?P<name>[A-Za-z_]\w*)",
 )
 _RS_IMPL_RE = re.compile(
-    r"^\s*impl(?:\s*<[^>]*>)?\s+(?P<name>[A-Za-z_]\w*(?:\s*<[^>]*>)?)",
+    r"^\s*impl(?:\s*<[^>]*>)?\s+"
+    r"(?:[A-Za-z_]\w*(?:\s*<[^>]*>)?\s+for\s+)?"
+    r"(?P<name>[A-Za-z_]\w*(?:\s*<[^>]*>)?)",
 )
 
 
@@ -401,7 +403,4 @@ def extract_code_units(file_path: str, content: str) -> List[CodeUnit]:
     lang = detect_language(file_path)
     if lang is None:
         return []
-    extractor = _EXTRACTORS.get(lang)
-    if extractor is None:
-        return []
-    return extractor(file_path, content)
+    return _EXTRACTORS[lang](file_path, content)

@@ -19,11 +19,11 @@ import pytest
 class TestSharedImports:
     """Verify that mcp_stdio re-uses dispatch tables from mcp_server."""
 
-    def test_tool_dispatch_is_same_object_as_mcp_server(self):
-        """_TOOL_DISPATCH should be imported from mcp_server, not duplicated."""
-        from chisel.mcp_stdio import _TOOL_DISPATCH as stdio_dispatch
-        from chisel.mcp_server import _TOOL_DISPATCH as server_dispatch
-        assert stdio_dispatch is server_dispatch
+    def test_dispatch_tool_is_same_object_as_mcp_server(self):
+        """dispatch_tool should be imported from mcp_server, not duplicated."""
+        from chisel.mcp_stdio import dispatch_tool as stdio_fn
+        from chisel.mcp_server import dispatch_tool as server_fn
+        assert stdio_fn is server_fn
 
     def test_tool_schemas_is_same_object_as_mcp_server(self):
         """_TOOL_SCHEMAS should be imported from mcp_server, not duplicated."""

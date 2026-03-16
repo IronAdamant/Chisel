@@ -27,7 +27,44 @@ except ImportError:
     _MCP_AVAILABLE = False
 
 from chisel.engine import ChiselEngine
-from chisel.mcp_server import _TOOL_DISPATCH, _TOOL_SCHEMAS
+from chisel.mcp_server import _TOOL_SCHEMAS, dispatch_tool
+
+
+def _configure_server(engine):
+    """Register all Chisel tools on an MCP Server instance.
+
+    Factored out of ``create_server`` so that ``_run_server`` can manage
+    the engine lifecycle independently (ensuring it is closed on exit).
+    """
+    server = Server("chisel")
+
+    @server.list_tools()
+    async def list_tools():
+        """Return all Chisel tool definitions as MCP Tool objects."""
+        return [
+            Tool(
+                name=name,
+                description=schema["description"],
+                inputSchema=schema["parameters"],
+            )
+            for name, schema in _TOOL_SCHEMAS.items()
+        ]
+
+    @server.call_tool()
+    async def call_tool(name: str, arguments: dict):
+        """Dispatch an MCP tool call to the appropriate engine method."""
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, lambda: dispatch_tool(engine, name, arguments),
+            )
+        except Exception as exc:
+            return [TextContent(type="text", text=f"Error: {exc}")]
+
+        text = json.dumps(result, indent=2, default=str)
+        return [TextContent(type="text", text=text)]
+
+    return server
 
 
 def create_server(storage_dir=None, project_dir=None):
@@ -50,68 +87,31 @@ def create_server(storage_dir=None, project_dir=None):
         project_dir = os.getcwd()
 
     engine = ChiselEngine(project_dir, storage_dir=storage_dir)
-    server = Server("chisel")
-
-    # -- list_tools ---------------------------------------------------- #
-
-    @server.list_tools()
-    async def list_tools():
-        """Return all Chisel tool definitions as MCP Tool objects."""
-        tools = []
-        for name, schema in _TOOL_SCHEMAS.items():
-            tools.append(
-                Tool(
-                    name=name,
-                    description=schema["description"],
-                    inputSchema=schema["parameters"],
-                )
-            )
-        return tools
-
-    # -- call_tool ----------------------------------------------------- #
-
-    @server.call_tool()
-    async def call_tool(name: str, arguments: dict):
-        """Dispatch an MCP tool call to the appropriate engine method."""
-        if name not in _TOOL_DISPATCH:
-            raise ValueError(
-                f"Unknown tool: {name!r}. Available: {sorted(_TOOL_DISPATCH)}"
-            )
-
-        method_name, allowed_args = _TOOL_DISPATCH[name]
-        kwargs = {
-            k: v for k, v in arguments.items()
-            if k in allowed_args and v is not None
-        }
-
-        try:
-            method = getattr(engine, method_name)
-            # Run the synchronous engine method in a thread to avoid
-            # blocking the async event loop.
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, lambda: method(**kwargs))
-        except Exception as exc:
-            return [TextContent(type="text", text=f"Error: {exc}")]
-
-        text = json.dumps(result, indent=2, default=str)
-        return [TextContent(type="text", text=text)]
-
-    return server
+    return _configure_server(engine)
 
 
 async def _run_server():
     """Start the stdio MCP server and run until the client disconnects."""
-    project_dir = os.environ.get("CHISEL_PROJECT_DIR", os.getcwd())
-    storage_dir = os.environ.get("CHISEL_STORAGE_DIR", None)
+    project_dir = os.environ.get("CHISEL_PROJECT_DIR")
+    storage_dir = os.environ.get("CHISEL_STORAGE_DIR")
 
-    server = create_server(storage_dir=storage_dir, project_dir=project_dir)
+    if not _MCP_AVAILABLE:
+        raise RuntimeError("The 'mcp' package is not installed.")
 
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
-        )
+    if project_dir is None:
+        project_dir = os.getcwd()
+
+    engine = ChiselEngine(project_dir, storage_dir=storage_dir)
+    try:
+        server = _configure_server(engine)
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options(),
+            )
+    finally:
+        engine.close()
 
 
 def main():
