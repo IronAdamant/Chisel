@@ -613,6 +613,32 @@ class TestCoChangeIntegration:
         assert pair["co_commit_count"] == 2
 
 
+class TestGetFunctionLog:
+    """Integration tests for get_function_log (git log -L)."""
+
+    def test_function_log_returns_commits(self, analyzer):
+        # greet() was modified in all 3 commits
+        commits = analyzer.get_function_log("hello.py", "greet")
+        assert len(commits) >= 2  # at least the modifications
+
+    def test_function_log_different_functions(self, analyzer):
+        # farewell() was added in commit 2 and modified in commit 3
+        commits = analyzer.get_function_log("hello.py", "farewell")
+        assert len(commits) >= 1
+
+    def test_function_log_nonexistent_function(self, analyzer):
+        commits = analyzer.get_function_log("hello.py", "nonexistent_func")
+        assert commits == []
+
+    def test_unit_level_churn(self, analyzer):
+        func_commits = analyzer.get_function_log("hello.py", "greet")
+        churn = GitAnalyzer.compute_churn(
+            func_commits, "hello.py", unit_name="greet",
+        )
+        assert churn["commit_count"] >= 2
+        assert churn["churn_score"] > 0
+
+
 class TestGetChangedFiles:
     """Integration tests for get_changed_files."""
 

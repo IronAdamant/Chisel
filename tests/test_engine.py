@@ -134,6 +134,13 @@ class TestAnalyze:
         assert stat is not None
         assert stat["commit_count"] >= 1
 
+    def test_analyze_creates_unit_level_churn(self, engine):
+        engine.analyze()
+        # process_data is a function in app.py, should have unit-level churn
+        stat = engine.storage.get_churn_stat("app.py", "process_data")
+        assert stat is not None
+        assert stat["commit_count"] >= 1
+
     def test_analyze_creates_blame(self, engine):
         engine.analyze()
         file_hash = engine.storage.get_file_hash("app.py")

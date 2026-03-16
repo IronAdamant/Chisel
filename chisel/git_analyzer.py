@@ -207,17 +207,40 @@ class GitAnalyzer:
     # churn computation
     # ------------------------------------------------------------------ #
 
+    def get_function_log(self, file_path, func_name):
+        """Get commits that touched a specific function using git log -L.
+
+        Args:
+            file_path: Path to the file (relative to repo root).
+            func_name: Function/method name to search for.
+
+        Returns:
+            List of commit dicts (same format as parse_log).
+        """
+        try:
+            raw = self._run_git([
+                "log", f"--format={self._LOG_FORMAT}",
+                f"-L:{func_name}:{file_path}",
+            ])
+        except RuntimeError:
+            return []
+        return self._parse_log_output(raw)
+
     @staticmethod
     def compute_churn(commits, file_path, unit_name=None, now=None):
         """Compute churn metrics for a file (or function within a file).
 
         Churn score formula: sum(1 / (1 + days_since_commit))
 
+        When unit_name is provided and commits were obtained via
+        get_function_log(), each commit is counted directly (no file
+        path filtering needed since git log -L already scoped them).
+
         Args:
-            commits: List of commit dicts (from parse_log).
+            commits: List of commit dicts (from parse_log or get_function_log).
             file_path: File path to compute churn for.
-            unit_name: Optional function/class name to filter by (not yet
-                       implemented — requires git log -L support).
+            unit_name: Optional function/class name. When set, all provided
+                       commits are assumed to be relevant (pre-filtered).
             now: Optional datetime for testing (defaults to utcnow).
 
         Returns:
@@ -227,12 +250,23 @@ class GitAnalyzer:
         if now is None:
             now = datetime.now(timezone.utc)
 
-        matching = []
-        for commit in commits:
-            for f in commit.get("files", []):
-                if f["path"] == file_path:
-                    matching.append((commit, f))
-                    break
+        # When unit_name is provided, commits are pre-filtered by git log -L.
+        # Use all commits directly instead of filtering by file path.
+        if unit_name:
+            matching = [(c, {"insertions": 0, "deletions": 0}) for c in commits]
+            # Still try to find file-level stats if available
+            for i, (commit, _) in enumerate(matching):
+                for f in commit.get("files", []):
+                    if f["path"] == file_path:
+                        matching[i] = (commit, f)
+                        break
+        else:
+            matching = []
+            for commit in commits:
+                for f in commit.get("files", []):
+                    if f["path"] == file_path:
+                        matching.append((commit, f))
+                        break
 
         if not matching:
             return {

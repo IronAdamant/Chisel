@@ -130,7 +130,7 @@ class ChiselEngine:
                             commit["hash"], f["path"], f["insertions"], f["deletions"],
                         )
 
-                # Churn stats for all tracked files
+                # Churn stats for all tracked files (file-level + unit-level)
                 for fpath in code_files:
                     rel = os.path.relpath(fpath, self.project_dir)
                     churn = self.git.compute_churn(commits, rel)
@@ -139,6 +139,22 @@ class ChiselEngine:
                         churn["total_insertions"], churn["total_deletions"],
                         churn["last_changed"], churn["churn_score"],
                     )
+                    # Unit-level churn via git log -L
+                    for cu in self.storage.get_code_units_by_file(rel):
+                        if cu["unit_type"] in ("function", "async_function"):
+                            # Strip class prefix for git log -L (it uses bare names)
+                            bare_name = cu["name"].rsplit(".", 1)[-1]
+                            func_commits = self.git.get_function_log(rel, bare_name)
+                            if func_commits:
+                                fc = self.git.compute_churn(
+                                    func_commits, rel, unit_name=cu["name"],
+                                )
+                                self.storage.upsert_churn_stat(
+                                    rel, cu["name"], fc["commit_count"],
+                                    fc["distinct_authors"], fc["total_insertions"],
+                                    fc["total_deletions"], fc["last_changed"],
+                                    fc["churn_score"],
+                                )
 
                 # Co-change coupling
                 co_changes = self.git.compute_co_changes(commits, min_count=3)
