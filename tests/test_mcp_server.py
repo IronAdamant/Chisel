@@ -5,37 +5,12 @@ a temporary git repository.
 """
 
 import json
-import os
-import subprocess
 import urllib.request
 import urllib.error
 
 import pytest
 
 from chisel.mcp_server import ChiselMCPServer, _TOOL_SCHEMAS
-
-
-# ------------------------------------------------------------------ #
-# Helpers
-# ------------------------------------------------------------------ #
-
-def _run_git(repo_dir, *args, env_extra=None):
-    """Run a git command inside a temp repo."""
-    env = os.environ.copy()
-    env.update({
-        "GIT_AUTHOR_DATE": "2026-01-15T10:00:00+00:00",
-        "GIT_COMMITTER_DATE": "2026-01-15T10:00:00+00:00",
-    })
-    if env_extra:
-        env.update(env_extra)
-    subprocess.run(
-        ["git"] + list(args),
-        cwd=str(repo_dir),
-        capture_output=True,
-        text=True,
-        check=True,
-        env=env,
-    )
 
 
 def _request(base_url, method, path, body=None):
@@ -58,66 +33,6 @@ def _request(base_url, method, path, body=None):
 # ------------------------------------------------------------------ #
 # Fixtures
 # ------------------------------------------------------------------ #
-
-@pytest.fixture
-def git_project(tmp_path):
-    """Create a temporary git repository with source and test files."""
-    project = tmp_path / "myproject"
-    project.mkdir()
-
-    _run_git(project, "init")
-    _run_git(project, "config", "user.name", "TestUser")
-    _run_git(project, "config", "user.email", "test@example.com")
-
-    # Source file
-    src = project / "app.py"
-    src.write_text(
-        "def process_data(data):\n"
-        "    return [x * 2 for x in data]\n\n"
-        "def validate_input(data):\n"
-        "    if not isinstance(data, list):\n"
-        "        raise TypeError('Expected list')\n"
-        "    return True\n"
-    )
-
-    # Test file
-    tests_dir = project / "tests"
-    tests_dir.mkdir()
-    test_file = tests_dir / "test_app.py"
-    test_file.write_text(
-        "from app import process_data, validate_input\n\n"
-        "def test_process_data():\n"
-        "    assert process_data([1, 2, 3]) == [2, 4, 6]\n\n"
-        "def test_validate_input():\n"
-        "    assert validate_input([1, 2]) is True\n"
-    )
-
-    # Commit
-    _run_git(project, "add", "-A")
-    _run_git(project, "commit", "-m", "Initial commit")
-
-    # Second commit — add a function
-    src.write_text(
-        "def process_data(data):\n"
-        "    return [x * 2 for x in data]\n\n"
-        "def validate_input(data):\n"
-        "    if not isinstance(data, list):\n"
-        "        raise TypeError('Expected list')\n"
-        "    return True\n\n"
-        "def format_output(result):\n"
-        "    return ', '.join(str(x) for x in result)\n"
-    )
-    _run_git(project, "add", "-A")
-    _run_git(
-        project, "commit", "-m", "Add format_output",
-        env_extra={
-            "GIT_AUTHOR_DATE": "2026-02-01T10:00:00+00:00",
-            "GIT_COMMITTER_DATE": "2026-02-01T10:00:00+00:00",
-        },
-    )
-
-    return project
-
 
 @pytest.fixture
 def mcp_server(git_project, tmp_path):

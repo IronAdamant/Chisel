@@ -1,7 +1,5 @@
 """Tests for chisel.git_analyzer — log/blame parsing, churn, ownership, co-change."""
 
-import os
-import subprocess
 from datetime import datetime, timezone
 
 import pytest
@@ -9,33 +7,8 @@ import pytest
 from chisel.git_analyzer import GitAnalyzer
 
 
-# ------------------------------------------------------------------ #
-# Helper: create a temp git repo with deterministic commits
-# ------------------------------------------------------------------ #
-
-def _git(repo_dir, *args, env_extra=None):
-    """Run a git command inside repo_dir with optional env overrides."""
-    env = os.environ.copy()
-    env["GIT_AUTHOR_NAME"] = "TestAuthor"
-    env["GIT_COMMITTER_NAME"] = "TestAuthor"
-    env["GIT_AUTHOR_EMAIL"] = "test@example.com"
-    env["GIT_COMMITTER_EMAIL"] = "test@example.com"
-    if env_extra:
-        env.update(env_extra)
-    result = subprocess.run(
-        ["git"] + list(args),
-        cwd=str(repo_dir),
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr}")
-    return result.stdout
-
-
 @pytest.fixture
-def git_repo(tmp_path):
+def git_repo(tmp_path, run_git):
     """Create a temporary git repo with three deterministic commits.
 
     Commit 1 (2026-01-10): add hello.py and utils.py
@@ -44,15 +17,15 @@ def git_repo(tmp_path):
     """
     repo = tmp_path / "repo"
     repo.mkdir()
-    _git(repo, "init")
-    _git(repo, "config", "user.name", "TestAuthor")
-    _git(repo, "config", "user.email", "test@example.com")
+    run_git(repo, "init")
+    run_git(repo, "config", "user.name", "TestAuthor")
+    run_git(repo, "config", "user.email", "test@example.com")
 
     # Commit 1: add two files
     (repo / "hello.py").write_text("def greet():\n    return 'hi'\n")
     (repo / "utils.py").write_text("def helper():\n    return 1\n")
-    _git(repo, "add", "hello.py", "utils.py")
-    _git(
+    run_git(repo, "add", "hello.py", "utils.py")
+    run_git(
         repo, "commit", "-m", "initial commit",
         env_extra={
             "GIT_AUTHOR_DATE": "2026-01-10T12:00:00+00:00",
@@ -64,8 +37,8 @@ def git_repo(tmp_path):
     (repo / "hello.py").write_text(
         "def greet():\n    return 'hello'\n\ndef farewell():\n    return 'bye'\n"
     )
-    _git(repo, "add", "hello.py")
-    _git(
+    run_git(repo, "add", "hello.py")
+    run_git(
         repo, "commit", "-m", "update greet and add farewell",
         env_extra={
             "GIT_AUTHOR_DATE": "2026-02-15T12:00:00+00:00",
@@ -78,8 +51,8 @@ def git_repo(tmp_path):
         "def greet():\n    return 'hello world'\n\ndef farewell():\n    return 'goodbye'\n"
     )
     (repo / "utils.py").write_text("def helper():\n    return 42\n")
-    _git(repo, "add", "hello.py", "utils.py")
-    _git(
+    run_git(repo, "add", "hello.py", "utils.py")
+    run_git(
         repo, "commit", "-m", "update both files",
         env_extra={
             "GIT_AUTHOR_DATE": "2026-03-01T12:00:00+00:00",
@@ -96,18 +69,18 @@ def analyzer(git_repo):
 
 
 @pytest.fixture
-def multi_author_repo(tmp_path):
+def multi_author_repo(tmp_path, run_git):
     """Create a repo with commits from two different authors."""
     repo = tmp_path / "multi_repo"
     repo.mkdir()
-    _git(repo, "init")
-    _git(repo, "config", "user.name", "Alice")
-    _git(repo, "config", "user.email", "alice@example.com")
+    run_git(repo, "init")
+    run_git(repo, "config", "user.name", "Alice")
+    run_git(repo, "config", "user.email", "alice@example.com")
 
     # Alice's commit
     (repo / "shared.py").write_text("# Alice's line 1\n# Alice's line 2\n# Alice's line 3\n")
-    _git(repo, "add", "shared.py")
-    _git(
+    run_git(repo, "add", "shared.py")
+    run_git(
         repo, "commit", "-m", "alice initial",
         env_extra={
             "GIT_AUTHOR_NAME": "Alice",
@@ -123,8 +96,8 @@ def multi_author_repo(tmp_path):
     (repo / "shared.py").write_text(
         "# Alice's line 1\n# Alice's line 2\n# Alice's line 3\n# Bob's line 4\n"
     )
-    _git(repo, "add", "shared.py")
-    _git(
+    run_git(repo, "add", "shared.py")
+    run_git(
         repo, "commit", "-m", "bob adds a line",
         env_extra={
             "GIT_AUTHOR_NAME": "Bob",

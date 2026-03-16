@@ -36,7 +36,7 @@ chisel/
 
 ```bash
 pip install -e ".[dev]" --break-system-packages   # Arch Linux
-pytest tests/ -v --tb=short                       # full suite (313 tests)
+pytest tests/ -v --tb=short                       # full suite (335 tests)
 chisel analyze .                                  # analyze current project
 chisel analyze src/                               # analyze subdirectory only
 chisel serve --port 8377                          # HTTP MCP server
