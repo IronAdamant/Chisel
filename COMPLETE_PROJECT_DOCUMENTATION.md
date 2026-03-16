@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence for LLM agents. Zero external dependencies.
 
-**Version:** 0.3.0
+**Version:** 0.3.1
 **License:** MIT
 **Python:** >= 3.9
 
@@ -30,7 +30,7 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 | `chisel/storage.py` | SQLite persistence layer (WAL mode, 9 tables, single persistent connection), all CRUD operations | `sqlite3`, `datetime`, `pathlib` | [glossary: blame cache](wiki-local/glossary.md) |
 | `chisel/git_analyzer.py` | Git log/blame parsing via subprocess, churn computation, ownership computation, co-change coupling, diff function extraction | `re`, `subprocess`, `collections`, `datetime`, `itertools` | [glossary: churn score](wiki-local/glossary.md) |
 | `chisel/test_mapper.py` | Test file discovery, framework detection (pytest/Jest/Go/Rust/Playwright), dependency extraction, test edge building | `ast`, `os`, `re`, `pathlib`, `chisel.ast_utils` | [glossary: test edge](wiki-local/glossary.md) |
-| `chisel/impact.py` | Impact analysis, risk scoring, stale test detection, ownership queries, reviewer suggestions | `collections`, `datetime`, `chisel.storage` (via constructor injection) | [glossary: risk score](wiki-local/glossary.md) |
+| `chisel/impact.py` | Impact analysis, risk scoring, stale test detection, ownership queries, reviewer suggestions | `collections`, `datetime`, `chisel.git_analyzer`, `chisel.storage` (via constructor injection) | [glossary: risk score](wiki-local/glossary.md) |
 | `chisel/engine.py` | Orchestrator -- owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock; exposes `tool_*()` methods for all 10 MCP tools | `os`, `pathlib`, `chisel.ast_utils`, `chisel.git_analyzer`, `chisel.impact`, `chisel.rwlock`, `chisel.storage`, `chisel.test_mapper` | [spec-project](wiki-local/spec-project.md) |
 | `chisel/cli.py` | argparse CLI with 12 subcommands, dispatch table, output formatting | `argparse`, `json`, `os`, `sys`, `chisel.engine` | [spec-project: CLI](wiki-local/spec-project.md) |
 | `chisel/mcp_server.py` | HTTP MCP server (GET /tools, /health; POST /call), ThreadedHTTPServer, tool schemas and dispatch table | `json`, `logging`, `threading`, `http.server`, `socketserver`, `chisel.engine` | [spec-project: MCP tools](wiki-local/spec-project.md) |
@@ -50,13 +50,16 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 | `tests/test_engine.py` | Integration tests for ChiselEngine with temp git repos and test files | `pytest`, `os`, `subprocess`, `chisel.engine` | -- |
 | `tests/test_cli.py` | Tests for CLI parser, all command handlers, main dispatch | `pytest`, `json`, `unittest.mock`, `chisel.cli` | -- |
 | `tests/test_mcp_server.py` | Tests for HTTP MCP server endpoints using a real server on OS-assigned port | `pytest`, `json`, `os`, `subprocess`, `urllib`, `chisel.mcp_server` | -- |
+| `tests/test_mcp_stdio.py` | Tests for stdio MCP server creation, tool listing, tool dispatch | `pytest`, `json`, `unittest.mock`, `chisel.mcp_stdio` | -- |
+| `tests/test_rwlock.py` | Tests for RWLock concurrent reader/writer semantics, ordering, starvation | `pytest`, `threading`, `time`, `chisel.rwlock` | -- |
+| `tests/conftest.py` | Shared pytest fixtures: temp git repos, `run_git` helper | `pytest`, `os`, `subprocess` | -- |
 
 ## Module Dependency Graph
 
 ```
 engine.py --> storage.py, ast_utils.py, git_analyzer.py, test_mapper.py, impact.py, rwlock.py
 test_mapper.py --> ast_utils.py
-impact.py --> storage.py (injected)
+impact.py --> storage.py (injected), git_analyzer.py
 cli.py --> engine.py, mcp_server.py (lazy), mcp_stdio.py (lazy)
 mcp_server.py --> engine.py
 mcp_stdio.py --> engine.py, mcp_server.py

@@ -19,8 +19,6 @@ _FRAMEWORK_PATTERNS = [
     (re.compile(r"^.*\.spec\.[jt]sx?$"), "playwright"),
     # Go
     (re.compile(r"^.*_test\.go$"), "go"),
-    # Rust
-    (re.compile(r"^.*\.rs$"), "rust"),
 ]
 
 
@@ -46,9 +44,6 @@ class TestMapper:
 
         for pattern, framework in _FRAMEWORK_PATTERNS:
             if pattern.match(name):
-                # Rust files need a #[test] or #[cfg(test)] marker inside
-                if framework == "rust":
-                    return None  # handled separately by _check_rust_test
                 # Playwright .spec files override Jest
                 if framework == "playwright":
                     return _check_playwright(file_path)
@@ -163,14 +158,18 @@ class TestMapper:
             name_to_ids.setdefault(name, []).append(cid)
 
         edges = []
+        file_cache = {}
         for tu in test_units:
             file_path = tu["file_path"]
-            framework = tu["framework"]
-            try:
-                content = Path(os.path.join(self.project_dir, file_path)).read_text(
-                    encoding="utf-8", errors="replace"
-                )
-            except OSError:
+            if file_path not in file_cache:
+                try:
+                    file_cache[file_path] = Path(
+                        os.path.join(self.project_dir, file_path)
+                    ).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    file_cache[file_path] = None
+            content = file_cache[file_path]
+            if content is None:
                 continue
 
             deps = self.extract_test_dependencies(file_path, content)
@@ -272,7 +271,7 @@ def _extract_python_deps_regex(content):
         deps.append({"name": m.group(1), "dep_type": "import"})
     for m in re.finditer(r"(\w+)\s*\(", content):
         name = m.group(1)
-        if not name.startswith(("if", "for", "while", "with", "return", "print")):
+        if name not in ("if", "for", "while", "with", "return", "print"):
             deps.append({"name": name, "dep_type": "call"})
     return _dedupe_deps(deps)
 

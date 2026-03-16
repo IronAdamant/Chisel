@@ -8,7 +8,7 @@ from itertools import combinations
 
 
 _BLAME_HEADER_RE = re.compile(
-    r"^([0-9a-f]{40})\s+(\d+)\s+(\d+)(?:\s+(\d+))?"
+    r"^([0-9a-f]{40})\s+\d+\s+(\d+)(?:\s+\d+)?"
 )
 
 
@@ -33,7 +33,12 @@ class GitAnalyzer:
                 cwd=self.repo_dir,
                 capture_output=True,
                 text=True,
+                timeout=120,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"git {' '.join(args)} timed out after 120s"
+            ) from exc
         except OSError as exc:
             raise RuntimeError(
                 f"git {' '.join(args)} failed: {exc}"
@@ -151,7 +156,7 @@ class GitAnalyzer:
             m = _BLAME_HEADER_RE.match(line)
             if m:
                 commit_hash = m.group(1)
-                final_line = int(m.group(3))
+                final_line = int(m.group(2))
                 # Each entry represents exactly one line in the final file.
                 cached = commit_info.get(commit_hash, {})
                 current = {
@@ -424,15 +429,24 @@ class GitAnalyzer:
         """Extract function names from @@ hunk headers in unified diff output.
 
         Hunk headers look like: @@ -a,b +c,d @@ optional_function_context
-        We extract the text after the second @@.
+        We extract the text after the second @@ and parse out just the
+        bare function/method name (e.g. ``def foo(...)`` -> ``foo``).
         """
-        func_re = re.compile(r"^@@\s+[^@]+\s+@@\s*(.+)$")
+        hunk_re = re.compile(r"^@@\s+[^@]+\s+@@\s*(.+)$")
+        # Patterns to extract the bare name from common declaration styles
+        name_re = re.compile(
+            r"(?:def|func|fn|function|async\s+def|async\s+function)"
+            r"\s+(?:\([^)]*\)\s+)?(\w+)"
+        )
         functions = []
         seen = set()
         for line in raw.split("\n"):
-            m = func_re.match(line)
+            m = hunk_re.match(line)
             if m:
-                func_name = m.group(1).strip()
+                context = m.group(1).strip()
+                # Try to extract just the function name
+                nm = name_re.search(context)
+                func_name = nm.group(1) if nm else context
                 if func_name and func_name not in seen:
                     seen.add(func_name)
                     functions.append(func_name)

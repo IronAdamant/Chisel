@@ -250,35 +250,26 @@ class TestWriterExclusion:
 # Tests: Writer starvation awareness
 # ------------------------------------------------------------------ #
 
-class TestWriterStarvation:
-    """Document that the current RWLock implementation can starve writers.
+class TestWriterPreference:
+    """Verify that the RWLock uses write-preference.
 
-    Because read_lock() only waits on ``self._writer`` (not on a
-    "writer waiting" flag), a continuous stream of readers can
-    indefinitely delay a waiting writer.  This is a known trade-off
-    favouring read throughput.
-
-    The test below demonstrates the behaviour rather than asserting a
-    fix — it is intentionally lenient to avoid flakiness.
+    When a writer is waiting, new readers are blocked to prevent
+    writer starvation. Only already-holding readers continue.
     """
 
-    def test_writer_waits_while_readers_keep_arriving(self, rwlock):
-        """Show that overlapping readers can delay a writer.
+    def test_writer_not_starved_by_overlapping_readers(self, rwlock):
+        """A waiting writer blocks new readers and eventually acquires.
 
-        We spawn a wave of readers that overlap each other.  A writer
-        starts trying to acquire after the first reader is inside.
-        We measure how long the writer has to wait.
+        We spawn staggered readers. A writer starts waiting once the
+        first reader is inside. With write-preference, later readers
+        that haven't entered yet are blocked, so the writer gets the
+        lock after the existing readers finish.
         """
-        num_reader_waves = 3
-        readers_per_wave = 2
-        reader_hold_time = 0.05  # seconds each reader holds the lock
-
-        writer_start_time = []
-        writer_end_time = []
+        reader_hold_time = 0.05
         first_reader_inside = threading.Event()
+        writer_acquired = threading.Event()
 
         def overlapping_reader(delay):
-            """Acquire read_lock after *delay* seconds."""
             time.sleep(delay)
             with rwlock.read_lock():
                 first_reader_inside.set()
@@ -286,30 +277,63 @@ class TestWriterStarvation:
 
         def writer():
             first_reader_inside.wait(timeout=5)
-            writer_start_time.append(time.monotonic())
             with rwlock.write_lock():
-                writer_end_time.append(time.monotonic())
+                writer_acquired.set()
 
-        # Stagger readers so they overlap: 0s, 0.02s, 0.04s, ...
-        reader_threads = []
-        for i in range(num_reader_waves * readers_per_wave):
-            delay = i * (reader_hold_time / readers_per_wave)
-            t = threading.Thread(target=overlapping_reader, args=(delay,))
-            reader_threads.append(t)
+        # First reader starts immediately, second is staggered
+        t_r1 = threading.Thread(target=overlapping_reader, args=(0,))
+        t_r2 = threading.Thread(target=overlapping_reader, args=(0.02,))
+        t_w = threading.Thread(target=writer)
 
-        writer_thread = threading.Thread(target=writer)
+        t_r1.start()
+        t_r2.start()
+        t_w.start()
 
-        for t in reader_threads:
-            t.start()
-        writer_thread.start()
+        t_r1.join(timeout=5)
+        t_r2.join(timeout=5)
+        t_w.join(timeout=5)
 
-        for t in reader_threads:
-            t.join(timeout=5)
-        writer_thread.join(timeout=5)
+        assert writer_acquired.is_set(), "Writer must acquire lock"
 
-        assert writer_start_time and writer_end_time, "Writer should have run"
-        wait_duration = writer_end_time[0] - writer_start_time[0]
-        # Writer had to wait *some* time while readers held the lock.
-        # We don't assert a minimum because timing is non-deterministic,
-        # but we verify the writer did eventually acquire the lock.
-        assert wait_duration >= 0, "Writer eventually acquired the lock"
+    def test_new_readers_blocked_while_writer_waiting(self, rwlock):
+        """Once a writer starts waiting, new readers cannot enter."""
+        reader_inside = threading.Event()
+        writer_waiting = threading.Event()
+        writer_acquired = threading.Event()
+        late_reader_blocked = threading.Event()
+        late_reader_acquired = threading.Event()
+
+        def first_reader():
+            with rwlock.read_lock():
+                reader_inside.set()
+                # Hold until writer is waiting
+                writer_waiting.wait(timeout=5)
+                time.sleep(0.05)
+
+        def writer():
+            reader_inside.wait(timeout=5)
+            writer_waiting.set()
+            with rwlock.write_lock():
+                writer_acquired.set()
+
+        def late_reader():
+            writer_waiting.wait(timeout=5)
+            time.sleep(0.02)  # Give writer time to set _writers_waiting
+            late_reader_blocked.set()
+            with rwlock.read_lock():
+                late_reader_acquired.set()
+
+        t_r = threading.Thread(target=first_reader)
+        t_w = threading.Thread(target=writer)
+        t_lr = threading.Thread(target=late_reader)
+
+        t_r.start()
+        t_w.start()
+        t_lr.start()
+
+        t_r.join(timeout=5)
+        t_w.join(timeout=5)
+        t_lr.join(timeout=5)
+
+        assert writer_acquired.is_set(), "Writer must get the lock"
+        assert late_reader_acquired.is_set(), "Late reader must eventually acquire"

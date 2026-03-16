@@ -36,7 +36,7 @@ chisel/
 
 ```bash
 pip install -e ".[dev]" --break-system-packages   # Arch Linux
-pytest tests/ -v --tb=short                       # full suite (335 tests)
+pytest tests/ -v --tb=short                       # full suite (334 tests)
 chisel analyze .                                  # analyze current project
 chisel analyze src/                               # analyze subdirectory only
 chisel serve --port 8377                          # HTTP MCP server
@@ -47,7 +47,7 @@ chisel serve --port 8377                          # HTTP MCP server
 ```
 engine.py → storage.py, ast_utils.py, git_analyzer.py, test_mapper.py, impact.py, rwlock.py
 test_mapper.py → ast_utils.py
-impact.py → storage.py
+impact.py → storage.py, git_analyzer.py
 cli.py → engine.py, mcp_server.py, mcp_stdio.py
 mcp_server.py → engine.py
 mcp_stdio.py → engine.py, mcp_server.py

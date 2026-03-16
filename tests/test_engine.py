@@ -8,7 +8,9 @@ from chisel.engine import ChiselEngine
 @pytest.fixture
 def engine(git_project, tmp_path):
     storage_dir = tmp_path / "chisel_storage"
-    return ChiselEngine(str(git_project), storage_dir=storage_dir)
+    eng = ChiselEngine(str(git_project), storage_dir=storage_dir)
+    yield eng
+    eng.close()
 
 
 class TestAnalyze:

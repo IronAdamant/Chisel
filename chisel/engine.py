@@ -48,136 +48,32 @@ class ChiselEngine:
             Dict summarizing the analysis results.
         """
         with self.lock.write_lock():
+            code_files = self._scan_code_files(directory=directory)
+            changed_files = self._find_changed_files(code_files, force=force)
+
             stats = {
-                "code_files_scanned": 0,
-                "code_units_found": 0,
+                "code_files_scanned": len(code_files),
+                "code_units_found": self._parse_and_store_code_units(changed_files),
                 "test_files_found": 0,
                 "test_units_found": 0,
                 "test_edges_built": 0,
                 "commits_parsed": 0,
             }
 
-            # 1. Scan code files
-            code_files = self._scan_code_files(directory=directory)
-            changed_files = []
-            for fpath in code_files:
-                rel = os.path.relpath(fpath, self.project_dir)
-                new_hash = compute_file_hash(fpath)
-                old_hash = self.storage.get_file_hash(rel)
-                if force or old_hash != new_hash:
-                    changed_files.append((fpath, rel, new_hash))
-                    self.storage.set_file_hash(rel, new_hash)
-            stats["code_files_scanned"] = len(code_files)
-
-            # 2. Parse code units for changed files
-            all_code_units = []
-            for fpath, rel, new_hash in changed_files:
-                content = Path(fpath).read_text(encoding="utf-8", errors="replace")
-                self.storage.delete_code_units_by_file(rel)
-                units = extract_code_units(fpath, content)
-                for u in units:
-                    cid = f"{rel}:{u.name}:{u.unit_type}"
-                    self.storage.upsert_code_unit(
-                        cid, rel, u.name, u.unit_type,
-                        u.line_start, u.line_end,
-                        new_hash,
-                    )
-                    all_code_units.append(u)
-                stats["code_units_found"] += len(units)
-
-            # 3. Discover + parse test files
-            test_files = self.mapper.discover_test_files()
-            stats["test_files_found"] = len(test_files)
-            all_test_units = []
-            for tf in test_files:
-                test_units = self.mapper.parse_test_file(tf)
-                for tu in test_units:
-                    self.storage.upsert_test_unit(
-                        tu["id"], tu["file_path"], tu["name"], tu["framework"],
-                        tu["line_start"], tu["line_end"], tu["content_hash"],
-                    )
-                    all_test_units.append(tu)
-            stats["test_units_found"] = len(all_test_units)
-
-            # 4. Parse git log, compute churn/co-changes
             try:
                 commits = self.git.parse_log()
                 stats["commits_parsed"] = len(commits)
-
-                for commit in commits:
-                    self.storage.upsert_commit(
-                        commit["hash"], commit["author"], commit["author_email"],
-                        commit["date"], commit["message"],
-                    )
-                    for f in commit.get("files", []):
-                        self.storage.upsert_commit_file(
-                            commit["hash"], f["path"], f["insertions"], f["deletions"],
-                        )
-
-                # Churn stats for all tracked files (file-level + unit-level)
-                for fpath in code_files:
-                    rel = os.path.relpath(fpath, self.project_dir)
-                    churn = self.git.compute_churn(commits, rel)
-                    self.storage.upsert_churn_stat(
-                        rel, "", churn["commit_count"], churn["distinct_authors"],
-                        churn["total_insertions"], churn["total_deletions"],
-                        churn["last_changed"], churn["churn_score"],
-                    )
-                    # Unit-level churn via git log -L
-                    for cu in self.storage.get_code_units_by_file(rel):
-                        if cu["unit_type"] in ("function", "async_function"):
-                            # Strip class prefix for git log -L (it uses bare names)
-                            bare_name = cu["name"].rsplit(".", 1)[-1]
-                            func_commits = self.git.get_function_log(rel, bare_name)
-                            if func_commits:
-                                fc = self.git.compute_churn(
-                                    func_commits, rel, unit_name=cu["name"],
-                                )
-                                self.storage.upsert_churn_stat(
-                                    rel, cu["name"], fc["commit_count"],
-                                    fc["distinct_authors"], fc["total_insertions"],
-                                    fc["total_deletions"], fc["last_changed"],
-                                    fc["churn_score"],
-                                )
-
-                # Co-change coupling
-                co_changes = self.git.compute_co_changes(commits, min_count=3)
-                for cc in co_changes:
-                    self.storage.upsert_co_change(
-                        cc["file_a"], cc["file_b"],
-                        cc["co_commit_count"], cc["last_co_commit"],
-                    )
+                self._store_commits(commits)
+                self._compute_churn_and_coupling(commits, code_files)
             except RuntimeError:
                 pass  # Not a git repo or git not available
 
-            # 5. Parse git blame for changed files
-            for _, rel, new_hash in changed_files:
-                try:
-                    blame_blocks = self.git.parse_blame(rel)
-                    self.storage.invalidate_blame(rel)
-                    for block in blame_blocks:
-                        self.storage.store_blame(
-                            rel, block["line_start"], block["line_end"],
-                            block["commit_hash"], block["author"],
-                            block["author_email"], block["date"], new_hash,
-                        )
-                except RuntimeError:
-                    pass
+            self._store_blame(changed_files)
 
-            # 6. Build test edges
-            # Gather all code units from storage
-            all_cu_dicts = []
-            for fpath in code_files:
-                rel = os.path.relpath(fpath, self.project_dir)
-                all_cu_dicts.extend(self.storage.get_code_units_by_file(rel))
-
-            edges = self.mapper.build_test_edges(all_test_units, all_cu_dicts)
-            for edge in edges:
-                self.storage.upsert_test_edge(
-                    edge["test_id"], edge["code_id"],
-                    edge["edge_type"], edge["weight"],
-                )
-            stats["test_edges_built"] = len(edges)
+            test_units, tf_count, edge_count = self._discover_and_build_edges(code_files)
+            stats["test_files_found"] = tf_count
+            stats["test_units_found"] = len(test_units)
+            stats["test_edges_built"] = edge_count
 
             return stats
 
@@ -192,92 +88,29 @@ class ChiselEngine:
             Dict summarizing what was updated.
         """
         with self.lock.write_lock():
-            stats = {"files_updated": 0, "new_commits": 0}
-
-            # Find changed code files
             code_files = self._scan_code_files()
-            changed = []
-            for fpath in code_files:
-                rel = os.path.relpath(fpath, self.project_dir)
-                new_hash = compute_file_hash(fpath)
-                old_hash = self.storage.get_file_hash(rel)
-                if old_hash != new_hash:
-                    changed.append((fpath, rel, new_hash))
+            changed_files = self._find_changed_files(code_files)
+            self._parse_and_store_code_units(changed_files)
+            self._store_blame(changed_files)
 
-            # Re-parse changed files
-            for fpath, rel, new_hash in changed:
-                self.storage.set_file_hash(rel, new_hash)
-                self.storage.delete_code_units_by_file(rel)
-                content = Path(fpath).read_text(encoding="utf-8", errors="replace")
-                units = extract_code_units(fpath, content)
-                for u in units:
-                    cid = f"{rel}:{u.name}:{u.unit_type}"
-                    self.storage.upsert_code_unit(
-                        cid, rel, u.name, u.unit_type,
-                        u.line_start, u.line_end, new_hash,
-                    )
+            stats = {"files_updated": len(changed_files), "new_commits": 0}
 
-                # Re-blame changed files
-                try:
-                    self.storage.invalidate_blame(rel)
-                    blame_blocks = self.git.parse_blame(rel)
-                    for block in blame_blocks:
-                        self.storage.store_blame(
-                            rel, block["line_start"], block["line_end"],
-                            block["commit_hash"], block["author"],
-                            block["author_email"], block["date"], new_hash,
-                        )
-                except RuntimeError:
-                    pass
-
-            stats["files_updated"] = len(changed)
-
-            # Parse new commits since last known
             try:
-                since = self.storage.get_latest_commit_date()
-                commits = self.git.parse_log(since=since)
-                new_count = 0
-                for commit in commits:
-                    if self.storage.get_commit(commit["hash"]) is None:
-                        new_count += 1
-                        self.storage.upsert_commit(
-                            commit["hash"], commit["author"],
-                            commit["author_email"], commit["date"],
-                            commit["message"],
-                        )
-                        for f in commit.get("files", []):
-                            self.storage.upsert_commit_file(
-                                commit["hash"], f["path"],
-                                f["insertions"], f["deletions"],
-                            )
-                stats["new_commits"] = new_count
+                all_commits = self.git.parse_log()
+                new_commits = [
+                    c for c in all_commits
+                    if self.storage.get_commit(c["hash"]) is None
+                ]
+                self._store_commits(new_commits)
+                stats["new_commits"] = len(new_commits)
+
+                # Recompute churn/coupling when anything changed
+                if new_commits or changed_files:
+                    self._compute_churn_and_coupling(all_commits, code_files)
             except RuntimeError:
                 pass
 
-            # Re-discover test files and rebuild edges
-            test_files = self.mapper.discover_test_files()
-            all_test_units = []
-            for tf in test_files:
-                tus = self.mapper.parse_test_file(tf)
-                for tu in tus:
-                    self.storage.upsert_test_unit(
-                        tu["id"], tu["file_path"], tu["name"], tu["framework"],
-                        tu["line_start"], tu["line_end"], tu["content_hash"],
-                    )
-                    all_test_units.append(tu)
-
-            all_cu_dicts = []
-            for fpath in code_files:
-                rel = os.path.relpath(fpath, self.project_dir)
-                all_cu_dicts.extend(self.storage.get_code_units_by_file(rel))
-
-            edges = self.mapper.build_test_edges(all_test_units, all_cu_dicts)
-            for edge in edges:
-                self.storage.upsert_test_edge(
-                    edge["test_id"], edge["code_id"],
-                    edge["edge_type"], edge["weight"],
-                )
-
+            self._discover_and_build_edges(code_files)
             return stats
 
     # ------------------------------------------------------------------ #
@@ -299,12 +132,15 @@ class ChiselEngine:
             return self.impact.suggest_tests(file_path, diff)
 
     def tool_churn(self, file_path, unit_name=None):
-        """MCP tool: get churn stats."""
+        """MCP tool: get churn stats. Always returns a list."""
         with self.lock.read_lock():
             stat = self.storage.get_churn_stat(file_path, unit_name)
             if stat:
-                return stat
-            return self.storage.get_all_churn_stats(file_path)
+                return [stat]
+            # Only fall back to all stats when no specific unit was requested
+            if unit_name is None:
+                return self.storage.get_all_churn_stats(file_path)
+            return []
 
     def tool_ownership(self, file_path):
         """MCP tool: get blame-based code ownership."""
@@ -337,8 +173,140 @@ class ChiselEngine:
             return self.impact.suggest_reviewers(file_path)
 
     # ------------------------------------------------------------------ #
-    # Internal helpers
+    # Shared internal helpers
     # ------------------------------------------------------------------ #
+
+    def _find_changed_files(self, code_files, force=False):
+        """Compare content hashes to identify changed code files.
+
+        Returns list of (abs_path, rel_path, new_hash) tuples.
+        """
+        changed = []
+        for fpath in code_files:
+            rel = os.path.relpath(fpath, self.project_dir)
+            new_hash = compute_file_hash(fpath)
+            old_hash = self.storage.get_file_hash(rel)
+            if force or old_hash != new_hash:
+                changed.append((fpath, rel, new_hash))
+        return changed
+
+    def _parse_and_store_code_units(self, changed_files):
+        """Re-extract and upsert code units for changed files.
+
+        Returns the total number of code units found.
+        """
+        count = 0
+        for fpath, rel, new_hash in changed_files:
+            self.storage.set_file_hash(rel, new_hash)
+            self.storage.delete_code_units_by_file(rel)
+            content = Path(fpath).read_text(encoding="utf-8", errors="replace")
+            units = extract_code_units(fpath, content)
+            for u in units:
+                cid = f"{rel}:{u.name}:{u.unit_type}"
+                self.storage.upsert_code_unit(
+                    cid, rel, u.name, u.unit_type,
+                    u.line_start, u.line_end, new_hash,
+                )
+            count += len(units)
+        return count
+
+    def _store_blame(self, changed_files):
+        """Parse and store git blame data for changed files."""
+        for _, rel, new_hash in changed_files:
+            try:
+                self.storage.invalidate_blame(rel)
+                blame_blocks = self.git.parse_blame(rel)
+                for block in blame_blocks:
+                    self.storage.store_blame(
+                        rel, block["line_start"], block["line_end"],
+                        block["commit_hash"], block["author"],
+                        block["author_email"], block["date"], new_hash,
+                    )
+            except RuntimeError:
+                pass
+
+    def _store_commits(self, commits):
+        """Upsert commits and their file entries into storage."""
+        for commit in commits:
+            self.storage.upsert_commit(
+                commit["hash"], commit["author"], commit["author_email"],
+                commit["date"], commit["message"],
+            )
+            for f in commit.get("files", []):
+                self.storage.upsert_commit_file(
+                    commit["hash"], f["path"], f["insertions"], f["deletions"],
+                )
+
+    def _compute_churn_and_coupling(self, commits, code_files):
+        """Compute file-level and unit-level churn stats, plus co-change coupling."""
+        for fpath in code_files:
+            rel = os.path.relpath(fpath, self.project_dir)
+            churn = self.git.compute_churn(commits, rel)
+            self.storage.upsert_churn_stat(
+                rel, "", churn["commit_count"], churn["distinct_authors"],
+                churn["total_insertions"], churn["total_deletions"],
+                churn["last_changed"], churn["churn_score"],
+            )
+            # Unit-level churn via git log -L
+            for cu in self.storage.get_code_units_by_file(rel):
+                if cu["unit_type"] in ("function", "async_function"):
+                    bare_name = cu["name"].rsplit(".", 1)[-1]
+                    func_commits = self.git.get_function_log(rel, bare_name)
+                    if func_commits:
+                        fc = self.git.compute_churn(
+                            func_commits, rel, unit_name=cu["name"],
+                        )
+                        self.storage.upsert_churn_stat(
+                            rel, cu["name"], fc["commit_count"],
+                            fc["distinct_authors"], fc["total_insertions"],
+                            fc["total_deletions"], fc["last_changed"],
+                            fc["churn_score"],
+                        )
+
+        co_changes = self.git.compute_co_changes(commits, min_count=3)
+        for cc in co_changes:
+            self.storage.upsert_co_change(
+                cc["file_a"], cc["file_b"],
+                cc["co_commit_count"], cc["last_co_commit"],
+            )
+
+    def _discover_and_build_edges(self, code_files):
+        """Discover test files, parse them, build test edges.
+
+        Returns (all_test_units, test_file_count, edge_count).
+        """
+        test_files = self.mapper.discover_test_files()
+        all_test_units = []
+        for tf in test_files:
+            for tu in self.mapper.parse_test_file(tf):
+                self.storage.upsert_test_unit(
+                    tu["id"], tu["file_path"], tu["name"], tu["framework"],
+                    tu["line_start"], tu["line_end"], tu["content_hash"],
+                )
+                all_test_units.append(tu)
+
+        all_cu_dicts = []
+        for fpath in code_files:
+            rel = os.path.relpath(fpath, self.project_dir)
+            all_cu_dicts.extend(self.storage.get_code_units_by_file(rel))
+
+        edges = self.mapper.build_test_edges(all_test_units, all_cu_dicts)
+        for edge in edges:
+            self.storage.upsert_test_edge(
+                edge["test_id"], edge["code_id"],
+                edge["edge_type"], edge["weight"],
+            )
+        return all_test_units, len(test_files), len(edges)
+
+    # ------------------------------------------------------------------ #
+    # Lifecycle
+    # ------------------------------------------------------------------ #
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def close(self):
         """Close the underlying storage connection."""

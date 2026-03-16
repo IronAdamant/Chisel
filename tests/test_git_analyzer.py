@@ -397,7 +397,7 @@ class TestParseDiffFunctions:
             "+    new_line\n"
         )
         result = GitAnalyzer._parse_diff_functions(raw)
-        assert result == ["def my_function():"]
+        assert result == ["my_function"]
 
     def test_multiple_hunks(self):
         raw = (
@@ -407,7 +407,7 @@ class TestParseDiffFunctions:
             "+line\n"
         )
         result = GitAnalyzer._parse_diff_functions(raw)
-        assert result == ["def func_a():", "def func_b():"]
+        assert result == ["func_a", "func_b"]
 
     def test_deduplication(self):
         raw = (
@@ -417,7 +417,7 @@ class TestParseDiffFunctions:
             "+another_line\n"
         )
         result = GitAnalyzer._parse_diff_functions(raw)
-        assert result == ["def func_a():"]
+        assert result == ["func_a"]
 
     def test_no_function_context(self):
         raw = "@@ -1,3 +1,4 @@\n+line\n"

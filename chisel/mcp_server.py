@@ -343,8 +343,6 @@ class ChiselMCPServer:
     """
 
     def __init__(self, project_dir, storage_dir=None, host="127.0.0.1", port=8377):
-        self._project_dir = project_dir
-        self._storage_dir = storage_dir
         self._host = host
         self._port = port
         self._engine = ChiselEngine(project_dir, storage_dir=storage_dir)
@@ -378,7 +376,7 @@ class ChiselMCPServer:
             self._thread.start()
 
     def stop(self):
-        """Shut down the server gracefully."""
+        """Shut down the server gracefully and close the engine."""
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()
@@ -386,6 +384,8 @@ class ChiselMCPServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+        if self._engine is not None:
+            self._engine.close()
 
     def get_url(self):
         """Return the base URL the server is listening on."""

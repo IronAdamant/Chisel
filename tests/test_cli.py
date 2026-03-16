@@ -164,6 +164,14 @@ def _make_args(**kwargs):
     return args
 
 
+def _make_engine_mock():
+    """Create a MagicMock engine that supports context manager protocol."""
+    engine = MagicMock()
+    engine.__enter__ = MagicMock(return_value=engine)
+    engine.__exit__ = MagicMock(return_value=False)
+    return engine
+
+
 # ------------------------------------------------------------------ #
 # Handler tests (mocked engine)
 # ------------------------------------------------------------------ #
@@ -173,7 +181,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_analyze_human(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_analyze.return_value = {
             "code_files_scanned": 10,
             "code_units_found": 25,
@@ -190,7 +198,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_analyze_json(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_analyze.return_value = {"code_files_scanned": 5}
         mock_cls.return_value = engine
 
@@ -203,7 +211,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_impact_human(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_impact.return_value = [
             {"test_id": "test_foo", "reason": "import"},
         ]
@@ -218,7 +226,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_impact_empty(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_impact.return_value = []
         mock_cls.return_value = engine
 
@@ -230,7 +238,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_impact_json(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_impact.return_value = [{"test_id": "test_x"}]
         mock_cls.return_value = engine
 
@@ -243,7 +251,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_suggest_tests_human(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_suggest_tests.return_value = [
             {"name": "test_bar", "score": 0.9},
         ]
@@ -258,7 +266,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_suggest_tests_empty(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_suggest_tests.return_value = []
         mock_cls.return_value = engine
 
@@ -269,24 +277,24 @@ class TestHandlerOutputFormats:
         assert "No test suggestions" in output
 
     @patch("chisel.cli.ChiselEngine")
-    def test_cmd_churn_dict(self, mock_cls, capsys):
-        engine = MagicMock()
-        engine.tool_churn.return_value = {
-            "commit_count": 12, "churn_score": 3.5,
-        }
+    def test_cmd_churn_list(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_churn.return_value = [
+            {"commit_count": 12, "churn_score": 3.5},
+        ]
         mock_cls.return_value = engine
 
         args = _make_args(file="app.py", unit=None)
         result = cmd_churn(args)
 
-        assert result["commit_count"] == 12
+        assert result[0]["commit_count"] == 12
         output = capsys.readouterr().out
         assert "12" in output
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_churn_json(self, mock_cls, capsys):
-        engine = MagicMock()
-        engine.tool_churn.return_value = {"commit_count": 7}
+        engine = _make_engine_mock()
+        engine.tool_churn.return_value = [{"commit_count": 7}]
         mock_cls.return_value = engine
 
         args = _make_args(file="app.py", unit=None, json_output=True)
@@ -294,11 +302,11 @@ class TestHandlerOutputFormats:
 
         output = capsys.readouterr().out
         parsed = json.loads(output)
-        assert parsed == {"commit_count": 7}
+        assert parsed == [{"commit_count": 7}]
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_ownership_human(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_ownership.return_value = [
             {"author": "Alice", "percentage": 70},
         ]
@@ -313,7 +321,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_coupling_human(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_coupling.return_value = [
             {"file_b": "utils.py", "co_commit_count": 5},
         ]
@@ -329,7 +337,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_coupling_empty(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_coupling.return_value = []
         mock_cls.return_value = engine
 
@@ -341,7 +349,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_risk_map_human(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_risk_map.return_value = [
             {"file_path": "core.py", "risk_score": 8.2},
         ]
@@ -357,7 +365,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_stale_tests_human(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_stale_tests.return_value = [
             {"test_id": "test_old", "reason": "code changed"},
         ]
@@ -372,7 +380,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_stale_tests_empty(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_stale_tests.return_value = []
         mock_cls.return_value = engine
 
@@ -384,7 +392,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_history_human(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_history.return_value = [
             {
                 "hash": "abc12345deadbeef",
@@ -406,7 +414,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_history_json(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_history.return_value = [{"hash": "aaa", "author": "X"}]
         mock_cls.return_value = engine
 
@@ -419,7 +427,7 @@ class TestHandlerOutputFormats:
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_who_reviews_human(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_who_reviews.return_value = [
             {"author": "Carol", "percentage": 55},
         ]
@@ -432,29 +440,19 @@ class TestHandlerOutputFormats:
         output = capsys.readouterr().out
         assert "Carol" in output
 
-    @patch("chisel.cli.ChiselMCPServer", create=True)
+    @patch("chisel.mcp_server.ChiselMCPServer")
     def test_cmd_serve_human(self, mock_server_cls, capsys):
-        import chisel.cli
         server = MagicMock()
         server.get_url.return_value = "http://127.0.0.1:8377"
         mock_server_cls.return_value = server
-        # Patch the import inside cmd_serve
-        with patch.dict("sys.modules", {}):
-            chisel.cli.ChiselMCPServer = mock_server_cls
-            try:
-                from chisel.mcp_server import ChiselMCPServer as _orig
-            except Exception:
-                pass
-            with patch("chisel.mcp_server.ChiselMCPServer", mock_server_cls):
-                args = _make_args(host="127.0.0.1", port=8377)
-                cmd_serve(args)
+        args = _make_args(host="127.0.0.1", port=8377)
+        cmd_serve(args)
         output = capsys.readouterr().out
         assert "127.0.0.1" in output
         assert "8377" in output
 
     @patch("chisel.cli.mcp_main", create=True)
     def test_cmd_serve_mcp_human(self, mock_mcp_main, capsys):
-        import chisel.cli
         mock_mcp_main.return_value = None
         with patch("chisel.mcp_stdio.main", mock_mcp_main):
             args = _make_args()
@@ -470,7 +468,7 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_analyze(self, mock_cls):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_analyze.return_value = {"code_files_scanned": 1}
         mock_cls.return_value = engine
 
@@ -481,7 +479,7 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_impact(self, mock_cls):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_impact.return_value = []
         mock_cls.return_value = engine
 
@@ -491,8 +489,8 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_churn_with_unit(self, mock_cls):
-        engine = MagicMock()
-        engine.tool_churn.return_value = {"commit_count": 3}
+        engine = _make_engine_mock()
+        engine.tool_churn.return_value = [{"commit_count": 3}]
         mock_cls.return_value = engine
 
         main(["churn", "--project-dir", "/tmp/p", "app.py", "--unit", "my_func"])
@@ -501,7 +499,7 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_coupling_with_min_count(self, mock_cls):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_coupling.return_value = []
         mock_cls.return_value = engine
 
@@ -511,7 +509,7 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_json_flag(self, mock_cls, capsys):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_analyze.return_value = {"files": 2}
         mock_cls.return_value = engine
 
@@ -527,7 +525,7 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_suggest_tests(self, mock_cls):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_suggest_tests.return_value = [{"name": "test_x"}]
         mock_cls.return_value = engine
 
@@ -537,7 +535,7 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_ownership(self, mock_cls):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_ownership.return_value = [{"author": "A"}]
         mock_cls.return_value = engine
 
@@ -547,7 +545,7 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_risk_map(self, mock_cls):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_risk_map.return_value = []
         mock_cls.return_value = engine
 
@@ -557,7 +555,7 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_stale_tests(self, mock_cls):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_stale_tests.return_value = []
         mock_cls.return_value = engine
 
@@ -567,7 +565,7 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_history(self, mock_cls):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_history.return_value = [{"hash": "aaa"}]
         mock_cls.return_value = engine
 
@@ -577,7 +575,7 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_who_reviews(self, mock_cls):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_who_reviews.return_value = []
         mock_cls.return_value = engine
 
@@ -587,7 +585,7 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_analyze_force(self, mock_cls):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_analyze.return_value = {}
         mock_cls.return_value = engine
 
@@ -597,7 +595,7 @@ class TestMain:
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_analyze_with_directory(self, mock_cls):
-        engine = MagicMock()
+        engine = _make_engine_mock()
         engine.tool_analyze.return_value = {}
         mock_cls.return_value = engine
 

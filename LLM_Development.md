@@ -84,3 +84,44 @@ Major cleanup pass: refactored storage to use a single persistent connection, di
 ### Test suite
 
 - 3 new tests added (313 total).
+
+---
+
+## v0.3.1 -- 2026-03-17 -- Comprehensive Code Review and Bug Fixes
+
+### Summary
+
+Full codebase audit using parallel agents to review every module, cross-validate all inter-module dependencies, and verify test coverage. Fixed 5 bugs, removed 5 instances of dead code, and made 4 performance/quality improvements.
+
+### Bugs fixed
+
+- **`git_analyzer.py`**: `_parse_diff_functions()` returned full declaration lines (e.g. `def foo():`) instead of bare function names (`foo`). This caused the `changed_functions` filter in `impact.py:get_impacted_tests()` to silently match nothing, making function-level impact filtering a no-op.
+- **`cli.py`**: `cmd_suggest_tests` read `item.get("score")` but `ImpactAnalyzer.suggest_tests()` returns key `"relevance"`. Score always displayed as empty string in human output.
+- **`engine.py`**: `tool_churn` fell back to returning all file churn stats even when a specific `unit_name` was requested and not found. Now returns `[]` for missing units.
+- **`cli.py`**: All 10 `cmd_*` handlers created `ChiselEngine` instances without closing them, leaking SQLite connections. Changed to `with ChiselEngine(...) as engine:`.
+- **`mcp_server.py`**: `ChiselMCPServer.stop()` didn't call `engine.close()`, leaking the SQLite connection.
+
+### Dead code removed
+
+- `Storage.delete_test_units_by_file()` and `Storage.delete_edges_for_test()` -- defined but never called from any module.
+- Unreachable `framework == "rust"` branch in `TestMapper.detect_framework()` -- no pattern in `_FRAMEWORK_PATTERNS` produces `"rust"`.
+- Unreachable `handler is None` guard in `cli.main()` -- argparse validates subcommands.
+- Unused `_project_dir` and `_storage_dir` fields on `ChiselMCPServer`.
+
+### Performance and quality improvements
+
+- `engine.update()` called `parse_log()` twice (once partial, once full) -- now calls it once.
+- `test_mapper.build_test_edges()` re-read the same file for every test unit from that file -- added file content cache.
+- `impact.py` moved lazy `GitAnalyzer` import to module top-level (no circular import risk).
+- `ast_utils.extract_code_units()` added `None` guard for extractor lookup defensively.
+
+### Test fixes
+
+- Engine fixture in `test_engine.py` changed from `return` to `yield` + `close()` to avoid connection leaks.
+- Simplified overly complex `test_cmd_serve_human` (removed dead `_orig` import, unnecessary `sys.modules` manipulation).
+- Added `_make_engine_mock()` helper for CLI handler tests to support context manager protocol.
+- Updated assertions in `test_git_analyzer.py` and removed tests for deleted `Storage` methods.
+
+### Test suite
+
+- 334 tests (removed 2 tests for deleted methods, adjusted 3 assertions).

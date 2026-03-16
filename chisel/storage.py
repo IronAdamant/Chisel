@@ -27,9 +27,11 @@ class Storage:
         # and stale test detection relies on orphaned edge references.
         return conn
 
-    def _connect(self):
-        """Return the persistent connection for transaction management."""
-        return self._conn
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def close(self):
         """Close the persistent database connection."""
@@ -38,7 +40,7 @@ class Storage:
             self._conn = None
 
     def _init_database(self):
-        with self._connect() as conn:
+        with self._conn as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS code_units (
                     id TEXT PRIMARY KEY,
@@ -139,7 +141,7 @@ class Storage:
 
     def upsert_code_unit(self, id, file_path, name, unit_type,
                          line_start=None, line_end=None, content_hash=None):
-        with self._connect() as conn:
+        with self._conn as conn:
             conn.execute(
                 """INSERT INTO code_units (id, file_path, name, unit_type,
                    line_start, line_end, content_hash, updated_at)
@@ -154,26 +156,26 @@ class Storage:
             )
 
     def get_code_unit(self, id):
-        with self._connect() as conn:
+        with self._conn as conn:
             row = conn.execute("SELECT * FROM code_units WHERE id = ?", (id,)).fetchone()
             return dict(row) if row else None
 
     def get_code_units_by_file(self, file_path):
-        with self._connect() as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT * FROM code_units WHERE file_path = ?", (file_path,)
             ).fetchall()
             return [dict(r) for r in rows]
 
     def delete_code_units_by_file(self, file_path):
-        with self._connect() as conn:
+        with self._conn as conn:
             conn.execute("DELETE FROM code_units WHERE file_path = ?", (file_path,))
 
     # --- test_units ---
 
     def upsert_test_unit(self, id, file_path, name, framework=None,
                          line_start=None, line_end=None, content_hash=None):
-        with self._connect() as conn:
+        with self._conn as conn:
             conn.execute(
                 """INSERT INTO test_units (id, file_path, name, framework,
                    line_start, line_end, content_hash, updated_at)
@@ -188,23 +190,19 @@ class Storage:
             )
 
     def get_test_unit(self, id):
-        with self._connect() as conn:
+        with self._conn as conn:
             row = conn.execute("SELECT * FROM test_units WHERE id = ?", (id,)).fetchone()
             return dict(row) if row else None
 
     def get_all_test_units(self):
-        with self._connect() as conn:
+        with self._conn as conn:
             rows = conn.execute("SELECT * FROM test_units").fetchall()
             return [dict(r) for r in rows]
-
-    def delete_test_units_by_file(self, file_path):
-        with self._connect() as conn:
-            conn.execute("DELETE FROM test_units WHERE file_path = ?", (file_path,))
 
     # --- test_edges ---
 
     def upsert_test_edge(self, test_id, code_id, edge_type, weight=1.0):
-        with self._connect() as conn:
+        with self._conn as conn:
             conn.execute(
                 """INSERT INTO test_edges (test_id, code_id, edge_type, weight)
                    VALUES (?, ?, ?, ?)
@@ -214,27 +212,23 @@ class Storage:
             )
 
     def get_edges_for_test(self, test_id):
-        with self._connect() as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT * FROM test_edges WHERE test_id = ?", (test_id,)
             ).fetchall()
             return [dict(r) for r in rows]
 
     def get_edges_for_code(self, code_id):
-        with self._connect() as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT * FROM test_edges WHERE code_id = ?", (code_id,)
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def delete_edges_for_test(self, test_id):
-        with self._connect() as conn:
-            conn.execute("DELETE FROM test_edges WHERE test_id = ?", (test_id,))
-
     # --- commits ---
 
     def upsert_commit(self, hash, author=None, author_email=None, date=None, message=None):
-        with self._connect() as conn:
+        with self._conn as conn:
             conn.execute(
                 """INSERT INTO commits (hash, author, author_email, date, message)
                    VALUES (?, ?, ?, ?, ?)
@@ -245,12 +239,12 @@ class Storage:
             )
 
     def get_commit(self, hash):
-        with self._connect() as conn:
+        with self._conn as conn:
             row = conn.execute("SELECT * FROM commits WHERE hash = ?", (hash,)).fetchone()
             return dict(row) if row else None
 
     def get_latest_commit_date(self):
-        with self._connect() as conn:
+        with self._conn as conn:
             row = conn.execute(
                 "SELECT MAX(date) as max_date FROM commits"
             ).fetchone()
@@ -259,7 +253,7 @@ class Storage:
     # --- commit_files ---
 
     def upsert_commit_file(self, commit_hash, file_path, insertions=0, deletions=0):
-        with self._connect() as conn:
+        with self._conn as conn:
             conn.execute(
                 """INSERT INTO commit_files (commit_hash, file_path, insertions, deletions)
                    VALUES (?, ?, ?, ?)
@@ -269,7 +263,7 @@ class Storage:
             )
 
     def get_commits_for_file(self, file_path):
-        with self._connect() as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 """SELECT c.*, cf.insertions, cf.deletions FROM commits c
                    JOIN commit_files cf ON c.hash = cf.commit_hash
@@ -282,7 +276,7 @@ class Storage:
 
     def store_blame(self, file_path, line_start, line_end, commit_hash,
                     author, author_email, date, content_hash):
-        with self._connect() as conn:
+        with self._conn as conn:
             conn.execute(
                 """INSERT INTO blame_cache (file_path, line_start, line_end,
                    commit_hash, author, author_email, date, content_hash)
@@ -296,7 +290,7 @@ class Storage:
             )
 
     def get_blame(self, file_path, content_hash):
-        with self._connect() as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 """SELECT * FROM blame_cache
                    WHERE file_path = ? AND content_hash = ?
@@ -306,14 +300,14 @@ class Storage:
             return [dict(r) for r in rows]
 
     def invalidate_blame(self, file_path):
-        with self._connect() as conn:
+        with self._conn as conn:
             conn.execute("DELETE FROM blame_cache WHERE file_path = ?", (file_path,))
 
     # --- co_changes ---
 
     def upsert_co_change(self, file_a, file_b, co_commit_count, last_co_commit=None):
         a, b = sorted([file_a, file_b])
-        with self._connect() as conn:
+        with self._conn as conn:
             conn.execute(
                 """INSERT INTO co_changes (file_a, file_b, co_commit_count, last_co_commit)
                    VALUES (?, ?, ?, ?)
@@ -324,7 +318,7 @@ class Storage:
             )
 
     def get_co_changes(self, file_path, min_count=3):
-        with self._connect() as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 """SELECT * FROM co_changes
                    WHERE (file_a = ? OR file_b = ?) AND co_commit_count >= ?
@@ -339,7 +333,7 @@ class Storage:
                           distinct_authors=0, total_insertions=0, total_deletions=0,
                           last_changed=None, churn_score=0.0):
         unit_name = unit_name or ""
-        with self._connect() as conn:
+        with self._conn as conn:
             conn.execute(
                 """INSERT INTO churn_stats (file_path, unit_name, commit_count,
                    distinct_authors, total_insertions, total_deletions,
@@ -358,7 +352,7 @@ class Storage:
 
     def get_churn_stat(self, file_path, unit_name=None):
         unit_name = unit_name or ""
-        with self._connect() as conn:
+        with self._conn as conn:
             row = conn.execute(
                 "SELECT * FROM churn_stats WHERE file_path = ? AND unit_name = ?",
                 (file_path, unit_name),
@@ -366,7 +360,7 @@ class Storage:
             return dict(row) if row else None
 
     def get_all_churn_stats(self, file_path=None):
-        with self._connect() as conn:
+        with self._conn as conn:
             if file_path:
                 rows = conn.execute(
                     "SELECT * FROM churn_stats WHERE file_path = ? ORDER BY churn_score DESC",
@@ -381,7 +375,7 @@ class Storage:
     # --- file_hashes ---
 
     def set_file_hash(self, file_path, content_hash):
-        with self._connect() as conn:
+        with self._conn as conn:
             conn.execute(
                 """INSERT INTO file_hashes (file_path, content_hash, updated_at)
                    VALUES (?, ?, ?)
@@ -391,7 +385,7 @@ class Storage:
             )
 
     def get_file_hash(self, file_path):
-        with self._connect() as conn:
+        with self._conn as conn:
             row = conn.execute(
                 "SELECT content_hash FROM file_hashes WHERE file_path = ?",
                 (file_path,),

@@ -3,6 +3,8 @@
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from chisel.git_analyzer import GitAnalyzer
+
 
 class ImpactAnalyzer:
     """Analyzes test impact, risk, and ownership using data from Storage."""
@@ -218,6 +220,7 @@ class ImpactAnalyzer:
         """Get code ownership breakdown based on git blame.
 
         Shows who originally authored each portion of the file.
+        Delegates to GitAnalyzer.compute_ownership for the core aggregation.
 
         Returns:
             List of dicts sorted by line_count desc:
@@ -228,19 +231,9 @@ class ImpactAnalyzer:
         if not blame_data:
             return []
 
-        lines_by_author, emails, total = _aggregate_blame_lines(blame_data)
-
-        result = []
-        for author, count in lines_by_author.items():
-            pct = (count / total * 100) if total > 0 else 0
-            result.append({
-                "author": author,
-                "author_email": emails.get(author, ""),
-                "line_count": count,
-                "percentage": round(pct, 2),
-                "role": "original_author",
-            })
-        result.sort(key=lambda x: x["line_count"], reverse=True)
+        result = GitAnalyzer.compute_ownership(blame_data)
+        for entry in result:
+            entry["role"] = "original_author"
         return result
 
     # ------------------------------------------------------------------ #
@@ -312,7 +305,7 @@ class ImpactAnalyzer:
                 "percentage": round(pct, 2),
                 "role": "suggested_reviewer",
             })
-        result.sort(key=lambda x: x["recent_commits"], reverse=True)
+        result.sort(key=lambda x: x["percentage"], reverse=True)
         return result
 
 

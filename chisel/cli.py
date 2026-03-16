@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-import sys
 
 from chisel.engine import ChiselEngine
 
@@ -112,28 +111,27 @@ def create_parser():
 # Output helpers
 # ------------------------------------------------------------------ #
 
-def _print_json(data, file=None):
+def _print_json(data):
     """Print data as formatted JSON."""
-    print(json.dumps(data, indent=2, default=str), file=file or sys.stdout)
+    print(json.dumps(data, indent=2, default=str))
 
 
-def _print_dict(data, file=None):
-    """Print a dict as key: value lines."""
-    out = file or sys.stdout
+def _print_result(data):
+    """Print a dict or list of dicts as key: value lines."""
     if not data:
-        print("No results.", file=out)
+        print("No results.")
         return
     if isinstance(data, dict):
         for key, value in data.items():
-            print(f"{key}: {value}", file=out)
+            print(f"{key}: {value}")
     elif isinstance(data, list):
         for item in data:
             if isinstance(item, dict):
                 for key, value in item.items():
-                    print(f"  {key}: {value}", file=out)
-                print(file=out)
+                    print(f"  {key}: {value}")
+                print()
             else:
-                print(f"  {item}", file=out)
+                print(f"  {item}")
 
 
 # ------------------------------------------------------------------ #
@@ -142,185 +140,180 @@ def _print_dict(data, file=None):
 
 def cmd_analyze(args):
     """Handle the 'analyze' subcommand."""
-    engine = ChiselEngine(args.project_dir, storage_dir=args.storage_dir)
-    result = engine.tool_analyze(directory=args.directory, force=args.force)
-    if args.json_output:
-        _print_json(result)
-    else:
-        print("Analysis complete:")
-        for key, value in result.items():
-            label = key.replace("_", " ").title()
-            print(f"  {label}: {value}")
-    return result
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_analyze(directory=args.directory, force=args.force)
+        if args.json_output:
+            _print_json(result)
+        else:
+            print("Analysis complete:")
+            for key, value in result.items():
+                label = key.replace("_", " ").title()
+                print(f"  {label}: {value}")
+        return result
 
 
 def cmd_impact(args):
     """Handle the 'impact' subcommand."""
-    engine = ChiselEngine(args.project_dir, storage_dir=args.storage_dir)
-    result = engine.tool_impact(args.files)
-    if args.json_output:
-        _print_json(result)
-    else:
-        if not result:
-            print("No impacted tests found.")
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_impact(args.files)
+        if args.json_output:
+            _print_json(result)
         else:
-            print("Impacted tests:")
-            for item in result:
-                test_id = item.get("test_id", item.get("id", "unknown"))
-                reason = item.get("reason", item.get("edge_type", ""))
-                print(f"  {test_id}  ({reason})")
-    return result
+            if not result:
+                print("No impacted tests found.")
+            else:
+                print("Impacted tests:")
+                for item in result:
+                    test_id = item.get("test_id", item.get("id", "unknown"))
+                    reason = item.get("reason", item.get("edge_type", ""))
+                    print(f"  {test_id}  ({reason})")
+        return result
 
 
 def cmd_suggest_tests(args):
     """Handle the 'suggest-tests' subcommand."""
-    engine = ChiselEngine(args.project_dir, storage_dir=args.storage_dir)
-    result = engine.tool_suggest_tests(args.file)
-    if args.json_output:
-        _print_json(result)
-    else:
-        if not result:
-            print("No test suggestions.")
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_suggest_tests(args.file)
+        if args.json_output:
+            _print_json(result)
         else:
-            print("Suggested tests:")
-            for item in result:
-                name = item.get("name", item.get("test_id", "unknown"))
-                score = item.get("score", item.get("weight", ""))
-                print(f"  {name}  (score: {score})")
-    return result
+            if not result:
+                print("No test suggestions.")
+            else:
+                print("Suggested tests:")
+                for item in result:
+                    name = item.get("name", item.get("test_id", "unknown"))
+                    score = item.get("relevance", item.get("score", ""))
+                    print(f"  {name}  (score: {score})")
+        return result
 
 
 def cmd_churn(args):
     """Handle the 'churn' subcommand."""
-    engine = ChiselEngine(args.project_dir, storage_dir=args.storage_dir)
-    result = engine.tool_churn(args.file, unit_name=args.unit)
-    if args.json_output:
-        _print_json(result)
-    else:
-        if isinstance(result, dict):
-            print(f"Churn stats for {args.file}:")
-            for key, value in result.items():
-                label = key.replace("_", " ").title()
-                print(f"  {label}: {value}")
-        elif isinstance(result, list):
-            print(f"Churn stats for {args.file}:")
-            _print_dict(result)
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_churn(args.file, unit_name=args.unit)
+        if args.json_output:
+            _print_json(result)
         else:
-            print("No churn data available.")
-    return result
+            if not result:
+                print("No churn data available.")
+            else:
+                print(f"Churn stats for {args.file}:")
+                _print_result(result)
+        return result
 
 
 def cmd_ownership(args):
     """Handle the 'ownership' subcommand."""
-    engine = ChiselEngine(args.project_dir, storage_dir=args.storage_dir)
-    result = engine.tool_ownership(args.file)
-    if args.json_output:
-        _print_json(result)
-    else:
-        if not result:
-            print("No ownership data.")
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_ownership(args.file)
+        if args.json_output:
+            _print_json(result)
         else:
-            print(f"Ownership for {args.file}:")
-            for item in result:
-                author = item.get("author", "unknown")
-                pct = item.get("percentage", item.get("line_count", ""))
-                print(f"  {author}: {pct}")
-    return result
+            if not result:
+                print("No ownership data.")
+            else:
+                print(f"Ownership for {args.file}:")
+                for item in result:
+                    author = item.get("author", "unknown")
+                    pct = item.get("percentage", item.get("line_count", ""))
+                    print(f"  {author}: {pct}")
+        return result
 
 
 def cmd_coupling(args):
     """Handle the 'coupling' subcommand."""
-    engine = ChiselEngine(args.project_dir, storage_dir=args.storage_dir)
-    result = engine.tool_coupling(args.file, min_count=args.min_count)
-    if args.json_output:
-        _print_json(result)
-    else:
-        if not result:
-            print("No coupling data.")
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_coupling(args.file, min_count=args.min_count)
+        if args.json_output:
+            _print_json(result)
         else:
-            print(f"Co-change coupling for {args.file}:")
-            for item in result:
-                partner = item.get("file_b", item.get("partner", "unknown"))
-                count = item.get("co_commit_count", item.get("count", ""))
-                print(f"  {partner}  ({count} co-commits)")
-    return result
+            if not result:
+                print("No coupling data.")
+            else:
+                print(f"Co-change coupling for {args.file}:")
+                for item in result:
+                    partner = item.get("file_b", item.get("partner", "unknown"))
+                    count = item.get("co_commit_count", item.get("count", ""))
+                    print(f"  {partner}  ({count} co-commits)")
+        return result
 
 
 def cmd_risk_map(args):
     """Handle the 'risk-map' subcommand."""
-    engine = ChiselEngine(args.project_dir, storage_dir=args.storage_dir)
-    result = engine.tool_risk_map(directory=args.directory)
-    if args.json_output:
-        _print_json(result)
-    else:
-        if not result:
-            print("No risk data.")
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_risk_map(directory=args.directory)
+        if args.json_output:
+            _print_json(result)
         else:
-            print("Risk map:")
-            for item in result:
-                fpath = item.get("file_path", item.get("file", "unknown"))
-                score = item.get("risk_score", item.get("score", ""))
-                print(f"  {fpath}: {score}")
-    return result
+            if not result:
+                print("No risk data.")
+            else:
+                print("Risk map:")
+                for item in result:
+                    fpath = item.get("file_path", item.get("file", "unknown"))
+                    score = item.get("risk_score", item.get("score", ""))
+                    print(f"  {fpath}: {score}")
+        return result
 
 
 def cmd_stale_tests(args):
     """Handle the 'stale-tests' subcommand."""
-    engine = ChiselEngine(args.project_dir, storage_dir=args.storage_dir)
-    result = engine.tool_stale_tests()
-    if args.json_output:
-        _print_json(result)
-    else:
-        if not result:
-            print("No stale tests found.")
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_stale_tests()
+        if args.json_output:
+            _print_json(result)
         else:
-            print("Stale tests:")
-            for item in result:
-                test_id = item.get("test_id", item.get("id", "unknown"))
-                reason = item.get("reason", "")
-                print(f"  {test_id}  ({reason})")
-    return result
+            if not result:
+                print("No stale tests found.")
+            else:
+                print("Stale tests:")
+                for item in result:
+                    test_id = item.get("test_id", item.get("id", "unknown"))
+                    reason = item.get("reason", "")
+                    print(f"  {test_id}  ({reason})")
+        return result
 
 
 def cmd_history(args):
     """Handle the 'history' subcommand."""
-    engine = ChiselEngine(args.project_dir, storage_dir=args.storage_dir)
-    result = engine.tool_history(args.file)
-    if args.json_output:
-        _print_json(result)
-    else:
-        if not result:
-            print("No history found.")
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_history(args.file)
+        if args.json_output:
+            _print_json(result)
         else:
-            print(f"History for {args.file}:")
-            for item in result:
-                commit_hash = item.get("hash", item.get("commit_hash", ""))
-                short = commit_hash[:8] if commit_hash else "?"
-                author = item.get("author", "")
-                date = item.get("date", "")
-                msg = item.get("message", "")
-                print(f"  {short}  {date}  {author}  {msg}")
-    return result
+            if not result:
+                print("No history found.")
+            else:
+                print(f"History for {args.file}:")
+                for item in result:
+                    commit_hash = item.get("hash", item.get("commit_hash", ""))
+                    short = commit_hash[:8] if commit_hash else "?"
+                    author = item.get("author", "")
+                    date = item.get("date", "")
+                    msg = item.get("message", "")
+                    print(f"  {short}  {date}  {author}  {msg}")
+        return result
 
 
 def cmd_who_reviews(args):
     """Handle the 'who-reviews' subcommand."""
-    engine = ChiselEngine(args.project_dir, storage_dir=args.storage_dir)
-    result = engine.tool_who_reviews(args.file)
-    if args.json_output:
-        _print_json(result)
-    else:
-        if not result:
-            print("No reviewer suggestions.")
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_who_reviews(args.file)
+        if args.json_output:
+            _print_json(result)
         else:
-            print(f"Suggested reviewers for {args.file}:")
-            for item in result:
-                author = item.get("author", "unknown")
-                commits = item.get("recent_commits", "")
-                days = item.get("days_since_last_commit", "?")
-                pct = item.get("percentage", "")
-                print(f"  {author}: {pct}% ({commits} commits, {days}d ago)")
-    return result
+            if not result:
+                print("No reviewer suggestions.")
+            else:
+                print(f"Suggested reviewers for {args.file}:")
+                for item in result:
+                    author = item.get("author", "unknown")
+                    commits = item.get("recent_commits", "")
+                    days = item.get("days_since_last_commit", "?")
+                    pct = item.get("percentage", "")
+                    print(f"  {author}: {pct}% ({commits} commits, {days}d ago)")
+        return result
 
 
 def cmd_serve(args):
@@ -338,6 +331,9 @@ def cmd_serve(args):
 
 def cmd_serve_mcp(args):
     """Handle the 'serve-mcp' subcommand."""
+    os.environ["CHISEL_PROJECT_DIR"] = args.project_dir
+    if args.storage_dir:
+        os.environ["CHISEL_STORAGE_DIR"] = args.storage_dir
     from chisel.mcp_stdio import main as mcp_main
     mcp_main()
 
@@ -382,11 +378,7 @@ def main(argv=None):
         parser.print_help()
         return None
 
-    handler = _COMMANDS.get(args.command)
-    if handler is None:
-        parser.print_help()
-        return None
-
+    handler = _COMMANDS[args.command]
     return handler(args)
 
 

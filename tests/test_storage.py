@@ -99,11 +99,6 @@ class TestTestUnits:
         all_units = storage.get_all_test_units()
         assert len(all_units) == 2
 
-    def test_delete_by_file(self, storage):
-        storage.upsert_test_unit("t.py:a", "t.py", "a")
-        storage.delete_test_units_by_file("t.py")
-        assert storage.get_test_unit("t.py:a") is None
-
 
 class TestTestEdges:
     def test_upsert_and_get_for_test(self, storage):
@@ -122,13 +117,6 @@ class TestTestEdges:
         storage.upsert_test_edge("t2", "c1", "import")
         edges = storage.get_edges_for_code("c1")
         assert len(edges) == 2
-
-    def test_delete_for_test(self, storage):
-        storage.upsert_code_unit("c1", "f.py", "foo", "func")
-        storage.upsert_test_unit("t1", "t.py", "test_a")
-        storage.upsert_test_edge("t1", "c1", "call")
-        storage.delete_edges_for_test("t1")
-        assert storage.get_edges_for_test("t1") == []
 
     def test_upsert_updates_weight(self, storage):
         storage.upsert_code_unit("c1", "f.py", "foo", "func")
