@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from chisel.git_analyzer import GitAnalyzer
+from chisel.git_analyzer import GitAnalyzer, _parse_iso_date
 
 
 @pytest.fixture
@@ -551,8 +551,8 @@ class TestChurnIntegration:
         assert result["distinct_authors"] == 1
         assert result["total_insertions"] > 0
         # Git may format UTC offset as +00:00 or Z depending on version
-        last = datetime.fromisoformat(result["last_changed"])
-        expected = datetime.fromisoformat("2026-03-01T12:00:00+00:00")
+        last = _parse_iso_date(result["last_changed"])
+        expected = datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
         assert last == expected
         assert result["churn_score"] > 0
 
