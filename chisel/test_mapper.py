@@ -79,15 +79,16 @@ class TestMapper:
         Each dict: id, file_path, name, framework, line_start, line_end, content_hash
         """
         framework = self.detect_framework(file_path)
-        if framework is None and file_path.endswith(".rs"):
-            if _check_rust_test(file_path):
-                framework = "rust"
-        if framework is None:
-            return []
 
         try:
             content = Path(file_path).read_text(encoding="utf-8", errors="replace")
         except OSError:
+            return []
+
+        if framework is None and file_path.endswith(".rs"):
+            if "#[test]" in content or "#[cfg(test)]" in content:
+                framework = "rust"
+        if framework is None:
             return []
 
         rel_path = os.path.relpath(file_path, self.project_dir)
@@ -271,7 +272,12 @@ def _extract_python_deps_regex(content):
         deps.append({"name": m.group(1), "dep_type": "import"})
     for m in re.finditer(r"(\w+)\s*\(", content):
         name = m.group(1)
-        if name not in ("if", "for", "while", "with", "return", "print"):
+        if name not in ("if", "for", "while", "with", "return", "print",
+                         "class", "def", "import", "from", "raise", "assert",
+                         "del", "yield", "lambda", "elif", "except", "async",
+                         "await", "not", "and", "or", "in", "is", "pass",
+                         "break", "continue", "try", "finally", "global",
+                         "nonlocal"):
             deps.append({"name": name, "dep_type": "call"})
     return _dedupe_deps(deps)
 

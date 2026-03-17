@@ -97,15 +97,9 @@ async def _run_server():
     project_dir = os.environ.get("CHISEL_PROJECT_DIR")
     storage_dir = os.environ.get("CHISEL_STORAGE_DIR")
 
-    if not _MCP_AVAILABLE:
-        raise RuntimeError("The 'mcp' package is not installed.")
-
-    if project_dir is None:
-        project_dir = os.getcwd()
-
-    engine = ChiselEngine(project_dir, storage_dir=storage_dir)
+    server = create_server(storage_dir=storage_dir, project_dir=project_dir)
+    engine = server._engine
     try:
-        server = _configure_server(engine)
         async with stdio_server() as (read_stream, write_stream):
             await server.run(
                 read_stream,

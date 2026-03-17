@@ -4,6 +4,39 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## v0.3.3 -- 2026-03-17 -- Codebase Audit & Cleanup
+
+### Summary
+Full codebase audit across all 10 source files and 11 test files. Fixed bugs, removed dead code, eliminated redundancy, and improved encapsulation.
+
+### Bug Fixes
+- **engine.py**: `_scan_code_files()` was case-sensitive for extensions (`.PY` files skipped); now uses `.lower()`
+- **engine.py**: `_scan_code_files()` called inside `write_lock()` in `update()`, blocking readers during filesystem walk; moved outside lock
+- **git_analyzer.py**: `compute_churn()` `commit_count` included commits with unparseable dates that were skipped in analysis; now counts only analyzed commits
+- **git_analyzer.py**: `_parse_diff_functions()` fell back to raw hunk context as function name (producing garbage like `class Foo:`); now skips non-function contexts
+- **cli.py**: `--passed`/`--failed` flags on `record-result` were not mutually exclusive; both given silently ignored `--failed`; now uses `add_mutually_exclusive_group()`
+- **cli.py**: `cmd_serve` did not clean up engine on non-KeyboardInterrupt exceptions; now uses try/finally
+
+### Dead Code Removed
+- **storage.py**: Removed `get_latest_commit_date()` — never called from any production code
+
+### Code Improvements
+- **engine.py**: `_detect_diff_base()` no longer calls private `GitAnalyzer._run_git()`; new public `get_current_branch()` and `branch_exists()` methods added to `GitAnalyzer`
+- **cli.py**: Added `--no-exclude-tests` flag to `test-gaps` subcommand (was present in MCP schema but missing from CLI)
+- **cli.py**: Removed duplicate `shared` parent from top-level parser (subcommands already inherit it)
+- **storage.py**: Fixed `get_stats()` docstring (`blame_blocks` → `blame_cache`)
+- **storage.py**: Added `ORDER BY` to `get_all_test_units()` for deterministic results
+- **storage.py**: `cleanup_orphaned_test_results()` now passes tuple instead of list to `_execute()` for consistency
+- **test_mapper.py**: Eliminated triple file read for Rust test files (content now read once, reused for framework detection)
+- **mcp_stdio.py**: `_run_server()` now reuses `create_server()` instead of duplicating engine creation logic
+- **cli.py**: Removed extra blank line between `_limit()` and command handlers
+
+### Tests
+- Updated 4 test assertions to match code changes (removed 2 dead-code tests, updated 2 CLI mock assertions)
+- All 404 tests pass, ruff lint clean
+
+---
+
 ## v0.1.0 -- 2026-03-16 -- Initial Implementation
 
 ### Summary

@@ -221,7 +221,7 @@ class Storage:
         )
 
     def get_all_test_units(self):
-        return self._fetchall("SELECT * FROM test_units")
+        return self._fetchall("SELECT * FROM test_units ORDER BY file_path, name")
 
     # --- test_edges ---
 
@@ -258,10 +258,6 @@ class Storage:
 
     def get_commit(self, hash):
         return self._fetchone("SELECT * FROM commits WHERE hash = ?", (hash,))
-
-    def get_latest_commit_date(self):
-        row = self._fetchone("SELECT MAX(date) as max_date FROM commits")
-        return row["max_date"] if row else None
 
     # --- commit_files ---
 
@@ -472,7 +468,7 @@ class Storage:
         )
         if orphaned:
             placeholders = ",".join("?" for _ in orphaned)
-            ids = [r["test_id"] for r in orphaned]
+            ids = tuple(r["test_id"] for r in orphaned)
             self._execute(
                 f"DELETE FROM test_results WHERE test_id IN ({placeholders})", ids,
             )
@@ -483,7 +479,7 @@ class Storage:
 
         Returns:
             Dict: {code_units, test_units, test_edges, commits,
-                   commit_files, blame_blocks, co_changes, churn_stats,
+                   commit_files, blame_cache, co_changes, churn_stats,
                    file_hashes, test_results}
         """
         tables = [

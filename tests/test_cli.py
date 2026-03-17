@@ -610,7 +610,7 @@ class TestMain:
 
         main(["test-gaps", "--project-dir", "/tmp/p"])
 
-        engine.tool_test_gaps.assert_called_once_with(file_path=None, directory=None)
+        engine.tool_test_gaps.assert_called_once_with(file_path=None, directory=None, exclude_tests=True)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_test_gaps_with_file(self, mock_cls):
@@ -623,7 +623,7 @@ class TestMain:
 
         main(["test-gaps", "--project-dir", "/tmp/p", "app.py"])
 
-        engine.tool_test_gaps.assert_called_once_with(file_path="app.py", directory=None)
+        engine.tool_test_gaps.assert_called_once_with(file_path="app.py", directory=None, exclude_tests=True)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_analyze_force(self, mock_cls):

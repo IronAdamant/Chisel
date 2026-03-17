@@ -337,6 +337,7 @@ class GitAnalyzer:
         churn_score = 0.0
         last_changed = None
         last_changed_date = None
+        analyzed_count = 0
 
         for commit, file_info in matching:
             try:
@@ -344,6 +345,7 @@ class GitAnalyzer:
             except (ValueError, TypeError):
                 continue
 
+            analyzed_count += 1
             authors.add(commit["author"])
             total_ins += file_info["insertions"]
             total_del += file_info["deletions"]
@@ -356,7 +358,7 @@ class GitAnalyzer:
                 last_changed = commit["date"]
 
         return {
-            "commit_count": len(matching),
+            "commit_count": analyzed_count,
             "distinct_authors": len(authors),
             "total_insertions": total_ins,
             "total_deletions": total_del,
@@ -455,6 +457,18 @@ class GitAnalyzer:
     # changed files / functions
     # ------------------------------------------------------------------ #
 
+    def get_current_branch(self):
+        """Return the name of the currently checked-out branch."""
+        return self._run_git(["rev-parse", "--abbrev-ref", "HEAD"]).strip()
+
+    def branch_exists(self, name):
+        """Return True if a branch with the given name exists."""
+        try:
+            self._run_git(["rev-parse", "--verify", name])
+            return True
+        except RuntimeError:
+            return False
+
     def get_changed_files(self, ref="HEAD"):
         """Return list of files changed relative to the given ref.
 
@@ -492,9 +506,11 @@ class GitAnalyzer:
             m = _HUNK_RE.match(line)
             if m:
                 context = m.group(1).strip()
-                # Try to extract just the function name
+                # Only extract recognized function declarations
                 nm = _FUNC_NAME_RE.search(context)
-                func_name = nm.group(1) if nm else context
+                if not nm:
+                    continue
+                func_name = nm.group(1)
                 if func_name and func_name not in seen:
                     seen.add(func_name)
                     functions.append(func_name)

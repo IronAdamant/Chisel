@@ -35,7 +35,6 @@ def create_parser():
     parser = argparse.ArgumentParser(
         prog="chisel",
         description="Chisel — test impact analysis and code intelligence",
-        parents=[shared],
     )
 
     sub = parser.add_subparsers(dest="command")
@@ -113,15 +112,18 @@ def create_parser():
                         help="Scope to a single file")
     p_gaps.add_argument("--directory", default=None,
                         help="Scope to a directory")
+    p_gaps.add_argument("--no-exclude-tests", action="store_true", default=False,
+                        help="Include test file units in results")
 
     # record-result
     p_record = sub.add_parser("record-result", parents=[shared],
                               help="Record a test result (pass/fail)")
     p_record.add_argument("test_id", help="Test ID")
-    p_record.add_argument("--passed", action="store_true", default=False,
-                          help="Mark test as passed")
-    p_record.add_argument("--failed", action="store_true", default=False,
-                          help="Mark test as failed")
+    result_group = p_record.add_mutually_exclusive_group()
+    result_group.add_argument("--passed", action="store_true", default=False,
+                              help="Mark test as passed (default)")
+    result_group.add_argument("--failed", action="store_true", default=False,
+                              help="Mark test as failed")
     p_record.add_argument("--duration", type=int, default=None,
                           help="Duration in milliseconds")
 
@@ -158,7 +160,6 @@ def _limit(result, args):
     if args.limit is not None and isinstance(result, list):
         return result[:args.limit]
     return result
-
 
 
 # ------------------------------------------------------------------ #
@@ -360,7 +361,8 @@ def cmd_update(args):
 def cmd_test_gaps(args):
     """Handle the 'test-gaps' subcommand."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = _limit(engine.tool_test_gaps(file_path=args.file, directory=args.directory), args)
+        exclude_tests = not args.no_exclude_tests
+        result = _limit(engine.tool_test_gaps(file_path=args.file, directory=args.directory, exclude_tests=exclude_tests), args)
         if args.json_output:
             _print_json(result)
         else:
@@ -378,7 +380,7 @@ def cmd_test_gaps(args):
 
 def cmd_record_result(args):
     """Handle the 'record-result' subcommand."""
-    passed = args.passed or not args.failed  # default to passed if neither flag
+    passed = not args.failed  # default to passed if neither flag
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
         result = engine.tool_record_result(
             args.test_id, passed, duration_ms=args.duration,
@@ -415,7 +417,10 @@ def cmd_serve(args):
         port=args.port,
     )
     print(f"Starting HTTP server on {server.get_url()}")
-    server.start(blocking=True)
+    try:
+        server.start(blocking=True)
+    finally:
+        server.stop()
 
 
 def cmd_serve_mcp(args):

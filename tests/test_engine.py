@@ -41,8 +41,8 @@ class TestAnalyze:
 
     def test_analyze_populates_commits(self, engine):
         engine.analyze()
-        latest = engine.storage.get_latest_commit_date()
-        assert latest is not None
+        stats = engine.storage.get_stats()
+        assert stats["commits"] > 0
 
     def test_force_analyze(self, engine):
         engine.analyze()

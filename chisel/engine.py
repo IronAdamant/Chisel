@@ -93,8 +93,9 @@ class ChiselEngine:
         Returns:
             Dict summarizing what was updated.
         """
+        # Scan filesystem outside write lock to avoid blocking readers
+        code_files = self._scan_code_files()
         with self.lock.write_lock():
-            code_files = self._scan_code_files()
             changed_files = self._find_changed_files(code_files)
             self._parse_and_store_code_units(changed_files)
 
@@ -232,17 +233,12 @@ class ChiselEngine:
         On main/master, diffs against HEAD for unstaged changes.
         """
         try:
-            branch = self.git._run_git(
-                ["rev-parse", "--abbrev-ref", "HEAD"],
-            ).strip()
+            branch = self.git.get_current_branch()
             if branch in ("main", "master"):
                 return "HEAD"
             for name in ("main", "master"):
-                try:
-                    self.git._run_git(["rev-parse", "--verify", name])
+                if self.git.branch_exists(name):
                     return name
-                except RuntimeError:
-                    continue
             return "HEAD"
         except RuntimeError:
             return "HEAD"
@@ -406,6 +402,6 @@ class ChiselEngine:
         for root, dirs, filenames in os.walk(start_dir):
             dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
             for fname in filenames:
-                if Path(fname).suffix in _CODE_EXTENSIONS:
+                if Path(fname).suffix.lower() in _CODE_EXTENSIONS:
                     files.append(os.path.join(root, fname))
         return sorted(files)

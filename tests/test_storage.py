@@ -135,15 +135,6 @@ class TestCommits:
         assert c["author"] == "Alice"
         assert c["message"] == "fix bug"
 
-    def test_get_latest_date(self, storage):
-        storage.upsert_commit("a", date="2026-01-01")
-        storage.upsert_commit("b", date="2026-03-15")
-        storage.upsert_commit("c", date="2026-02-10")
-        assert storage.get_latest_commit_date() == "2026-03-15"
-
-    def test_get_latest_date_empty(self, storage):
-        assert storage.get_latest_commit_date() is None
-
 
 class TestCommitFiles:
     def test_upsert_and_get_for_file(self, storage):
