@@ -142,6 +142,9 @@ class TestMainUnavailable:
 # Tests: _configure_server handlers (list_tools, call_tool)
 # ------------------------------------------------------------------ #
 
+mcp = pytest.importorskip("mcp", reason="requires optional 'mcp' package")
+
+
 class TestConfigureServerHandlers:
     """Test the async handlers registered by _configure_server."""
 
