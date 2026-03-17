@@ -77,7 +77,8 @@ class ImpactAnalyzer:
     def compute_risk_score(self, file_path, unit_name=None):
         """Compute a risk score for a file or function.
 
-        Formula: 0.4*churn + 0.3*coupling_breadth + 0.2*(1-test_coverage) + 0.1*author_concentration
+        Formula: 0.35*churn + 0.25*coupling + 0.2*coverage_gap
+                 + 0.1*author_concentration + 0.1*test_instability
 
         Returns:
             Dict: {file_path, unit_name, risk_score, breakdown}
@@ -96,9 +97,13 @@ class ImpactAnalyzer:
         if unit_name:
             code_units = [cu for cu in code_units if cu["name"] == unit_name]
         tested_count = 0
+        covering_test_ids = set()
         for cu in code_units:
-            if self.storage.get_edges_for_code(cu["id"]):
+            edges = self.storage.get_edges_for_code(cu["id"])
+            if edges:
                 tested_count += 1
+                for e in edges:
+                    covering_test_ids.add(e["test_id"])
         coverage = tested_count / max(len(code_units), 1)
         coverage_gap = 1.0 - coverage
 
@@ -106,11 +111,15 @@ class ImpactAnalyzer:
         blame_data = self.storage.get_blame(file_path, _latest_hash(self.storage, file_path))
         author_conc = _author_concentration(blame_data)
 
+        # Test instability component (0-1): avg failure rate of covering tests
+        instability = _test_instability(self.storage, covering_test_ids)
+
         risk = (
-            0.4 * churn_norm
-            + 0.3 * coupling_norm
+            0.35 * churn_norm
+            + 0.25 * coupling_norm
             + 0.2 * coverage_gap
             + 0.1 * author_conc
+            + 0.1 * instability
         )
         return {
             "file_path": file_path,
@@ -121,6 +130,7 @@ class ImpactAnalyzer:
                 "coupling": round(coupling_norm, 4),
                 "coverage_gap": round(coverage_gap, 4),
                 "author_concentration": round(author_conc, 4),
+                "test_instability": round(instability, 4),
             },
         }
 
@@ -131,20 +141,35 @@ class ImpactAnalyzer:
     def suggest_tests(self, file_path):
         """Suggest tests to run for a changed file, ordered by relevance.
 
+        Uses recorded test results to boost tests with higher failure rates.
+
         Returns:
             List of dicts: {test_id, file_path, name, relevance, reason}
         """
         impacted = self.get_impacted_tests([file_path])
-        return [
-            {
+
+        # Boost tests that have historically failed more often
+        failure_rates = {}
+        for row in self.storage.get_test_failure_rates():
+            if row["total_runs"] > 0:
+                failure_rates[row["test_id"]] = row["failures"] / row["total_runs"]
+
+        result = []
+        for item in impacted:
+            relevance = item["score"]
+            fail_rate = failure_rates.get(item["test_id"], 0.0)
+            # Boost by up to 50% based on historical failure rate
+            relevance *= (1.0 + 0.5 * fail_rate)
+            result.append({
                 "test_id": item["test_id"],
                 "file_path": item["file_path"],
                 "name": item["name"],
-                "relevance": item["score"],
+                "relevance": relevance,
                 "reason": item["reason"],
-            }
-            for item in impacted
-        ]
+            })
+
+        result.sort(key=lambda x: x["relevance"], reverse=True)
+        return result
 
     # ------------------------------------------------------------------ #
     # Stale test detection
@@ -338,3 +363,21 @@ def _author_concentration(blame_data):
 
     hhi = sum((count / total) ** 2 for count in lines_by_author.values())
     return round(hhi, 4)
+
+
+def _test_instability(storage, test_ids):
+    """Compute average failure rate for a set of tests (0 = stable, 1 = always fails).
+
+    Returns 0.0 if no recorded results exist.
+    """
+    if not test_ids:
+        return 0.0
+    failure_rates = {
+        r["test_id"]: r["failures"] / r["total_runs"]
+        for r in storage.get_test_failure_rates()
+        if r["total_runs"] > 0
+    }
+    rates = [failure_rates[tid] for tid in test_ids if tid in failure_rates]
+    if not rates:
+        return 0.0
+    return sum(rates) / len(rates)

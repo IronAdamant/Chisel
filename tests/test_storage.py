@@ -28,7 +28,7 @@ class TestDatabaseInit:
         expected = {
             "code_units", "test_units", "test_edges", "commits",
             "commit_files", "blame_cache", "co_changes", "churn_stats",
-            "file_hashes",
+            "file_hashes", "test_results",
         }
         conn = sqlite3.connect(str(storage.db_path))
         tables = {
@@ -235,6 +235,68 @@ class TestChurnStats:
         storage.upsert_churn_stat("g.py", "", 1, 1, 1, 0, "2026-01-01", 0.1)
         stats = storage.get_all_churn_stats("f.py")
         assert len(stats) == 2
+
+
+class TestTestResults:
+    def test_record_and_query(self, storage):
+        storage.record_test_result("t.py:test_a", True, duration_ms=120)
+        storage.record_test_result("t.py:test_a", False, duration_ms=80)
+        rates = storage.get_test_failure_rates()
+        assert len(rates) == 1
+        assert rates[0]["test_id"] == "t.py:test_a"
+        assert rates[0]["total_runs"] == 2
+        assert rates[0]["failures"] == 1
+
+    def test_all_passed(self, storage):
+        storage.record_test_result("t.py:test_b", True)
+        storage.record_test_result("t.py:test_b", True)
+        rates = storage.get_test_failure_rates()
+        assert rates[0]["failures"] == 0
+
+    def test_multiple_tests(self, storage):
+        storage.record_test_result("t1", True)
+        storage.record_test_result("t2", False)
+        storage.record_test_result("t2", False)
+        rates = {r["test_id"]: r for r in storage.get_test_failure_rates()}
+        assert rates["t1"]["failures"] == 0
+        assert rates["t2"]["failures"] == 2
+
+    def test_empty_results(self, storage):
+        assert storage.get_test_failure_rates() == []
+
+    def test_cleanup_orphaned_results(self, storage):
+        # Record result for a test that exists
+        storage.upsert_test_unit("t.py:test_a", "t.py", "test_a", "pytest")
+        storage.record_test_result("t.py:test_a", True)
+        # Record result for a test that does NOT exist
+        storage.record_test_result("gone:test_z", False)
+        cleaned = storage.cleanup_orphaned_test_results()
+        assert cleaned == 1
+        # Existing test's results should remain
+        rates = storage.get_test_failure_rates()
+        assert len(rates) == 1
+        assert rates[0]["test_id"] == "t.py:test_a"
+
+    def test_cleanup_no_orphans(self, storage):
+        storage.upsert_test_unit("t.py:test_a", "t.py", "test_a", "pytest")
+        storage.record_test_result("t.py:test_a", True)
+        assert storage.cleanup_orphaned_test_results() == 0
+
+
+class TestStats:
+    def test_empty_db(self, storage):
+        stats = storage.get_stats()
+        assert stats["code_units"] == 0
+        assert stats["test_results"] == 0
+        assert len(stats) == 10
+
+    def test_counts_data(self, storage):
+        storage.upsert_code_unit("f.py:foo:func", "f.py", "foo", "func")
+        storage.upsert_code_unit("f.py:bar:func", "f.py", "bar", "func")
+        storage.upsert_test_unit("t.py:test_a", "t.py", "test_a", "pytest")
+        stats = storage.get_stats()
+        assert stats["code_units"] == 2
+        assert stats["test_units"] == 1
 
 
 class TestFileHashes:

@@ -592,7 +592,7 @@ class TestMain:
 
         main(["diff-impact", "--project-dir", "/tmp/p"])
 
-        engine.tool_diff_impact.assert_called_once_with(ref="HEAD")
+        engine.tool_diff_impact.assert_called_once_with(ref=None)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_update(self, mock_cls):
@@ -646,3 +646,13 @@ class TestMain:
         main(["analyze", "--project-dir", "/tmp/p", "src/"])
 
         engine.tool_analyze.assert_called_once_with(directory="src/", force=False)
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_main_stats(self, mock_cls):
+        engine = _make_engine_mock()
+        engine.tool_stats.return_value = {"code_units": 5, "test_units": 3}
+        mock_cls.return_value = engine
+
+        main(["stats", "--project-dir", "/tmp/p"])
+
+        engine.tool_stats.assert_called_once()

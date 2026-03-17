@@ -80,6 +80,7 @@ class ChiselEngine:
             stats["test_units_found"] = len(test_units)
             stats["test_edges_built"] = edge_count
 
+            stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
             return stats
 
     # ------------------------------------------------------------------ #
@@ -116,6 +117,7 @@ class ChiselEngine:
                 pass
 
             self._discover_and_build_edges(code_files)
+            stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
             return stats
 
     # ------------------------------------------------------------------ #
@@ -213,6 +215,11 @@ class ChiselEngine:
         with self.lock.write_lock():
             self.storage.record_test_result(test_id, passed, duration_ms)
             return {"test_id": test_id, "passed": passed, "recorded": True}
+
+    def tool_stats(self):
+        """MCP tool: get summary counts for the Chisel database."""
+        with self.lock.read_lock():
+            return self.storage.get_stats()
 
     # ------------------------------------------------------------------ #
     # Shared internal helpers

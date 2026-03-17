@@ -108,12 +108,13 @@ def _find_block_end(lines: List[str], start_idx: int) -> int:
 
 
 def _strip_strings_and_comments(line: str) -> str:
-    """Remove string literals and trailing comments from a single line.
+    """Remove string literals and trailing ``//`` comments from a single line.
 
-    Handles ``//`` and ``#`` single-line comments plus ``"``, ``'``, and
-    backtick-quoted strings with backslash escaping.  Multi-line strings
-    and block comments (``/* */``) are **not** handled -- this is a
-    best-effort helper to avoid miscounting braces.
+    Handles ``"``, ``'``, and backtick-quoted strings with backslash
+    escaping.  ``#`` is **not** treated as a comment (Python files use
+    ``_py_block_end`` instead).  Multi-line strings and block comments
+    (``/* */``) are **not** handled -- this is a best-effort helper to
+    avoid miscounting braces.
     """
     result: list = []
     i = 0
@@ -162,19 +163,16 @@ def _extract_python_ast(file_path: str, content: str) -> List[CodeUnit]:
 
     units: List[CodeUnit] = []
 
+    # Build parent map in a single pass to avoid O(n²) class lookups
+    parent_map: dict = {}
+    for cls_node in ast.walk(tree):
+        if isinstance(cls_node, ast.ClassDef):
+            for child in ast.iter_child_nodes(cls_node):
+                parent_map[id(child)] = cls_node.name
+
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            # Determine qualified name for methods inside classes.
-            parent_class: Optional[str] = None
-            for cls_node in ast.walk(tree):
-                if isinstance(cls_node, ast.ClassDef):
-                    for child in ast.iter_child_nodes(cls_node):
-                        if child is node:
-                            parent_class = cls_node.name
-                            break
-                if parent_class:
-                    break
-
+            parent_class = parent_map.get(id(node))
             name = f"{parent_class}.{node.name}" if parent_class else node.name
             unit_type = (
                 "async_function"
@@ -338,7 +336,7 @@ _RS_PATTERNS = [
     (_RS_FN_RE, "function"),
     (_RS_STRUCT_RE, "struct"),
     (_RS_ENUM_RE, "enum"),
-    (_RS_IMPL_RE, lambda m: (m.group("name").strip(), "impl")),
+    (_RS_IMPL_RE, lambda m: (m.group("name"), "impl")),
 ]
 
 

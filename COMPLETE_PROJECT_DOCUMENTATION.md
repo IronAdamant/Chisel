@@ -28,12 +28,12 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 |------|---------|--------------|-----------|
 | `chisel/__init__.py` | Package init, exports `__version__` | -- | -- |
 | `chisel/ast_utils.py` | Multi-language AST extraction (Python/JS/TS/Go/Rust), `CodeUnit` dataclass, `_SKIP_DIRS` constant, `compute_file_hash`, `detect_language` | `ast`, `hashlib`, `re`, `dataclasses`, `pathlib` | [glossary: code unit](wiki-local/glossary.md) |
-| `chisel/storage.py` | SQLite persistence layer (WAL mode, 9 tables, single persistent connection), all CRUD operations | `sqlite3`, `datetime`, `pathlib` | [glossary: blame cache](wiki-local/glossary.md) |
+| `chisel/storage.py` | SQLite persistence layer (WAL mode, 10 tables, single persistent connection), all CRUD operations | `sqlite3`, `datetime`, `pathlib` | [glossary: blame cache](wiki-local/glossary.md) |
 | `chisel/git_analyzer.py` | Git log/blame parsing via subprocess, churn computation, ownership computation, co-change coupling, diff function extraction | `re`, `subprocess`, `collections`, `datetime`, `itertools` | [glossary: churn score](wiki-local/glossary.md) |
 | `chisel/test_mapper.py` | Test file discovery, framework detection (pytest/Jest/Go/Rust/Playwright), dependency extraction, test edge building | `ast`, `os`, `re`, `pathlib`, `chisel.ast_utils` | [glossary: test edge](wiki-local/glossary.md) |
 | `chisel/impact.py` | Impact analysis, risk scoring, stale test detection, ownership queries, reviewer suggestions | `collections`, `datetime`, `chisel.git_analyzer`, `chisel.storage` (via constructor injection) | [glossary: risk score](wiki-local/glossary.md) |
-| `chisel/engine.py` | Orchestrator -- owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock; exposes `tool_*()` methods for all 10 MCP tools | `os`, `pathlib`, `chisel.ast_utils`, `chisel.git_analyzer`, `chisel.impact`, `chisel.rwlock`, `chisel.storage`, `chisel.test_mapper` | [spec-project](wiki-local/spec-project.md) |
-| `chisel/cli.py` | argparse CLI with 12 subcommands, dispatch table, output formatting | `argparse`, `json`, `os`, `chisel.engine` | [spec-project: CLI](wiki-local/spec-project.md) |
+| `chisel/engine.py` | Orchestrator -- owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock; exposes `tool_*()` methods for all 15 MCP tools | `os`, `pathlib`, `chisel.ast_utils`, `chisel.git_analyzer`, `chisel.impact`, `chisel.rwlock`, `chisel.storage`, `chisel.test_mapper` | [spec-project](wiki-local/spec-project.md) |
+| `chisel/cli.py` | argparse CLI with 18 subcommands, dispatch table, output formatting | `argparse`, `json`, `os`, `chisel.engine` | [spec-project: CLI](wiki-local/spec-project.md) |
 | `chisel/mcp_server.py` | HTTP MCP server (GET /tools, /health; POST /call), ThreadedHTTPServer, tool schemas and dispatch table | `json`, `logging`, `threading`, `http.server`, `socketserver`, `chisel.engine` | [spec-project: MCP tools](wiki-local/spec-project.md) |
 | `chisel/mcp_stdio.py` | stdio MCP server for Claude Desktop/Cursor integration, requires optional `mcp` package | `asyncio`, `json`, `os`, `sys`, `chisel.engine`, `chisel.mcp_server` (imports `dispatch_tool`, `_TOOL_SCHEMAS`) | [spec-project: MCP tools](wiki-local/spec-project.md) |
 | `chisel/rwlock.py` | Read-write lock (multiple readers or one exclusive writer) for concurrent access | `threading`, `contextlib` | -- |
@@ -66,13 +66,13 @@ mcp_server.py --> engine.py
 mcp_stdio.py --> engine.py, mcp_server.py
 ```
 
-## SQLite Tables (9)
+## SQLite Tables (10)
 
-`code_units`, `test_units`, `test_edges`, `commits`, `commit_files`, `blame_cache`, `co_changes`, `churn_stats`, `file_hashes`
+`code_units`, `test_units`, `test_edges`, `commits`, `commit_files`, `blame_cache`, `co_changes`, `churn_stats`, `file_hashes`, `test_results`
 
 ## Entry Points
 
 | Script | Target | Description |
 |--------|--------|-------------|
-| `chisel` | `chisel.cli:main` | CLI with 12 subcommands |
+| `chisel` | `chisel.cli:main` | CLI with 18 subcommands |
 | `chisel-mcp` | `chisel.mcp_stdio:main` | stdio MCP server |

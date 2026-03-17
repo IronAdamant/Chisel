@@ -445,13 +445,57 @@ class Storage:
             (test_id, 1 if passed else 0, duration_ms, self._now()),
         )
 
-    def get_test_results(self, test_id, limit=10):
+    def get_test_failure_rates(self):
+        """Get failure stats for all tests with recorded results.
+
+        Returns:
+            List of dicts: {test_id, total_runs, failures}
+        """
         return self._fetchall(
-            """SELECT test_id, passed, duration_ms, recorded_at
-               FROM test_results WHERE test_id = ?
-               ORDER BY recorded_at DESC LIMIT ?""",
-            (test_id, limit),
+            """SELECT test_id,
+                      COUNT(*) AS total_runs,
+                      SUM(CASE WHEN passed = 0 THEN 1 ELSE 0 END) AS failures
+               FROM test_results
+               GROUP BY test_id"""
         )
+
+    def cleanup_orphaned_test_results(self):
+        """Delete test_results rows whose test_id no longer exists in test_units.
+
+        Returns:
+            Number of orphaned rows deleted.
+        """
+        orphaned = self._fetchall(
+            """SELECT DISTINCT tr.test_id FROM test_results tr
+               LEFT JOIN test_units tu ON tr.test_id = tu.id
+               WHERE tu.id IS NULL"""
+        )
+        if orphaned:
+            placeholders = ",".join("?" for _ in orphaned)
+            ids = [r["test_id"] for r in orphaned]
+            self._execute(
+                f"DELETE FROM test_results WHERE test_id IN ({placeholders})", ids,
+            )
+        return len(orphaned)
+
+    def get_stats(self):
+        """Get summary counts for all tables.
+
+        Returns:
+            Dict: {code_units, test_units, test_edges, commits,
+                   commit_files, blame_blocks, co_changes, churn_stats,
+                   file_hashes, test_results}
+        """
+        tables = [
+            "code_units", "test_units", "test_edges", "commits",
+            "commit_files", "blame_cache", "co_changes", "churn_stats",
+            "file_hashes", "test_results",
+        ]
+        stats = {}
+        for table in tables:
+            row = self._fetchone(f"SELECT COUNT(*) AS cnt FROM {table}")
+            stats[table] = row["cnt"]
+        return stats
 
     # --- file_hashes ---
 

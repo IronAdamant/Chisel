@@ -23,6 +23,9 @@ include = ["chisel*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore:coroutine.*was never awaited:RuntimeWarning",
+]
 
 [tool.ruff]
 line-length = 100

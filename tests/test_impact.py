@@ -2,7 +2,7 @@
 
 import pytest
 
-from chisel.impact import ImpactAnalyzer, _author_concentration
+from chisel.impact import ImpactAnalyzer, _author_concentration, _test_instability
 from chisel.storage import Storage
 
 
@@ -106,6 +106,7 @@ class TestRiskScore:
         assert "coupling" in bd
         assert "coverage_gap" in bd
         assert "author_concentration" in bd
+        assert "test_instability" in bd
 
     def test_low_risk_file(self, storage, analyzer):
         _seed_basic_data(storage)
@@ -133,6 +134,31 @@ class TestSuggestTests:
             assert "test_id" in s
             assert "relevance" in s
             assert "reason" in s
+
+
+class TestSuggestTestsFailureBoost:
+    def test_failure_boosts_relevance(self, storage, analyzer):
+        _seed_basic_data(storage)
+        # Get baseline suggestions without any recorded results
+        baseline = analyzer.suggest_tests("app.py")
+        assert len(baseline) > 0
+        baseline_scores = {s["test_id"]: s["relevance"] for s in baseline}
+
+        # Record failures for one test
+        storage.record_test_result("test_app.py:test_foo", False)
+        storage.record_test_result("test_app.py:test_foo", False)
+
+        boosted = analyzer.suggest_tests("app.py")
+        boosted_scores = {s["test_id"]: s["relevance"] for s in boosted}
+
+        # The failed test should have a higher relevance than baseline
+        assert boosted_scores["test_app.py:test_foo"] > baseline_scores["test_app.py:test_foo"]
+
+    def test_no_results_no_boost(self, storage, analyzer):
+        _seed_basic_data(storage)
+        # With no recorded results, suggest_tests should still work
+        suggestions = analyzer.suggest_tests("app.py")
+        assert len(suggestions) > 0
 
 
 class TestStaleTests:
@@ -231,3 +257,31 @@ class TestAuthorConcentration:
 
     def test_empty_blame(self):
         assert _author_concentration([]) == 1.0
+
+
+class TestTestInstability:
+    def test_no_results(self, storage):
+        assert _test_instability(storage, {"t1", "t2"}) == 0.0
+
+    def test_no_test_ids(self, storage):
+        assert _test_instability(storage, set()) == 0.0
+
+    def test_with_failures(self, storage):
+        storage.record_test_result("t1", False)
+        storage.record_test_result("t1", False)
+        rate = _test_instability(storage, {"t1"})
+        assert rate == 1.0
+
+    def test_mixed_results(self, storage):
+        storage.record_test_result("t1", True)
+        storage.record_test_result("t1", False)
+        rate = _test_instability(storage, {"t1"})
+        assert abs(rate - 0.5) < 0.01
+
+    def test_risk_score_includes_instability(self, storage, analyzer):
+        _seed_basic_data(storage)
+        # Record failures for a test covering app.py
+        storage.record_test_result("test_app.py:test_foo", False)
+        storage.record_test_result("test_app.py:test_foo", False)
+        risk = analyzer.compute_risk_score("app.py")
+        assert risk["breakdown"]["test_instability"] > 0

@@ -99,8 +99,8 @@ def create_parser():
     # diff-impact
     p_diff = sub.add_parser("diff-impact", parents=[shared],
                             help="Auto-detect changes and show impacted tests")
-    p_diff.add_argument("--ref", default="HEAD",
-                        help="Git ref to diff against (default: HEAD)")
+    p_diff.add_argument("--ref", default=None,
+                        help="Git ref to diff against (default: auto-detect)")
 
     # update
     sub.add_parser("update", parents=[shared],
@@ -124,6 +124,10 @@ def create_parser():
                           help="Mark test as failed")
     p_record.add_argument("--duration", type=int, default=None,
                           help="Duration in milliseconds")
+
+    # stats
+    sub.add_parser("stats", parents=[shared],
+                   help="Show database summary counts")
 
     # serve
     p_serve = sub.add_parser("serve", parents=[shared],
@@ -387,6 +391,20 @@ def cmd_record_result(args):
         return result
 
 
+def cmd_stats(args):
+    """Handle the 'stats' subcommand."""
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = engine.tool_stats()
+        if args.json_output:
+            _print_json(result)
+        else:
+            print("Chisel database stats:")
+            for table, count in result.items():
+                label = table.replace("_", " ").title()
+                print(f"  {label}: {count}")
+        return result
+
+
 def cmd_serve(args):
     """Handle the 'serve' subcommand."""
     from chisel.mcp_server import ChiselMCPServer
@@ -428,6 +446,7 @@ _COMMANDS = {
     "update": cmd_update,
     "test-gaps": cmd_test_gaps,
     "record-result": cmd_record_result,
+    "stats": cmd_stats,
     "serve": cmd_serve,
     "serve-mcp": cmd_serve_mcp,
 }

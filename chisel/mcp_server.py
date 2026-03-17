@@ -18,7 +18,7 @@ from chisel.engine import ChiselEngine
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------ #
-# Tool schemas — JSON Schema definitions for all 14 engine tools
+# Tool schemas — JSON Schema definitions for all 15 engine tools
 # ------------------------------------------------------------------ #
 
 _TOOL_SCHEMAS = {
@@ -228,6 +228,15 @@ _TOOL_SCHEMAS = {
             "required": [],
         },
     },
+    "stats": {
+        "name": "stats",
+        "description": "Get summary counts for the Chisel database (code units, tests, edges, commits, etc.).",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
     "test_gaps": {
         "name": "test_gaps",
         "description": (
@@ -274,6 +283,7 @@ _TOOL_DISPATCH = {
     "update": ("tool_update", []),
     "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests"]),
     "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
+    "stats": ("tool_stats", []),
 }
 
 # Inject 'limit' parameter into all list-returning tool schemas.
@@ -282,7 +292,7 @@ _LIMIT_PROP = {
     "description": "Maximum number of results to return.",
 }
 for _name, _schema in _TOOL_SCHEMAS.items():
-    if _name not in ("analyze", "update", "record_result"):
+    if _name not in ("analyze", "update", "record_result", "stats"):
         _schema["parameters"]["properties"]["limit"] = _LIMIT_PROP
 
 

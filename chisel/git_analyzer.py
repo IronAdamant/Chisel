@@ -339,14 +339,14 @@ class GitAnalyzer:
         last_changed_date = None
 
         for commit, file_info in matching:
-            authors.add(commit["author"])
-            total_ins += file_info["insertions"]
-            total_del += file_info["deletions"]
-
             try:
                 commit_date = _parse_iso_date(commit["date"])
             except (ValueError, TypeError):
                 continue
+
+            authors.add(commit["author"])
+            total_ins += file_info["insertions"]
+            total_del += file_info["deletions"]
 
             days_since = max((now - commit_date).total_seconds() / 86400, 0)
             churn_score += 1.0 / (1.0 + days_since)
