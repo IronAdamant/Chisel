@@ -366,7 +366,7 @@ class TestStoreBlame:
     def test_invalidates_old_blame(self, engine, git_project, run_git):
         engine.analyze()
         h1 = engine.storage.get_file_hash("app.py")
-        blame1 = engine.storage.get_blame("app.py", h1)
+        engine.storage.get_blame("app.py", h1)  # verify blame exists before invalidation
 
         # Modify, recommit, re-run blame
         src = git_project / "app.py"

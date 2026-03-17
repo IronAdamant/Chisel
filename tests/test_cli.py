@@ -3,8 +3,6 @@
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from chisel.cli import cmd_analyze, cmd_churn, cmd_coupling, cmd_history
 from chisel.cli import cmd_impact, cmd_ownership, cmd_risk_map
 from chisel.cli import cmd_serve, cmd_serve_mcp, cmd_stale_tests
@@ -203,7 +201,7 @@ class TestHandlerOutputFormats:
         mock_cls.return_value = engine
 
         args = _make_args(directory=".", force=False, json_output=True)
-        result = cmd_analyze(args)
+        cmd_analyze(args)
 
         output = capsys.readouterr().out
         parsed = json.loads(output)
