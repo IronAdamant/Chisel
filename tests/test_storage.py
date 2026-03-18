@@ -2,17 +2,6 @@
 
 import sqlite3
 
-import pytest
-
-from chisel.storage import Storage
-
-
-@pytest.fixture
-def storage(tmp_path):
-    s = Storage(base_dir=tmp_path / "chisel_data")
-    yield s
-    s.close()
-
 
 class TestDatabaseInit:
     def test_creates_database_file(self, storage):

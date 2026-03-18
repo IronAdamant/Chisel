@@ -3,10 +3,11 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from chisel.cli import cmd_analyze, cmd_churn, cmd_coupling, cmd_history
-from chisel.cli import cmd_impact, cmd_ownership, cmd_risk_map
-from chisel.cli import cmd_serve, cmd_serve_mcp, cmd_stale_tests
-from chisel.cli import cmd_suggest_tests, cmd_who_reviews
+from chisel.cli import cmd_analyze, cmd_churn, cmd_coupling, cmd_diff_impact
+from chisel.cli import cmd_history, cmd_impact, cmd_ownership, cmd_record_result
+from chisel.cli import cmd_risk_map, cmd_serve, cmd_serve_mcp, cmd_stale_tests
+from chisel.cli import cmd_stats, cmd_suggest_tests, cmd_test_gaps
+from chisel.cli import cmd_update, cmd_who_reviews
 from chisel.cli import create_parser, main
 
 
@@ -154,6 +155,7 @@ def _make_args(**kwargs):
         "project_dir": "/tmp/fake_project",
         "storage_dir": None,
         "json_output": False,
+        "limit": None,
     }
     defaults.update(kwargs)
     args = MagicMock()
@@ -439,6 +441,118 @@ class TestHandlerOutputFormats:
         output = capsys.readouterr().out
         assert "Carol" in output
 
+    @patch("chisel.cli.ChiselEngine")
+    def test_cmd_diff_impact_human(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_diff_impact.return_value = [
+            {"test_id": "test_changed", "reason": "diff"},
+        ]
+        mock_cls.return_value = engine
+
+        args = _make_args(ref=None)
+        result = cmd_diff_impact(args)
+
+        assert len(result) == 1
+        output = capsys.readouterr().out
+        assert "test_changed" in output
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_cmd_diff_impact_empty(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_diff_impact.return_value = []
+        mock_cls.return_value = engine
+
+        args = _make_args(ref=None)
+        cmd_diff_impact(args)
+
+        output = capsys.readouterr().out
+        assert "No impacted tests" in output
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_cmd_update_human(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_update.return_value = {
+            "files_updated": 3,
+            "new_commits": 7,
+        }
+        mock_cls.return_value = engine
+
+        args = _make_args()
+        result = cmd_update(args)
+
+        assert result == {"files_updated": 3, "new_commits": 7}
+        output = capsys.readouterr().out
+        assert "Incremental update complete" in output
+        assert "3" in output
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_cmd_stats_human(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_stats.return_value = {"code_units": 5}
+        mock_cls.return_value = engine
+
+        args = _make_args()
+        result = cmd_stats(args)
+
+        assert result == {"code_units": 5}
+        output = capsys.readouterr().out
+        assert "Chisel database stats" in output
+        assert "5" in output
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_cmd_test_gaps_human(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_test_gaps.return_value = [
+            {"file_path": "core.py", "name": "process", "unit_type": "function",
+             "line_start": 10, "line_end": 25, "churn_score": 1.5},
+        ]
+        mock_cls.return_value = engine
+
+        args = _make_args(file=None, directory=None, no_exclude_tests=False)
+        result = cmd_test_gaps(args)
+
+        assert len(result) == 1
+        output = capsys.readouterr().out
+        assert "core.py" in output
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_cmd_test_gaps_empty(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_test_gaps.return_value = []
+        mock_cls.return_value = engine
+
+        args = _make_args(file=None, directory=None, no_exclude_tests=False)
+        cmd_test_gaps(args)
+
+        output = capsys.readouterr().out
+        assert "No untested" in output
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_cmd_record_result_passed(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_record_result.return_value = {"status": "recorded"}
+        mock_cls.return_value = engine
+
+        args = _make_args(test_id="test_foo", failed=False, duration=None)
+        cmd_record_result(args)
+
+        output = capsys.readouterr().out
+        assert "PASSED" in output
+        assert "test_foo" in output
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_cmd_record_result_failed(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_record_result.return_value = {"status": "recorded"}
+        mock_cls.return_value = engine
+
+        args = _make_args(test_id="test_bar", failed=True, duration=100)
+        cmd_record_result(args)
+
+        output = capsys.readouterr().out
+        assert "FAILED" in output
+        assert "test_bar" in output
+
     @patch("chisel.mcp_server.ChiselMCPServer")
     def test_cmd_serve_human(self, mock_server_cls, capsys):
         server = MagicMock()
@@ -484,7 +598,7 @@ class TestMain:
 
         main(["impact", "--project-dir", "/tmp/p", "x.py", "y.py"])
 
-        engine.tool_impact.assert_called_once_with(["x.py", "y.py"])
+        engine.tool_impact.assert_called_once_with(files=["x.py", "y.py"])
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_churn_with_unit(self, mock_cls):
@@ -494,7 +608,7 @@ class TestMain:
 
         main(["churn", "--project-dir", "/tmp/p", "app.py", "--unit", "my_func"])
 
-        engine.tool_churn.assert_called_once_with("app.py", unit_name="my_func")
+        engine.tool_churn.assert_called_once_with(file_path="app.py", unit_name="my_func")
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_coupling_with_min_count(self, mock_cls):
@@ -504,7 +618,7 @@ class TestMain:
 
         main(["coupling", "--project-dir", "/tmp/p", "f.py", "--min-count", "7"])
 
-        engine.tool_coupling.assert_called_once_with("f.py", min_count=7)
+        engine.tool_coupling.assert_called_once_with(file_path="f.py", min_count=7)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_json_flag(self, mock_cls, capsys):
@@ -530,7 +644,7 @@ class TestMain:
 
         main(["suggest-tests", "--project-dir", "/tmp/p", "app.py"])
 
-        engine.tool_suggest_tests.assert_called_once_with("app.py")
+        engine.tool_suggest_tests.assert_called_once_with(file_path="app.py")
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_ownership(self, mock_cls):
@@ -540,7 +654,7 @@ class TestMain:
 
         main(["ownership", "--project-dir", "/tmp/p", "app.py"])
 
-        engine.tool_ownership.assert_called_once_with("app.py")
+        engine.tool_ownership.assert_called_once_with(file_path="app.py")
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_risk_map(self, mock_cls):
@@ -570,7 +684,7 @@ class TestMain:
 
         main(["history", "--project-dir", "/tmp/p", "app.py"])
 
-        engine.tool_history.assert_called_once_with("app.py")
+        engine.tool_history.assert_called_once_with(file_path="app.py")
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_who_reviews(self, mock_cls):
@@ -580,7 +694,7 @@ class TestMain:
 
         main(["who-reviews", "--project-dir", "/tmp/p", "app.py"])
 
-        engine.tool_who_reviews.assert_called_once_with("app.py")
+        engine.tool_who_reviews.assert_called_once_with(file_path="app.py")
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_diff_impact(self, mock_cls):

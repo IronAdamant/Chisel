@@ -5,6 +5,8 @@ import subprocess
 
 import pytest
 
+from chisel.storage import Storage
+
 
 def _run_git_cmd(repo_dir, *args, env_extra=None):
     """Run a git command inside repo_dir with optional env overrides.
@@ -108,3 +110,11 @@ def git_project(tmp_path):
     )
 
     return project
+
+
+@pytest.fixture
+def storage(tmp_path):
+    """Provide a fresh Storage instance backed by a temporary directory."""
+    s = Storage(base_dir=tmp_path / "chisel_data")
+    yield s
+    s.close()

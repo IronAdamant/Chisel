@@ -272,12 +272,7 @@ def _extract_python_deps_regex(content):
         deps.append({"name": m.group(1), "dep_type": "import"})
     for m in re.finditer(r"(\w+)\s*\(", content):
         name = m.group(1)
-        if name not in ("if", "for", "while", "with", "return", "print",
-                         "class", "def", "import", "from", "raise", "assert",
-                         "del", "yield", "lambda", "elif", "except", "async",
-                         "await", "not", "and", "or", "in", "is", "pass",
-                         "break", "continue", "try", "finally", "global",
-                         "nonlocal"):
+        if name not in _PY_KEYWORDS:
             deps.append({"name": name, "dep_type": "call"})
     return _dedupe_deps(deps)
 
@@ -292,6 +287,7 @@ _JS_IMPORT_RE = re.compile(
     re.MULTILINE,
 )
 _JS_CALL_RE = re.compile(r"(\w+)\s*\(")
+_JS_NAMED_IMPORT_RE = re.compile(r"import\s+\{([^}]+)\}")
 
 
 def _extract_js_deps(content):
@@ -303,7 +299,7 @@ def _extract_js_deps(content):
         deps.append({"name": name, "dep_type": "import"})
 
     # Named imports: import { foo, bar } from ...
-    for m in re.finditer(r"import\s+\{([^}]+)\}", content):
+    for m in _JS_NAMED_IMPORT_RE.finditer(content):
         for name in m.group(1).split(","):
             name = name.strip().split(" as ")[0].strip()
             if name:
@@ -311,9 +307,7 @@ def _extract_js_deps(content):
 
     for m in _JS_CALL_RE.finditer(content):
         name = m.group(1)
-        if name not in ("if", "for", "while", "switch", "import", "require",
-                         "describe", "it", "test", "expect", "beforeEach",
-                         "afterEach", "beforeAll", "afterAll"):
+        if name not in _JS_KEYWORDS:
             deps.append({"name": name, "dep_type": "call"})
     return _dedupe_deps(deps)
 
@@ -327,6 +321,21 @@ _GO_IMPORT_SINGLE_RE = re.compile(r'^import\s+"([^"]+)"', re.MULTILINE)
 
 
 _GO_IMPORT_LINE_RE = re.compile(r'"([^"]+)"')
+
+_PY_KEYWORDS = frozenset({
+    "if", "for", "while", "with", "return", "print",
+    "class", "def", "import", "from", "raise", "assert",
+    "del", "yield", "lambda", "elif", "except", "async",
+    "await", "not", "and", "or", "in", "is", "pass",
+    "break", "continue", "try", "finally", "global",
+    "nonlocal",
+})
+
+_JS_KEYWORDS = frozenset({
+    "if", "for", "while", "switch", "import", "require",
+    "describe", "it", "test", "expect", "beforeEach",
+    "afterEach", "beforeAll", "afterAll",
+})
 
 
 def _extract_go_deps(content):

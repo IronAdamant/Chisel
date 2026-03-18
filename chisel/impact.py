@@ -3,7 +3,7 @@
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from chisel.git_analyzer import GitAnalyzer, _parse_iso_date
+from chisel.metrics import _parse_iso_date, compute_ownership
 
 
 class ImpactAnalyzer:
@@ -74,11 +74,15 @@ class ImpactAnalyzer:
     # Risk scoring
     # ------------------------------------------------------------------ #
 
-    def compute_risk_score(self, file_path, unit_name=None):
+    def compute_risk_score(self, file_path, unit_name=None, failure_rates=None):
         """Compute a risk score for a file or function.
 
         Formula: 0.35*churn + 0.25*coupling + 0.2*coverage_gap
                  + 0.1*author_concentration + 0.1*test_instability
+
+        Args:
+            failure_rates: Optional pre-fetched dict of {test_id: rate}.
+                           Fetched from storage if not provided.
 
         Returns:
             Dict: {file_path, unit_name, risk_score, breakdown}
@@ -112,7 +116,9 @@ class ImpactAnalyzer:
         author_conc = _author_concentration(blame_data)
 
         # Test instability component (0-1): avg failure rate of covering tests
-        instability = _test_instability(self.storage, covering_test_ids)
+        if failure_rates is None:
+            failure_rates = _fetch_failure_rates(self.storage)
+        instability = _test_instability(covering_test_ids, failure_rates)
 
         risk = (
             0.35 * churn_norm
@@ -149,10 +155,7 @@ class ImpactAnalyzer:
         impacted = self.get_impacted_tests([file_path])
 
         # Boost tests that have historically failed more often
-        failure_rates = {}
-        for row in self.storage.get_test_failure_rates():
-            if row["total_runs"] > 0:
-                failure_rates[row["test_id"]] = row["failures"] / row["total_runs"]
+        failure_rates = _fetch_failure_rates(self.storage)
 
         result = []
         for item in impacted:
@@ -233,9 +236,12 @@ class ImpactAnalyzer:
             if not directory or stat["file_path"].startswith(dir_prefix):
                 files.add(stat["file_path"])
 
+        # Fetch failure rates once for all files instead of per-file
+        failure_rates = _fetch_failure_rates(self.storage)
+
         risk_map = []
         for fp in sorted(files):
-            risk = self.compute_risk_score(fp)
+            risk = self.compute_risk_score(fp, failure_rates=failure_rates)
             risk_map.append(risk)
 
         risk_map.sort(key=lambda x: x["risk_score"], reverse=True)
@@ -249,7 +255,6 @@ class ImpactAnalyzer:
         """Get code ownership breakdown based on git blame.
 
         Shows who originally authored each portion of the file.
-        Delegates to GitAnalyzer.compute_ownership for the core aggregation.
 
         Returns:
             List of dicts sorted by line_count desc:
@@ -260,7 +265,7 @@ class ImpactAnalyzer:
         if not blame_data:
             return []
 
-        result = GitAnalyzer.compute_ownership(blame_data)
+        result = compute_ownership(blame_data)
         for entry in result:
             entry["role"] = "original_author"
         return result
@@ -365,18 +370,26 @@ def _author_concentration(blame_data):
     return round(hhi, 4)
 
 
-def _test_instability(storage, test_ids):
+def _fetch_failure_rates(storage):
+    """Fetch test failure rates from storage as a dict of test_id -> rate."""
+    return {
+        r["test_id"]: r["failures"] / r["total_runs"]
+        for r in storage.get_test_failure_rates()
+        if r["total_runs"] > 0
+    }
+
+
+def _test_instability(test_ids, failure_rates):
     """Compute average failure rate for a set of tests (0 = stable, 1 = always fails).
+
+    Args:
+        test_ids: Set of test IDs to check.
+        failure_rates: Dict of {test_id: failure_rate} from _fetch_failure_rates.
 
     Returns 0.0 if no recorded results exist.
     """
     if not test_ids:
         return 0.0
-    failure_rates = {
-        r["test_id"]: r["failures"] / r["total_runs"]
-        for r in storage.get_test_failure_rates()
-        if r["total_runs"] > 0
-    }
     rates = [failure_rates[tid] for tid in test_ids if tid in failure_rates]
     if not rates:
         return 0.0

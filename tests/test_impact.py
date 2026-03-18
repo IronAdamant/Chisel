@@ -2,15 +2,7 @@
 
 import pytest
 
-from chisel.impact import ImpactAnalyzer, _author_concentration, _test_instability
-from chisel.storage import Storage
-
-
-@pytest.fixture
-def storage(tmp_path):
-    s = Storage(base_dir=tmp_path / "chisel_data")
-    yield s
-    s.close()
+from chisel.impact import ImpactAnalyzer, _author_concentration, _fetch_failure_rates, _test_instability
 
 
 @pytest.fixture
@@ -260,23 +252,25 @@ class TestAuthorConcentration:
 
 
 class TestTestInstability:
-    def test_no_results(self, storage):
-        assert _test_instability(storage, {"t1", "t2"}) == 0.0
+    def test_no_results(self):
+        assert _test_instability({"t1", "t2"}, {}) == 0.0
 
-    def test_no_test_ids(self, storage):
-        assert _test_instability(storage, set()) == 0.0
+    def test_no_test_ids(self):
+        assert _test_instability(set(), {}) == 0.0
 
-    def test_with_failures(self, storage):
-        storage.record_test_result("t1", False)
-        storage.record_test_result("t1", False)
-        rate = _test_instability(storage, {"t1"})
+    def test_with_failures(self):
+        rate = _test_instability({"t1"}, {"t1": 1.0})
         assert rate == 1.0
 
-    def test_mixed_results(self, storage):
-        storage.record_test_result("t1", True)
-        storage.record_test_result("t1", False)
-        rate = _test_instability(storage, {"t1"})
+    def test_mixed_results(self):
+        rate = _test_instability({"t1"}, {"t1": 0.5})
         assert abs(rate - 0.5) < 0.01
+
+    def test_fetch_failure_rates(self, storage):
+        storage.record_test_result("t1", False)
+        storage.record_test_result("t1", True)
+        rates = _fetch_failure_rates(storage)
+        assert abs(rates["t1"] - 0.5) < 0.01
 
     def test_risk_score_includes_instability(self, storage, analyzer):
         _seed_basic_data(storage)

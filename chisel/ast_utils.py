@@ -9,6 +9,7 @@ import ast
 import hashlib
 import re
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import List, Optional
 
@@ -340,31 +341,16 @@ _RS_PATTERNS = [
 ]
 
 
-def _extract_js_ts(file_path: str, content: str) -> List[CodeUnit]:
-    """Extract code units from JavaScript or TypeScript source."""
-    return _extract_brace_lang(file_path, content, _JS_TS_PATTERNS)
-
-
-def _extract_go(file_path: str, content: str) -> List[CodeUnit]:
-    """Extract code units from Go source."""
-    return _extract_brace_lang(file_path, content, _GO_PATTERNS)
-
-
-def _extract_rust(file_path: str, content: str) -> List[CodeUnit]:
-    """Extract code units from Rust source."""
-    return _extract_brace_lang(file_path, content, _RS_PATTERNS)
-
-
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
 _EXTRACTORS = {
     "python": _extract_python_ast,
-    "javascript": _extract_js_ts,
-    "typescript": _extract_js_ts,
-    "go": _extract_go,
-    "rust": _extract_rust,
+    "javascript": partial(_extract_brace_lang, patterns=_JS_TS_PATTERNS),
+    "typescript": partial(_extract_brace_lang, patterns=_JS_TS_PATTERNS),
+    "go": partial(_extract_brace_lang, patterns=_GO_PATTERNS),
+    "rust": partial(_extract_brace_lang, patterns=_RS_PATTERNS),
 }
 
 

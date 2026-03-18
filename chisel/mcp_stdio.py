@@ -27,7 +27,8 @@ except ImportError:
     _MCP_AVAILABLE = False
 
 from chisel.engine import ChiselEngine
-from chisel.mcp_server import _TOOL_SCHEMAS, dispatch_tool
+from chisel.mcp_server import dispatch_tool
+from chisel.schemas import _TOOL_SCHEMAS
 
 
 def _configure_server(engine):
@@ -87,7 +88,11 @@ def create_server(storage_dir=None, project_dir=None):
         project_dir = os.getcwd()
 
     engine = ChiselEngine(project_dir, storage_dir=storage_dir)
-    server = _configure_server(engine)
+    try:
+        server = _configure_server(engine)
+    except Exception:
+        engine.close()
+        raise
     server._engine = engine  # Expose for caller cleanup
     return server
 

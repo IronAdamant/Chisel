@@ -162,249 +162,167 @@ def _limit(result, args):
     return result
 
 
+def _run_tool(args, method, kwargs, formatter, use_limit=True):
+    """Execute an engine tool method with standard lifecycle and output handling."""
+    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+        result = getattr(engine, method)(**kwargs)
+        if use_limit:
+            result = _limit(result, args)
+        if args.json_output:
+            _print_json(result)
+        else:
+            formatter(result, args)
+        return result
+
+
+def _fmt_kv(header):
+    """Create a formatter that prints dict results as labeled key-value pairs."""
+    def fmt(result, _args):
+        print(header)
+        for key, value in result.items():
+            print(f"  {key.replace('_', ' ').title()}: {value}")
+    return fmt
+
+
+def _fmt_list(empty_msg, header, line_fn):
+    """Create a formatter for list results with a header and per-item line.
+
+    Args:
+        empty_msg: Message to print when the result list is empty.
+        header: Static string or callable(result, args) -> string.
+        line_fn: Callable(item) -> string for each result item.
+    """
+    def fmt(result, args):
+        if not result:
+            print(empty_msg)
+        else:
+            print(header(result, args) if callable(header) else header)
+            for item in result:
+                print(f"  {line_fn(item)}")
+    return fmt
+
+
 # ------------------------------------------------------------------ #
 # Command handlers
 # ------------------------------------------------------------------ #
 
 def cmd_analyze(args):
-    """Handle the 'analyze' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_analyze(directory=args.directory, force=args.force)
-        if args.json_output:
-            _print_json(result)
-        else:
-            print("Analysis complete:")
-            for key, value in result.items():
-                label = key.replace("_", " ").title()
-                print(f"  {label}: {value}")
-        return result
+    return _run_tool(args, "tool_analyze",
+                     {"directory": args.directory, "force": args.force},
+                     _fmt_kv("Analysis complete:"), use_limit=False)
 
 
 def cmd_impact(args):
-    """Handle the 'impact' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = _limit(engine.tool_impact(args.files), args)
-        if args.json_output:
-            _print_json(result)
-        else:
-            if not result:
-                print("No impacted tests found.")
-            else:
-                print("Impacted tests:")
-                for item in result:
-                    print(f"  {item['test_id']}  ({item['reason']})")
-        return result
+    return _run_tool(args, "tool_impact", {"files": args.files},
+                     _fmt_list("No impacted tests found.", "Impacted tests:",
+                               lambda i: f"{i['test_id']}  ({i['reason']})"))
 
 
 def cmd_suggest_tests(args):
-    """Handle the 'suggest-tests' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = _limit(engine.tool_suggest_tests(args.file), args)
-        if args.json_output:
-            _print_json(result)
-        else:
-            if not result:
-                print("No test suggestions.")
-            else:
-                print("Suggested tests:")
-                for item in result:
-                    print(f"  {item['name']}  (score: {item['relevance']})")
-        return result
+    return _run_tool(args, "tool_suggest_tests", {"file_path": args.file},
+                     _fmt_list("No test suggestions.", "Suggested tests:",
+                               lambda i: f"{i['name']}  (score: {i['relevance']})"))
 
 
 def cmd_churn(args):
-    """Handle the 'churn' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = _limit(engine.tool_churn(args.file, unit_name=args.unit), args)
-        if args.json_output:
-            _print_json(result)
+    def fmt(result, args):
+        if not result:
+            print("No churn data available.")
         else:
-            if not result:
-                print("No churn data available.")
-            else:
-                print(f"Churn stats for {args.file}:")
-                for item in result:
-                    for key, value in item.items():
-                        print(f"  {key}: {value}")
-                    print()
-        return result
+            print(f"Churn stats for {args.file}:")
+            for item in result:
+                for key, value in item.items():
+                    print(f"  {key}: {value}")
+                print()
+    return _run_tool(args, "tool_churn",
+                     {"file_path": args.file, "unit_name": args.unit}, fmt)
 
 
 def cmd_ownership(args):
-    """Handle the 'ownership' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = _limit(engine.tool_ownership(args.file), args)
-        if args.json_output:
-            _print_json(result)
-        else:
-            if not result:
-                print("No ownership data.")
-            else:
-                print(f"Ownership for {args.file}:")
-                for item in result:
-                    print(f"  {item['author']}: {item['percentage']}")
-        return result
+    return _run_tool(args, "tool_ownership", {"file_path": args.file},
+                     _fmt_list("No ownership data.",
+                               lambda r, a: f"Ownership for {a.file}:",
+                               lambda i: f"{i['author']}: {i['percentage']}"))
 
 
 def cmd_coupling(args):
-    """Handle the 'coupling' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = _limit(engine.tool_coupling(args.file, min_count=args.min_count), args)
-        if args.json_output:
-            _print_json(result)
-        else:
-            if not result:
-                print("No coupling data.")
-            else:
-                print(f"Co-change coupling for {args.file}:")
-                for item in result:
-                    print(f"  {item['file_b']}  ({item['co_commit_count']} co-commits)")
-        return result
+    return _run_tool(args, "tool_coupling",
+                     {"file_path": args.file, "min_count": args.min_count},
+                     _fmt_list("No coupling data.",
+                               lambda r, a: f"Co-change coupling for {a.file}:",
+                               lambda i: f"{i['file_b']}  ({i['co_commit_count']} co-commits)"))
 
 
 def cmd_risk_map(args):
-    """Handle the 'risk-map' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = _limit(engine.tool_risk_map(directory=args.directory), args)
-        if args.json_output:
-            _print_json(result)
-        else:
-            if not result:
-                print("No risk data.")
-            else:
-                print("Risk map:")
-                for item in result:
-                    print(f"  {item['file_path']}: {item['risk_score']}")
-        return result
+    return _run_tool(args, "tool_risk_map", {"directory": args.directory},
+                     _fmt_list("No risk data.", "Risk map:",
+                               lambda i: f"{i['file_path']}: {i['risk_score']}"))
 
 
 def cmd_stale_tests(args):
-    """Handle the 'stale-tests' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = _limit(engine.tool_stale_tests(), args)
-        if args.json_output:
-            _print_json(result)
-        else:
-            if not result:
-                print("No stale tests found.")
-            else:
-                print("Stale tests:")
-                for item in result:
-                    print(f"  {item['test_id']}  ({item['edge_type']})")
-        return result
+    return _run_tool(args, "tool_stale_tests", {},
+                     _fmt_list("No stale tests found.", "Stale tests:",
+                               lambda i: f"{i['test_id']}  ({i['edge_type']})"))
 
 
 def cmd_history(args):
-    """Handle the 'history' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = _limit(engine.tool_history(args.file), args)
-        if args.json_output:
-            _print_json(result)
-        else:
-            if not result:
-                print("No history found.")
-            else:
-                print(f"History for {args.file}:")
-                for item in result:
-                    short = item["hash"][:8]
-                    print(f"  {short}  {item['date']}  {item['author']}  {item['message']}")
-        return result
+    return _run_tool(args, "tool_history", {"file_path": args.file},
+                     _fmt_list("No history found.",
+                               lambda r, a: f"History for {a.file}:",
+                               lambda i: f"{i['hash'][:8]}  {i['date']}  {i['author']}  {i['message']}"))
 
 
 def cmd_who_reviews(args):
-    """Handle the 'who-reviews' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = _limit(engine.tool_who_reviews(args.file), args)
-        if args.json_output:
-            _print_json(result)
-        else:
-            if not result:
-                print("No reviewer suggestions.")
-            else:
-                print(f"Suggested reviewers for {args.file}:")
-                for item in result:
-                    days = item.get("days_since_last_commit", "?")
-                    print(f"  {item['author']}: {item['percentage']}% ({item['recent_commits']} commits, {days}d ago)")
-        return result
+    return _run_tool(
+        args, "tool_who_reviews", {"file_path": args.file},
+        _fmt_list(
+            "No reviewer suggestions.",
+            lambda r, a: f"Suggested reviewers for {a.file}:",
+            lambda i: (f"{i['author']}: {i['percentage']}% "
+                       f"({i['recent_commits']} commits, "
+                       f"{i.get('days_since_last_commit', '?')}d ago)"),
+        ))
 
 
 def cmd_diff_impact(args):
-    """Handle the 'diff-impact' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = _limit(engine.tool_diff_impact(ref=args.ref), args)
-        if args.json_output:
-            _print_json(result)
-        else:
-            if not result:
-                print("No impacted tests (or no changes detected).")
-            else:
-                print("Impacted tests from diff:")
-                for item in result:
-                    print(f"  {item['test_id']}  ({item['reason']})")
-        return result
+    return _run_tool(args, "tool_diff_impact", {"ref": args.ref},
+                     _fmt_list("No impacted tests (or no changes detected).",
+                               "Impacted tests from diff:",
+                               lambda i: f"{i['test_id']}  ({i['reason']})"))
 
 
 def cmd_update(args):
-    """Handle the 'update' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_update()
-        if args.json_output:
-            _print_json(result)
-        else:
-            print("Incremental update complete:")
-            for key, value in result.items():
-                label = key.replace("_", " ").title()
-                print(f"  {label}: {value}")
-        return result
+    return _run_tool(args, "tool_update", {},
+                     _fmt_kv("Incremental update complete:"), use_limit=False)
 
 
 def cmd_test_gaps(args):
-    """Handle the 'test-gaps' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        exclude_tests = not args.no_exclude_tests
-        result = _limit(engine.tool_test_gaps(file_path=args.file, directory=args.directory, exclude_tests=exclude_tests), args)
-        if args.json_output:
-            _print_json(result)
-        else:
-            if not result:
-                print("No untested code units found.")
-            else:
-                print(f"Untested code units ({len(result)}):")
-                for item in result:
-                    churn = item.get("churn_score", 0)
-                    print(f"  {item['file_path']}:{item['name']} "
-                          f"({item['unit_type']}, lines {item['line_start']}-{item['line_end']}"
-                          f", churn: {churn})")
-        return result
+    return _run_tool(
+        args, "tool_test_gaps",
+        {"file_path": args.file, "directory": args.directory,
+         "exclude_tests": not args.no_exclude_tests},
+        _fmt_list(
+            "No untested code units found.",
+            lambda r, a: f"Untested code units ({len(r)}):",
+            lambda i: (f"{i['file_path']}:{i['name']} "
+                       f"({i['unit_type']}, lines {i['line_start']}-{i['line_end']}"
+                       f", churn: {i.get('churn_score', 0)})")),
+    )
 
 
 def cmd_record_result(args):
-    """Handle the 'record-result' subcommand."""
-    passed = not args.failed  # default to passed if neither flag
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_record_result(
-            args.test_id, passed, duration_ms=args.duration,
-        )
-        if args.json_output:
-            _print_json(result)
-        else:
-            status = "PASSED" if passed else "FAILED"
-            print(f"Recorded: {args.test_id} — {status}")
-        return result
+    def fmt(result, args):
+        status = "PASSED" if not args.failed else "FAILED"
+        print(f"Recorded: {args.test_id} — {status}")
+    return _run_tool(args, "tool_record_result",
+                     {"test_id": args.test_id, "passed": not args.failed,
+                      "duration_ms": args.duration},
+                     fmt, use_limit=False)
 
 
 def cmd_stats(args):
-    """Handle the 'stats' subcommand."""
-    with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
-        result = engine.tool_stats()
-        if args.json_output:
-            _print_json(result)
-        else:
-            print("Chisel database stats:")
-            for table, count in result.items():
-                label = table.replace("_", " ").title()
-                print(f"  {label}: {count}")
-        return result
+    return _run_tool(args, "tool_stats", {},
+                     _fmt_kv("Chisel database stats:"), use_limit=False)
 
 
 def cmd_serve(args):

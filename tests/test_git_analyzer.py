@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from chisel.git_analyzer import GitAnalyzer, _parse_iso_date
+from chisel.git_analyzer import GitAnalyzer
+from chisel.metrics import _parse_iso_date, compute_churn, compute_co_changes, compute_ownership
 
 
 @pytest.fixture
@@ -134,20 +135,20 @@ class TestComputeChurn:
         return commits
 
     def test_empty_commits(self):
-        result = GitAnalyzer.compute_churn([], "foo.py")
+        result = compute_churn([], "foo.py")
         assert result["commit_count"] == 0
         assert result["churn_score"] == 0.0
         assert result["last_changed"] is None
 
     def test_no_matching_file(self):
         commits = self._make_commits([("2026-03-01T12:00:00+00:00", ["other.py"])])
-        result = GitAnalyzer.compute_churn(commits, "foo.py")
+        result = compute_churn(commits, "foo.py")
         assert result["commit_count"] == 0
 
     def test_single_commit_today(self):
         now = datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
         commits = self._make_commits([("2026-03-01T12:00:00+00:00", ["foo.py"])])
-        result = GitAnalyzer.compute_churn(commits, "foo.py", now=now)
+        result = compute_churn(commits, "foo.py", now=now)
         assert result["commit_count"] == 1
         assert result["distinct_authors"] == 1
         # 1/(1+0) = 1.0
@@ -159,7 +160,7 @@ class TestComputeChurn:
         now = datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc)
         # Commit 10 days ago: score = 1/(1+10) ~= 0.0909
         commits = self._make_commits([("2026-02-28T12:00:00+00:00", ["foo.py"])])
-        result = GitAnalyzer.compute_churn(commits, "foo.py", now=now)
+        result = compute_churn(commits, "foo.py", now=now)
         assert result["commit_count"] == 1
         assert 0.08 < result["churn_score"] < 0.10
 
@@ -169,7 +170,7 @@ class TestComputeChurn:
             ("2026-03-10T12:00:00+00:00", ["foo.py"]),  # 0 days: 1.0
             ("2026-03-09T12:00:00+00:00", ["foo.py"]),  # 1 day: 0.5
         ])
-        result = GitAnalyzer.compute_churn(commits, "foo.py", now=now)
+        result = compute_churn(commits, "foo.py", now=now)
         assert result["commit_count"] == 2
         assert result["total_insertions"] == 10
         assert 1.49 < result["churn_score"] < 1.51
@@ -187,7 +188,7 @@ class TestComputeChurn:
                 "files": [{"path": "f.py", "insertions": 2, "deletions": 1}],
             },
         ]
-        result = GitAnalyzer.compute_churn(
+        result = compute_churn(
             commits, "f.py",
             now=datetime(2026, 3, 5, tzinfo=timezone.utc),
         )
@@ -199,7 +200,7 @@ class TestComputeChurn:
             ("2026-03-01T12:00:00+00:00", ["f.py"]),
             ("2026-02-01T12:00:00+00:00", ["f.py"]),
         ])
-        result = GitAnalyzer.compute_churn(
+        result = compute_churn(
             commits, "f.py",
             now=datetime(2026, 3, 5, tzinfo=timezone.utc),
         )
@@ -210,7 +211,7 @@ class TestComputeOwnership:
     """Test ownership computation from synthetic blame blocks."""
 
     def test_empty_blocks(self):
-        assert GitAnalyzer.compute_ownership([]) == []
+        assert compute_ownership([]) == []
 
     def test_single_author_100_percent(self):
         blocks = [
@@ -220,7 +221,7 @@ class TestComputeOwnership:
                 "line_start": 1, "line_end": 10,
             },
         ]
-        result = GitAnalyzer.compute_ownership(blocks)
+        result = compute_ownership(blocks)
         assert len(result) == 1
         assert result[0]["author"] == "Alice"
         assert result[0]["line_count"] == 10
@@ -239,7 +240,7 @@ class TestComputeOwnership:
                 "line_start": 4, "line_end": 4,
             },
         ]
-        result = GitAnalyzer.compute_ownership(blocks)
+        result = compute_ownership(blocks)
         assert len(result) == 2
         # Alice has 3 lines (75%), Bob has 1 line (25%)
         assert result[0]["author"] == "Alice"
@@ -267,7 +268,7 @@ class TestComputeOwnership:
                 "line_start": 9, "line_end": 10,
             },
         ]
-        result = GitAnalyzer.compute_ownership(blocks)
+        result = compute_ownership(blocks)
         assert len(result) == 2
         alice = next(r for r in result if r["author"] == "Alice")
         assert alice["line_count"] == 7
@@ -278,7 +279,7 @@ class TestComputeCoChanges:
     """Test co-change detection from synthetic commit data."""
 
     def test_empty_commits(self):
-        assert GitAnalyzer.compute_co_changes([]) == []
+        assert compute_co_changes([]) == []
 
     def test_below_threshold(self):
         commits = [
@@ -296,7 +297,7 @@ class TestComputeCoChanges:
             },
         ]
         # Default min_count=3, only 2 co-commits
-        assert GitAnalyzer.compute_co_changes(commits) == []
+        assert compute_co_changes(commits) == []
 
     def test_meets_threshold(self):
         commits = [
@@ -308,7 +309,7 @@ class TestComputeCoChanges:
             }
             for i in range(3)
         ]
-        result = GitAnalyzer.compute_co_changes(commits, min_count=3)
+        result = compute_co_changes(commits, min_count=3)
         assert len(result) == 1
         assert result[0]["file_a"] == "a.py"
         assert result[0]["file_b"] == "b.py"
@@ -324,7 +325,7 @@ class TestComputeCoChanges:
             }
             for i in range(2)
         ]
-        result = GitAnalyzer.compute_co_changes(commits, min_count=2)
+        result = compute_co_changes(commits, min_count=2)
         assert len(result) == 1
         assert result[0]["co_commit_count"] == 2
 
@@ -341,7 +342,7 @@ class TestComputeCoChanges:
             }
             for i in range(5)
         ]
-        result = GitAnalyzer.compute_co_changes(commits, min_count=1)
+        result = compute_co_changes(commits, min_count=1)
         assert len(result) == 3  # (a,b), (a,c), (b,c)
         # All have count 5, so order is stable but all should be 5
         for r in result:
@@ -368,7 +369,7 @@ class TestComputeCoChanges:
                           {"path": "b.py", "insertions": 1, "deletions": 0}],
             },
         ]
-        result = GitAnalyzer.compute_co_changes(commits, min_count=1)
+        result = compute_co_changes(commits, min_count=1)
         assert result[0]["last_co_commit"] == "2026-03-10T00:00:00+00:00"
 
     def test_single_file_commits_ignored(self):
@@ -379,7 +380,7 @@ class TestComputeCoChanges:
                 "files": [{"path": "a.py", "insertions": 1, "deletions": 0}],
             },
         ]
-        assert GitAnalyzer.compute_co_changes(commits, min_count=1) == []
+        assert compute_co_changes(commits, min_count=1) == []
 
 
 class TestParseDiffFunctions:
@@ -527,7 +528,7 @@ class TestParseBlameMultiAuthor:
     def test_ownership_from_blame(self, multi_author_repo):
         analyzer = GitAnalyzer(multi_author_repo)
         blocks = analyzer.parse_blame("shared.py")
-        ownership = GitAnalyzer.compute_ownership(blocks)
+        ownership = compute_ownership(blocks)
         assert len(ownership) == 2
         alice = next(o for o in ownership if o["author"] == "Alice")
         bob = next(o for o in ownership if o["author"] == "Bob")
@@ -543,7 +544,7 @@ class TestChurnIntegration:
 
     def test_churn_on_hello_py(self, analyzer):
         commits = analyzer.parse_log()
-        result = GitAnalyzer.compute_churn(
+        result = compute_churn(
             commits, "hello.py",
             now=datetime(2026, 3, 16, tzinfo=timezone.utc),
         )
@@ -558,7 +559,7 @@ class TestChurnIntegration:
 
     def test_churn_on_utils_py(self, analyzer):
         commits = analyzer.parse_log()
-        result = GitAnalyzer.compute_churn(
+        result = compute_churn(
             commits, "utils.py",
             now=datetime(2026, 3, 16, tzinfo=timezone.utc),
         )
@@ -573,12 +574,12 @@ class TestCoChangeIntegration:
         commits = analyzer.parse_log()
         # hello.py and utils.py co-occur in 2 commits (initial + update both)
         # Default min_count=3, so should be empty
-        result = GitAnalyzer.compute_co_changes(commits)
+        result = compute_co_changes(commits)
         assert result == []
 
     def test_co_changes_with_lower_threshold(self, analyzer):
         commits = analyzer.parse_log()
-        result = GitAnalyzer.compute_co_changes(commits, min_count=2)
+        result = compute_co_changes(commits, min_count=2)
         assert len(result) == 1
         pair = result[0]
         assert {pair["file_a"], pair["file_b"]} == {"hello.py", "utils.py"}
@@ -604,7 +605,7 @@ class TestGetFunctionLog:
 
     def test_unit_level_churn(self, analyzer):
         func_commits = analyzer.get_function_log("hello.py", "greet")
-        churn = GitAnalyzer.compute_churn(
+        churn = compute_churn(
             func_commits, "hello.py", unit_name="greet",
         )
         assert churn["commit_count"] >= 2

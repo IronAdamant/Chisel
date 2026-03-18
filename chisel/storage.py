@@ -40,8 +40,8 @@ class Storage:
             self._conn = None
 
     def _init_database(self):
-        with self._conn as conn:
-            conn.executescript("""
+        # executescript auto-commits; no need for a context manager.
+        self._conn.executescript("""
                 CREATE TABLE IF NOT EXISTS code_units (
                     id TEXT PRIMARY KEY,
                     file_path TEXT NOT NULL,
@@ -331,7 +331,8 @@ class Storage:
     def upsert_churn_stat(self, file_path, unit_name, commit_count=0,
                           distinct_authors=0, total_insertions=0, total_deletions=0,
                           last_changed=None, churn_score=0.0):
-        unit_name = unit_name or ""
+        if unit_name is None:
+            unit_name = ""
         self._execute(
             """INSERT INTO churn_stats (file_path, unit_name, commit_count,
                distinct_authors, total_insertions, total_deletions,
@@ -349,7 +350,8 @@ class Storage:
         )
 
     def get_churn_stat(self, file_path, unit_name=None):
-        unit_name = unit_name or ""
+        if unit_name is None:
+            unit_name = ""
         return self._fetchone(
             "SELECT * FROM churn_stats WHERE file_path = ? AND unit_name = ?",
             (file_path, unit_name),
@@ -461,18 +463,12 @@ class Storage:
         Returns:
             Number of orphaned rows deleted.
         """
-        orphaned = self._fetchall(
-            """SELECT DISTINCT tr.test_id FROM test_results tr
-               LEFT JOIN test_units tu ON tr.test_id = tu.id
-               WHERE tu.id IS NULL"""
-        )
-        if orphaned:
-            placeholders = ",".join("?" for _ in orphaned)
-            ids = tuple(r["test_id"] for r in orphaned)
-            self._execute(
-                f"DELETE FROM test_results WHERE test_id IN ({placeholders})", ids,
+        with self._conn as conn:
+            cursor = conn.execute(
+                """DELETE FROM test_results
+                   WHERE test_id NOT IN (SELECT id FROM test_units)"""
             )
-        return len(orphaned)
+            return cursor.rowcount
 
     def get_stats(self):
         """Get summary counts for all tables.

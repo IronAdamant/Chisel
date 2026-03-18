@@ -6,6 +6,7 @@ from pathlib import Path
 from chisel.ast_utils import _EXTENSION_MAP, _SKIP_DIRS, compute_file_hash, extract_code_units
 from chisel.git_analyzer import GitAnalyzer
 from chisel.impact import ImpactAnalyzer
+from chisel.metrics import compute_churn, compute_co_changes
 from chisel.rwlock import RWLock
 from chisel.storage import Storage
 from chisel.test_mapper import TestMapper
@@ -97,9 +98,13 @@ class ChiselEngine:
         code_files = self._scan_code_files()
         with self.lock.write_lock():
             changed_files = self._find_changed_files(code_files)
-            self._parse_and_store_code_units(changed_files)
+            code_units_found = self._parse_and_store_code_units(changed_files)
 
-            stats = {"files_updated": len(changed_files), "new_commits": 0}
+            stats = {
+                "files_updated": len(changed_files),
+                "code_units_found": code_units_found,
+                "new_commits": 0,
+            }
 
             try:
                 all_commits = self.git.parse_log()
@@ -308,7 +313,7 @@ class ChiselEngine:
         """Compute file-level and unit-level churn stats, plus co-change coupling."""
         for fpath in code_files:
             rel = os.path.relpath(fpath, self.project_dir)
-            churn = self.git.compute_churn(commits, rel)
+            churn = compute_churn(commits, rel)
             self.storage.upsert_churn_stat(
                 rel, "", churn["commit_count"], churn["distinct_authors"],
                 churn["total_insertions"], churn["total_deletions"],
@@ -320,7 +325,7 @@ class ChiselEngine:
                     bare_name = cu["name"].rsplit(".", 1)[-1]
                     func_commits = self.git.get_function_log(rel, bare_name)
                     if func_commits:
-                        fc = self.git.compute_churn(
+                        fc = compute_churn(
                             func_commits, rel, unit_name=cu["name"],
                         )
                         self.storage.upsert_churn_stat(
@@ -331,7 +336,7 @@ class ChiselEngine:
                         )
 
         adaptive_min = max(3, len(commits) // 4)
-        co_changes = self.git.compute_co_changes(commits, min_count=adaptive_min)
+        co_changes = compute_co_changes(commits, min_count=adaptive_min)
         for cc in co_changes:
             self.storage.upsert_co_change(
                 cc["file_a"], cc["file_b"],
