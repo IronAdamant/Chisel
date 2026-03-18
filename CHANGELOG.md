@@ -5,6 +5,45 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-03-18
+
+### Added
+
+- `metrics.py` — extracted pure computation functions (churn, ownership, co-change) from `git_analyzer.py` into a standalone module with zero internal dependencies
+- `schemas.py` — extracted tool JSON Schema definitions and dispatch tables from `mcp_server.py` into a shared module
+- Co-change computation cap: commits touching >50 files are skipped (bulk operations are not meaningful coupling signals)
+- Failure rate caching in `impact.py`: `get_risk_map` and `compute_risk_score` now fetch failure rates once instead of per-file, eliminating N redundant full-table scans
+- 14 new tests (405 → 419): CLI output formatting for all 15 commands, metrics module tests, co-change cap verification
+- `_fetch_failure_rates()` public helper for pre-fetching test instability data
+- `_fmt_kv()` and `_fmt_list()` formatter factories in CLI for consistent output
+- PyPI-ready metadata: classifiers, keywords, project URLs, readme field
+- README: MCP-first structure with Claude Code/Cursor config snippets, self-analysis example, 15-tool table, Stele ecosystem mention
+
+### Changed
+
+- `git_analyzer.py` now focused on git subprocess interaction only (517 → 319 LOC)
+- `mcp_server.py` now focused on HTTP server logic only (504 → 226 LOC)
+- `cli.py` consolidated via `_run_tool()` shared handler (485 → 403 LOC)
+- `ast_utils.py` uses `functools.partial` instead of 3 trivial wrapper functions
+- `test_mapper.py` keyword blacklists converted from tuple to frozenset for O(1) lookup
+- `test_mapper.py` inline regex precompiled as module-level `_JS_NAMED_IMPORT_RE`
+- `mcp_stdio.py` imports `_TOOL_SCHEMAS` from `schemas.py` instead of `mcp_server.py`
+- `_test_instability()` accepts a pre-built failure rates dict instead of querying storage directly
+- `compute_risk_score()` accepts optional `failure_rates` parameter for batch use
+- Shared `storage` fixture moved from `test_impact.py`/`test_storage.py` into `conftest.py`
+- `_make_args()` in test_cli.py now includes `limit=None` default
+- Package name changed to `chisel-test-impact` for PyPI (bare `chisel` is taken)
+
+### Fixed
+
+- `storage.py`: `cleanup_orphaned_test_results` TOCTOU race — replaced two-step SELECT+DELETE with atomic `DELETE ... WHERE test_id NOT IN (SELECT id FROM test_units)`
+- `storage.py`: `_init_database` misleading context manager around `executescript` (which auto-commits independently)
+- `storage.py`: `upsert_churn_stat`/`get_churn_stat` used `or ""` which could coerce legitimate falsy values — changed to `if x is None`
+- `engine.py`: `update()` discarded return value of `_parse_and_store_code_units`, making update stats incomplete vs `analyze()`
+- `mcp_stdio.py`: `create_server()` leaked engine if `_configure_server()` raised — added try/except cleanup
+- `mcp_server.py`: loop variables `_name`, `_schema` leaked into module namespace after schema injection loop
+- `test_mcp_stdio.py`: orphaned duplicate section comment removed
+
 ## [0.3.2] - 2026-03-17
 
 ### Fixed
