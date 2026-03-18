@@ -4,6 +4,8 @@ Test impact analysis and code intelligence for LLM agents.
 
 Chisel maps tests to code, code to git history, and answers: **"what to run, what's risky, who touched it."**
 
+![Chisel analyzing a real project — risk map, churn, ownership, test gaps, and agent interpretation](docs/chisel-demo.png)
+
 ## The Problem
 
 An LLM agent changes `engine.py:store_document()`. It then either:
