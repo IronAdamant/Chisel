@@ -1,8 +1,9 @@
 """Multi-language AST extraction for Chisel.
 
 Extracts code units (functions, classes, structs, etc.) from source files
-across Python, JavaScript/TypeScript, Go, and Rust. Fully self-contained
-with zero external dependencies beyond the Python standard library.
+across Python, JavaScript/TypeScript, Go, Rust, C#, Java, C/C++, Kotlin,
+Swift, PHP, Ruby, and Dart. Fully self-contained with zero external
+dependencies beyond the Python standard library.
 """
 
 import ast
@@ -17,7 +18,7 @@ from typing import List, Optional
 _SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".tox", ".venv", "venv",
     "env", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist",
-    "build", ".eggs", "target",
+    "build", ".eggs", "target", "vendor", "Pods",
 }
 
 
@@ -37,16 +38,32 @@ class CodeUnit:
 # ---------------------------------------------------------------------------
 
 _EXTENSION_MAP = {
-    ".py": "python",
-    ".pyw": "python",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
-    ".ts": "typescript",
-    ".tsx": "typescript",
+    # Python
+    ".py": "python", ".pyw": "python",
+    # JavaScript / TypeScript
+    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+    ".ts": "typescript", ".tsx": "typescript",
+    # Go
     ".go": "go",
+    # Rust
     ".rs": "rust",
+    # C#
+    ".cs": "csharp",
+    # Java
+    ".java": "java",
+    # C / C++
+    ".c": "c", ".h": "c",
+    ".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hxx": "cpp",
+    # Kotlin
+    ".kt": "kotlin", ".kts": "kotlin",
+    # Swift
+    ".swift": "swift",
+    # PHP
+    ".php": "php",
+    # Ruby
+    ".rb": "ruby",
+    # Dart
+    ".dart": "dart",
 }
 
 
@@ -71,7 +88,7 @@ def compute_file_hash(file_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Brace-matching helper
+# Brace-matching helper (shared by all brace-delimited languages)
 # ---------------------------------------------------------------------------
 
 
@@ -100,34 +117,20 @@ def _find_block_end(lines: List[str], start_idx: int) -> int:
                 if found_open and depth == 0:
                     return i + 1  # 1-based
 
-    # Fallback: if an opening brace was found but never closed, return
-    # the last line number.  If no brace was found at all, return the
-    # start line (1-based).
     if found_open:
         return len(lines)
     return start_idx + 1
 
 
 def _strip_strings_and_comments(line: str) -> str:
-    """Remove string literals and trailing ``//`` comments from a single line.
-
-    Handles ``"``, ``'``, and backtick-quoted strings with backslash
-    escaping.  ``#`` is **not** treated as a comment (Python files use
-    ``_py_block_end`` instead).  Multi-line strings and block comments
-    (``/* */``) are **not** handled -- this is a best-effort helper to
-    avoid miscounting braces.
-    """
+    """Remove string literals and trailing ``//`` comments from a single line."""
     result: list = []
     i = 0
     length = len(line)
     while i < length:
         ch = line[i]
-        # Single-line comment markers
         if ch == "/" and i + 1 < length and line[i + 1] == "/":
             break
-        # Note: '#' is only a comment in Python, which uses _py_block_end
-        # instead of _find_block_end, so we do not treat '#' as a comment here.
-        # Quoted strings
         if ch in ('"', "'", "`"):
             quote = ch
             i += 1
@@ -141,6 +144,35 @@ def _strip_strings_and_comments(line: str) -> str:
         result.append(ch)
         i += 1
     return "".join(result)
+
+
+def _extract_brace_lang(
+    file_path: str, content: str, patterns: list,
+) -> List[CodeUnit]:
+    """Extract code units from a brace-delimited language.
+
+    Args:
+        patterns: list of (compiled_regex, unit_type) tuples.
+                  unit_type is a string, OR a callable(match) -> (name, type).
+    """
+    units: List[CodeUnit] = []
+    lines = content.splitlines()
+
+    for idx, line in enumerate(lines):
+        lineno = idx + 1
+        for regex, unit_type in patterns:
+            m = regex.match(line)
+            if m:
+                end = _find_block_end(lines, idx)
+                if callable(unit_type):
+                    name, utype = unit_type(m)
+                else:
+                    name = m.group("name")
+                    utype = unit_type
+                units.append(CodeUnit(file_path, name, utype, lineno, end))
+                break
+
+    return units
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +196,6 @@ def _extract_python_ast(file_path: str, content: str) -> List[CodeUnit]:
 
     units: List[CodeUnit] = []
 
-    # Build parent map in a single pass to avoid O(n²) class lookups
     parent_map: dict = {}
     for cls_node in ast.walk(tree):
         if isinstance(cls_node, ast.ClassDef):
@@ -206,7 +237,6 @@ def _extract_python_regex(file_path: str, content: str) -> List[CodeUnit]:
             name = cls_m.group("name")
             current_class = name
             current_class_indent = indent_len
-            # Estimate end: scan forward for next line at same or lesser indent
             end = _py_block_end(lines, idx, indent_len)
             units.append(CodeUnit(file_path, name, "class", lineno, end))
             continue
@@ -217,7 +247,6 @@ def _extract_python_regex(file_path: str, content: str) -> List[CodeUnit]:
             name = fn_m.group("name")
             is_async = "async" in line.split("def")[0]
 
-            # Check if this function is nested inside the current class
             if current_class and indent_len > current_class_indent:
                 name = f"{current_class}.{name}"
             else:
@@ -239,12 +268,12 @@ def _py_block_end(lines: List[str], start_idx: int, indent: int) -> int:
             continue
         line_indent = len(lines[i]) - len(lines[i].lstrip())
         if line_indent <= indent:
-            return i  # 1-based line number of last line in block (may include trailing blank)
+            return i
     return len(lines)
 
 
 # ---------------------------------------------------------------------------
-# JavaScript / TypeScript extraction
+# JavaScript / TypeScript
 # ---------------------------------------------------------------------------
 
 _JS_NAMED_FUNC_RE = re.compile(
@@ -258,38 +287,8 @@ _JS_ARROW_RE = re.compile(
     r"\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$]\w*)\s*=>",
 )
 
-
-def _extract_brace_lang(
-    file_path: str, content: str, patterns: list,
-) -> List[CodeUnit]:
-    """Extract code units from a brace-delimited language.
-
-    Args:
-        patterns: list of (compiled_regex, unit_type) tuples.
-                  unit_type is a string, OR a callable(match) -> (name, type).
-    """
-    units: List[CodeUnit] = []
-    lines = content.splitlines()
-
-    for idx, line in enumerate(lines):
-        lineno = idx + 1
-        for regex, unit_type in patterns:
-            m = regex.match(line)
-            if m:
-                end = _find_block_end(lines, idx)
-                if callable(unit_type):
-                    name, utype = unit_type(m)
-                else:
-                    name = m.group("name")
-                    utype = unit_type
-                units.append(CodeUnit(file_path, name, utype, lineno, end))
-                break
-
-    return units
-
-
 # ---------------------------------------------------------------------------
-# Go extraction
+# Go
 # ---------------------------------------------------------------------------
 
 _GO_FUNC_RE = re.compile(
@@ -300,7 +299,7 @@ _GO_TYPE_RE = re.compile(
 )
 
 # ---------------------------------------------------------------------------
-# Rust extraction
+# Rust
 # ---------------------------------------------------------------------------
 
 _RS_FN_RE = re.compile(
@@ -317,6 +316,151 @@ _RS_IMPL_RE = re.compile(
     r"(?:[A-Za-z_]\w*(?:\s*<[^>]*>)?\s+for\s+)?"
     r"(?P<name>[A-Za-z_]\w*(?:\s*<[^>]*>)?)",
 )
+
+# ---------------------------------------------------------------------------
+# C#
+# ---------------------------------------------------------------------------
+
+_CS_CLASS_RE = re.compile(
+    r"^\s*(?:(?:public|private|protected|internal)\s+)?"
+    r"(?:(?:static|abstract|sealed|partial)\s+)*"
+    r"(?P<kind>class|struct|interface|enum|record)\s+(?P<name>[A-Za-z_]\w*)",
+)
+_CS_METHOD_RE = re.compile(
+    r"^\s*(?:(?:public|private|protected|internal)\s+)?"
+    r"(?:(?:static|virtual|override|abstract|async|new|partial|extern|sealed|unsafe)\s+)*"
+    r"(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:<[^>]*>)?(?:\[\])*\??\s+)"
+    r"(?P<name>[A-Za-z_]\w*)\s*[<(]",
+)
+
+# ---------------------------------------------------------------------------
+# Java
+# ---------------------------------------------------------------------------
+
+_JAVA_CLASS_RE = re.compile(
+    r"^\s*(?:(?:public|private|protected)\s+)?"
+    r"(?:(?:static|final|abstract|sealed)\s+)*"
+    r"(?P<kind>class|interface|enum|record)\s+(?P<name>[A-Za-z_]\w*)",
+)
+_JAVA_METHOD_RE = re.compile(
+    r"^\s*(?:(?:public|private|protected)\s+)?"
+    r"(?:(?:static|final|abstract|synchronized|native|default)\s+)*"
+    r"(?:[A-Za-z_]\w*(?:<[^>]*>)?(?:\[\])*\s+)"
+    r"(?P<name>[A-Za-z_]\w*)\s*\(",
+)
+
+# ---------------------------------------------------------------------------
+# C / C++
+# ---------------------------------------------------------------------------
+
+_CPP_CLASS_RE = re.compile(
+    r"^\s*(?:template\s*<[^>]*>\s*)?"
+    r"(?P<kind>class|struct|namespace)\s+(?P<name>[A-Za-z_]\w*)",
+)
+_CPP_ENUM_RE = re.compile(
+    r"^\s*enum\s+(?:class\s+)?(?P<name>[A-Za-z_]\w*)",
+)
+_CPP_FUNC_RE = re.compile(
+    r"^\s*(?:(?:static|inline|virtual|explicit|constexpr|extern|friend)\s+)*"
+    r"(?:[A-Za-z_]\w*(?:::\w+)*(?:\s*<[^>]*>)?\s*[*&]?\s+)"
+    r"(?P<name>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)\s*\(",
+)
+
+# ---------------------------------------------------------------------------
+# Kotlin
+# ---------------------------------------------------------------------------
+
+_KT_CLASS_RE = re.compile(
+    r"^\s*(?:(?:private|public|internal|protected|open|abstract|sealed|data|enum|inner|value)\s+)*"
+    r"(?P<kind>class|object|interface)\s+(?P<name>[A-Za-z_]\w*)",
+)
+_KT_FUN_RE = re.compile(
+    r"^\s*(?:(?:private|public|internal|protected|open|override|suspend|inline|tailrec)\s+)*"
+    r"fun\s+(?P<name>[A-Za-z_]\w*)\s*[<(]",
+)
+
+# ---------------------------------------------------------------------------
+# Swift
+# ---------------------------------------------------------------------------
+
+_SWIFT_TYPE_RE = re.compile(
+    r"^\s*(?:(?:private|public|internal|fileprivate|open|final)\s+)*"
+    r"(?P<kind>class|struct|enum|protocol|actor)\s+(?P<name>[A-Za-z_]\w*)",
+)
+_SWIFT_FUNC_RE = re.compile(
+    r"^\s*(?:(?:private|public|internal|fileprivate|open|static|class|override|mutating|final)\s+)*"
+    r"func\s+(?P<name>[A-Za-z_]\w*)\s*[<(]",
+)
+
+# ---------------------------------------------------------------------------
+# PHP
+# ---------------------------------------------------------------------------
+
+_PHP_CLASS_RE = re.compile(
+    r"^\s*(?:(?:abstract|final)\s+)?(?P<kind>class|interface|trait|enum)\s+(?P<name>[A-Za-z_]\w*)",
+)
+_PHP_FUNC_RE = re.compile(
+    r"^\s*(?:(?:public|private|protected)\s+)?(?:static\s+)?function\s+(?P<name>[A-Za-z_]\w*)\s*\(",
+)
+
+# ---------------------------------------------------------------------------
+# Dart
+# ---------------------------------------------------------------------------
+
+_DART_CLASS_RE = re.compile(
+    r"^\s*(?:abstract\s+)?(?P<kind>class|mixin|extension)\s+(?P<name>[A-Za-z_]\w*)",
+)
+_DART_FUNC_RE = re.compile(
+    r"^\s*(?:(?:static|external)\s+)?"
+    r"(?:[A-Za-z_]\w*(?:<[^>]*>)?\??\s+)"
+    r"(?P<name>[A-Za-z_]\w*)\s*[<(]",
+)
+
+# ---------------------------------------------------------------------------
+# Ruby (end-delimited, not brace-delimited)
+# ---------------------------------------------------------------------------
+
+_RB_CLASS_RE = re.compile(
+    r"^(?P<indent>\s*)(?P<kind>class|module)\s+(?P<name>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)",
+)
+_RB_DEF_RE = re.compile(
+    r"^(?P<indent>\s*)def\s+(?:self\.)?(?P<name>[A-Za-z_]\w*[?!=]?)\s*[\(;\n]?",
+)
+
+
+def _ruby_block_end(lines: List[str], start_idx: int, indent: int) -> int:
+    """Find the closing ``end`` for a Ruby block at the given indent level."""
+    for i in range(start_idx + 1, len(lines)):
+        stripped = lines[i].strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        line_indent = len(lines[i]) - len(lines[i].lstrip())
+        if line_indent <= indent and (stripped == "end" or stripped.startswith("end ")):
+            return i + 1  # 1-based
+    return len(lines)
+
+
+def _extract_ruby(file_path: str, content: str) -> List[CodeUnit]:
+    """Extract code units from Ruby source using keyword-based block detection."""
+    units: List[CodeUnit] = []
+    lines = content.splitlines()
+
+    for idx, line in enumerate(lines):
+        lineno = idx + 1
+        m = _RB_CLASS_RE.match(line)
+        if m:
+            indent = len(m.group("indent"))
+            end = _ruby_block_end(lines, idx, indent)
+            units.append(CodeUnit(file_path, m.group("name"), m.group("kind"), lineno, end))
+            continue
+        m = _RB_DEF_RE.match(line)
+        if m:
+            indent = len(m.group("indent"))
+            end = _ruby_block_end(lines, idx, indent)
+            units.append(CodeUnit(file_path, m.group("name"), "function", lineno, end))
+
+    return units
+
 
 # ---------------------------------------------------------------------------
 # Per-language pattern tables
@@ -340,6 +484,42 @@ _RS_PATTERNS = [
     (_RS_IMPL_RE, lambda m: (m.group("name"), "impl")),
 ]
 
+_CS_PATTERNS = [
+    (_CS_CLASS_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_CS_METHOD_RE, "function"),
+]
+
+_JAVA_PATTERNS = [
+    (_JAVA_CLASS_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_JAVA_METHOD_RE, "function"),
+]
+
+_CPP_PATTERNS = [
+    (_CPP_CLASS_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_CPP_ENUM_RE, "enum"),
+    (_CPP_FUNC_RE, "function"),
+]
+
+_KT_PATTERNS = [
+    (_KT_CLASS_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_KT_FUN_RE, "function"),
+]
+
+_SWIFT_PATTERNS = [
+    (_SWIFT_TYPE_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_SWIFT_FUNC_RE, "function"),
+]
+
+_PHP_PATTERNS = [
+    (_PHP_CLASS_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_PHP_FUNC_RE, "function"),
+]
+
+_DART_PATTERNS = [
+    (_DART_CLASS_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_DART_FUNC_RE, "function"),
+]
+
 
 # ---------------------------------------------------------------------------
 # Dispatcher
@@ -351,6 +531,15 @@ _EXTRACTORS = {
     "typescript": partial(_extract_brace_lang, patterns=_JS_TS_PATTERNS),
     "go": partial(_extract_brace_lang, patterns=_GO_PATTERNS),
     "rust": partial(_extract_brace_lang, patterns=_RS_PATTERNS),
+    "csharp": partial(_extract_brace_lang, patterns=_CS_PATTERNS),
+    "java": partial(_extract_brace_lang, patterns=_JAVA_PATTERNS),
+    "c": partial(_extract_brace_lang, patterns=_CPP_PATTERNS),
+    "cpp": partial(_extract_brace_lang, patterns=_CPP_PATTERNS),
+    "kotlin": partial(_extract_brace_lang, patterns=_KT_PATTERNS),
+    "swift": partial(_extract_brace_lang, patterns=_SWIFT_PATTERNS),
+    "php": partial(_extract_brace_lang, patterns=_PHP_PATTERNS),
+    "ruby": _extract_ruby,
+    "dart": partial(_extract_brace_lang, patterns=_DART_PATTERNS),
 }
 
 

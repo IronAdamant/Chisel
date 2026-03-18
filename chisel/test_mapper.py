@@ -19,6 +19,22 @@ _FRAMEWORK_PATTERNS = [
     (re.compile(r"^.*\.spec\.[jt]sx?$"), "playwright"),
     # Go
     (re.compile(r"^.*_test\.go$"), "go"),
+    # C# (xUnit, NUnit, MSTest)
+    (re.compile(r"^.*Tests?\.cs$"), "csharp_test"),
+    # Java (JUnit)
+    (re.compile(r"^.*Test\.java$"), "junit"),
+    (re.compile(r"^Test.*\.java$"), "junit"),
+    # Kotlin (JUnit)
+    (re.compile(r"^.*Test\.kt$"), "junit"),
+    # Swift (XCTest)
+    (re.compile(r"^.*Tests?\.swift$"), "xctest"),
+    # PHP (PHPUnit)
+    (re.compile(r"^.*Test\.php$"), "phpunit"),
+    # Ruby (RSpec / Minitest)
+    (re.compile(r"^.*_spec\.rb$"), "rspec"),
+    (re.compile(r"^test_.*\.rb$"), "minitest"),
+    # Dart
+    (re.compile(r"^.*_test\.dart$"), "dart_test"),
 ]
 
 
@@ -67,6 +83,9 @@ class TestMapper:
                 elif fname.endswith(".rs"):
                     if _check_rust_test(fpath):
                         test_files.append(fpath)
+                elif fname.endswith((".cpp", ".cc", ".cxx", ".c")):
+                    if _check_cpp_test(fpath):
+                        test_files.append(fpath)
         return sorted(test_files)
 
     # ------------------------------------------------------------------ #
@@ -88,6 +107,9 @@ class TestMapper:
         if framework is None and file_path.endswith(".rs"):
             if "#[test]" in content or "#[cfg(test)]" in content:
                 framework = "rust"
+        if framework is None and file_path.endswith((".cpp", ".cc", ".cxx", ".c")):
+            if "TEST(" in content or "TEST_F(" in content or "TEST_CASE(" in content:
+                framework = "gtest"
         if framework is None:
             return []
 
@@ -205,6 +227,15 @@ def _is_test_name(name, framework):
         return base.startswith("Test") or base.startswith("Benchmark")
     if framework == "rust":
         return base.startswith("test_")
+    if framework in ("csharp_test", "gtest"):
+        # C# test methods can be named anything; C++ gtest macros start with TEST
+        return True
+    if framework in ("junit", "xctest", "minitest"):
+        return base.startswith("test") or base.startswith("Test")
+    if framework == "rspec":
+        return base in ("describe", "it", "context") or base.startswith("test")
+    if framework in ("phpunit", "dart_test"):
+        return base.startswith("test") or base.startswith("Test")
     return False
 
 
@@ -226,6 +257,16 @@ def _check_rust_test(file_path):
     except OSError:
         return False
     return "#[test]" in content or "#[cfg(test)]" in content
+
+
+def _check_cpp_test(file_path):
+    """Check if a C/C++ file contains test framework macros."""
+    try:
+        content = Path(file_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return ("TEST(" in content or "TEST_F(" in content
+            or "TEST_CASE(" in content or "BOOST_AUTO_TEST_CASE(" in content)
 
 
 # ------------------------------------------------------------------ #
