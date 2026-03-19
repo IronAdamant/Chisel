@@ -1,8 +1,16 @@
 """SQLite persistence layer for Chisel's data model."""
 
+import logging
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Retry config for cross-process SQLITE_BUSY errors.
+_BUSY_RETRIES = 5
+_BUSY_BACKOFF = 0.1  # seconds, doubled each retry
 
 
 class Storage:
@@ -18,11 +26,16 @@ class Storage:
         self._init_database()
 
     def _create_connection(self):
-        """Create and configure the SQLite connection (called once)."""
-        conn = sqlite3.connect(str(self.db_path), timeout=10, check_same_thread=False)
+        """Create and configure the SQLite connection (called once).
+
+        Uses a 30-second busy timeout so concurrent processes wait rather
+        than immediately failing with SQLITE_BUSY.
+        """
+        conn = sqlite3.connect(str(self.db_path), timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         # FK enforcement disabled — Chisel manages integrity at application level
         # and stale test detection relies on orphaned edge references.
         return conn
@@ -163,9 +176,23 @@ class Storage:
             return dict(row) if row else None
 
     def _execute(self, sql, params=()):
-        """Execute a write query within a transaction. Returns the cursor."""
-        with self._conn as conn:
-            return conn.execute(sql, params)
+        """Execute a write query within a transaction. Returns the cursor.
+
+        Retries on SQLITE_BUSY with exponential backoff for cross-process
+        safety (e.g., two agents analyzing concurrently).
+        """
+        backoff = _BUSY_BACKOFF
+        for attempt in range(_BUSY_RETRIES):
+            try:
+                with self._conn as conn:
+                    return conn.execute(sql, params)
+            except sqlite3.OperationalError as exc:
+                if "database is locked" in str(exc) and attempt < _BUSY_RETRIES - 1:
+                    logger.debug("SQLITE_BUSY (attempt %d), retrying in %.1fs", attempt + 1, backoff)
+                    time.sleep(backoff)
+                    backoff *= 2
+                else:
+                    raise
 
     # --- code_units ---
 

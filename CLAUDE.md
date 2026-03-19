@@ -6,9 +6,10 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 
 ```
 chisel/
-  engine.py         — Orchestrator. Owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock.
-  storage.py        — SQLite persistence (WAL mode). 10 tables. Uses _fetchall/_fetchone/_execute helpers. cleanup_orphaned_test_results() for maintenance.
-  ast_utils.py      — Multi-lang AST extraction (Python/JS/TS/Go/Rust). CodeUnit dataclass. _extract_brace_lang() shared by JS/TS/Go/Rust.
+  engine.py         — Orchestrator. Owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock, ProcessLock.
+  project.py        — Multi-agent safety: project root detection, path normalization, storage resolution, cross-process file lock.
+  storage.py        — SQLite persistence (WAL mode, 30s busy timeout, write retry). 10 tables.
+  ast_utils.py      — Multi-lang AST extraction (12 languages). CodeUnit dataclass. _extract_brace_lang() shared by brace-delimited langs.
   git_analyzer.py   — Parses git log/blame via subprocess. Branch/diff queries.
   metrics.py        — Pure computation: churn scoring, ownership aggregation, co-change detection. _parse_iso_date shared utility.
   test_mapper.py    — Test file discovery, framework detection, dependency extraction, edge building.
@@ -17,7 +18,7 @@ chisel/
   schemas.py        — JSON Schema definitions for all 15 tools + dispatch table. Shared by HTTP and stdio servers.
   mcp_server.py     — HTTP MCP server (GET /tools, /health, POST /call). ThreadedHTTPServer. dispatch_tool() shared by both servers.
   mcp_stdio.py      — stdio MCP server (requires optional 'mcp' package). _configure_server() for engine lifecycle mgmt.
-  rwlock.py         — Read-write lock for concurrent access.
+  rwlock.py         — Read-write lock for in-process concurrent access.
 ```
 
 ## Key Design Decisions
@@ -30,6 +31,8 @@ chisel/
 - **Blame caching**: Cached by file content hash, invalidated on change.
 - **Incremental updates**: File content hashes tracked in `file_hashes` table.
 - **Persistent connection**: Storage uses a single SQLite connection (`check_same_thread=False`) with RWLock for thread safety.
+- **Multi-agent safety**: `project.py` provides: (1) `detect_project_root()` canonicalizes via git common dir so worktrees share identity, (2) `normalize_path()` ensures consistent relative paths, (3) `resolve_storage_dir()` defaults to project-local `.chisel/` (priority: explicit > env > project-local > ~/.chisel/), (4) `ProcessLock` uses `fcntl.flock` for cross-process write coordination.
+- **SQLite concurrency**: 30s `busy_timeout` + exponential-backoff retry on `_execute` for cross-process SQLITE_BUSY.
 - **Ownership vs Reviewers**: `ownership` = blame-based (who wrote the code, `role: "original_author"`). `who_reviews` = commit-activity-based (who maintains it, `role: "suggested_reviewer"`).
 - **Shared constants**: `_SKIP_DIRS` and `_EXTENSION_MAP` live in `ast_utils.py`. `_CODE_EXTENSIONS` in `engine.py` is derived from `_EXTENSION_MAP`.
 - **Shared dispatch**: `dispatch_tool()` in `mcp_server.py` is used by both HTTP and stdio servers. Tool schemas and dispatch tables live in `schemas.py`.
@@ -47,7 +50,8 @@ chisel serve --port 8377                          # HTTP MCP server
 ## Module Dependency Graph
 
 ```
-engine.py → storage.py, ast_utils.py, git_analyzer.py, metrics.py, test_mapper.py, impact.py, rwlock.py
+engine.py → project.py, storage.py, ast_utils.py, git_analyzer.py, metrics.py, test_mapper.py, impact.py, rwlock.py
+project.py → (no internal deps, uses subprocess for git)
 test_mapper.py → ast_utils.py
 impact.py → metrics.py
 metrics.py → (no internal deps)

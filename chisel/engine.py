@@ -7,6 +7,7 @@ from chisel.ast_utils import _EXTENSION_MAP, _SKIP_DIRS, compute_file_hash, extr
 from chisel.git_analyzer import GitAnalyzer
 from chisel.impact import ImpactAnalyzer
 from chisel.metrics import compute_churn, compute_co_changes
+from chisel.project import ProcessLock, detect_project_root, normalize_path, resolve_storage_dir
 from chisel.rwlock import RWLock
 from chisel.storage import Storage
 from chisel.test_mapper import TestMapper
@@ -18,17 +19,30 @@ _CODE_EXTENSIONS = frozenset(_EXTENSION_MAP)
 class ChiselEngine:
     """High-level orchestrator for Chisel operations.
 
-    Owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, and an RWLock
-    for thread-safe access.
+    Owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, an RWLock
+    for in-process thread safety, and a ProcessLock for cross-process
+    coordination.
+
+    Multi-agent safety:
+        - project_dir is canonicalized via detect_project_root() so all
+          agents (including those in git worktrees) resolve to the same root.
+        - Storage defaults to project-local (<root>/.chisel/) so different
+          projects never collide.
+        - ProcessLock prevents concurrent analyze/update from interleaving
+          destructive writes across separate processes.
+        - All stored paths are normalized via normalize_path() so agents
+          in different worktrees produce identical relative paths.
     """
 
     def __init__(self, project_dir, storage_dir=None):
-        self.project_dir = str(project_dir)
-        self.storage = Storage(base_dir=storage_dir)
+        self.project_dir = detect_project_root(str(project_dir))
+        resolved_storage = resolve_storage_dir(self.project_dir, storage_dir)
+        self.storage = Storage(base_dir=resolved_storage)
         self.git = GitAnalyzer(self.project_dir)
         self.mapper = TestMapper(self.project_dir)
         self.impact = ImpactAnalyzer(self.storage)
         self.lock = RWLock()
+        self._process_lock = ProcessLock(resolved_storage)
 
     # ------------------------------------------------------------------ #
     # Full analysis
@@ -57,32 +71,34 @@ class ChiselEngine:
         except RuntimeError:
             pass  # Not a git repo or git not available
 
-        # Phase 2: write to storage under lock
-        with self.lock.write_lock():
-            changed_files = self._find_changed_files(code_files, force=force)
+        # Phase 2: write to storage under both process lock (cross-process)
+        # and RWLock (in-process threads).
+        with self._process_lock.exclusive():
+            with self.lock.write_lock():
+                changed_files = self._find_changed_files(code_files, force=force)
 
-            stats = {
-                "code_files_scanned": len(code_files),
-                "code_units_found": self._parse_and_store_code_units(changed_files),
-                "test_files_found": 0,
-                "test_units_found": 0,
-                "test_edges_built": 0,
-                "commits_parsed": 0,
-            }
+                stats = {
+                    "code_files_scanned": len(code_files),
+                    "code_units_found": self._parse_and_store_code_units(changed_files),
+                    "test_files_found": 0,
+                    "test_units_found": 0,
+                    "test_edges_built": 0,
+                    "commits_parsed": 0,
+                }
 
-            if commits is not None:
-                stats["commits_parsed"] = len(commits)
-                self._store_commits(commits)
-                self._compute_churn_and_coupling(commits, code_files)
-                self._store_blame(changed_files)
+                if commits is not None:
+                    stats["commits_parsed"] = len(commits)
+                    self._store_commits(commits)
+                    self._compute_churn_and_coupling(commits, code_files)
+                    self._store_blame(changed_files)
 
-            test_units, tf_count, edge_count = self._discover_and_build_edges(code_files)
-            stats["test_files_found"] = tf_count
-            stats["test_units_found"] = len(test_units)
-            stats["test_edges_built"] = edge_count
+                test_units, tf_count, edge_count = self._discover_and_build_edges(code_files)
+                stats["test_files_found"] = tf_count
+                stats["test_units_found"] = len(test_units)
+                stats["test_edges_built"] = edge_count
 
-            stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
-            return stats
+                stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
+                return stats
 
     # ------------------------------------------------------------------ #
     # Incremental update
@@ -94,37 +110,37 @@ class ChiselEngine:
         Returns:
             Dict summarizing what was updated.
         """
-        # Scan filesystem outside write lock to avoid blocking readers
+        # Scan filesystem outside locks to avoid blocking
         code_files = self._scan_code_files()
-        with self.lock.write_lock():
-            changed_files = self._find_changed_files(code_files)
-            code_units_found = self._parse_and_store_code_units(changed_files)
+        with self._process_lock.exclusive():
+            with self.lock.write_lock():
+                changed_files = self._find_changed_files(code_files)
+                code_units_found = self._parse_and_store_code_units(changed_files)
 
-            stats = {
-                "files_updated": len(changed_files),
-                "code_units_found": code_units_found,
-                "new_commits": 0,
-            }
+                stats = {
+                    "files_updated": len(changed_files),
+                    "code_units_found": code_units_found,
+                    "new_commits": 0,
+                }
 
-            try:
-                all_commits = self.git.parse_log()
-                new_commits = [
-                    c for c in all_commits
-                    if self.storage.get_commit(c["hash"]) is None
-                ]
-                self._store_commits(new_commits)
-                stats["new_commits"] = len(new_commits)
+                try:
+                    all_commits = self.git.parse_log()
+                    new_commits = [
+                        c for c in all_commits
+                        if self.storage.get_commit(c["hash"]) is None
+                    ]
+                    self._store_commits(new_commits)
+                    stats["new_commits"] = len(new_commits)
 
-                # Recompute churn/coupling when anything changed
-                if new_commits or changed_files:
-                    self._compute_churn_and_coupling(all_commits, code_files)
-                self._store_blame(changed_files)
-            except RuntimeError:
-                pass
+                    if new_commits or changed_files:
+                        self._compute_churn_and_coupling(all_commits, code_files)
+                    self._store_blame(changed_files)
+                except RuntimeError:
+                    pass
 
-            self._discover_and_build_edges(code_files)
-            stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
-            return stats
+                self._discover_and_build_edges(code_files)
+                stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
+                return stats
 
     # ------------------------------------------------------------------ #
     # Tool methods (one per MCP tool)
@@ -255,7 +271,7 @@ class ChiselEngine:
         """
         changed = []
         for fpath in code_files:
-            rel = os.path.relpath(fpath, self.project_dir)
+            rel = normalize_path(fpath, self.project_dir)
             new_hash = compute_file_hash(fpath)
             old_hash = self.storage.get_file_hash(rel)
             if force or old_hash != new_hash:
@@ -312,7 +328,7 @@ class ChiselEngine:
     def _compute_churn_and_coupling(self, commits, code_files):
         """Compute file-level and unit-level churn stats, plus co-change coupling."""
         for fpath in code_files:
-            rel = os.path.relpath(fpath, self.project_dir)
+            rel = normalize_path(fpath, self.project_dir)
             churn = compute_churn(commits, rel)
             self.storage.upsert_churn_stat(
                 rel, "", churn["commit_count"], churn["distinct_authors"],
@@ -351,7 +367,7 @@ class ChiselEngine:
         test_files = self.mapper.discover_test_files()
         all_test_units = []
         for tf in test_files:
-            rel_tf = os.path.relpath(tf, self.project_dir)
+            rel_tf = normalize_path(tf, self.project_dir)
             # Remove stale test units/edges before reinserting
             old_tests = self.storage.get_test_units_by_file(rel_tf)
             for ot in old_tests:
@@ -366,7 +382,7 @@ class ChiselEngine:
 
         all_cu_dicts = []
         for fpath in code_files:
-            rel = os.path.relpath(fpath, self.project_dir)
+            rel = normalize_path(fpath, self.project_dir)
             all_cu_dicts.extend(self.storage.get_code_units_by_file(rel))
 
         edges = self.mapper.build_test_edges(all_test_units, all_cu_dicts)
