@@ -286,6 +286,96 @@ class TestCheckHelpers:
         assert _check_playwright(str(spec)) == "jest"
 
 
+class TestNewLanguageDeps:
+    """Dependency extraction for the 8 newly added languages."""
+
+    def test_csharp_using(self, mapper):
+        content = "using System;\nusing MyApp.Models;\nusing static MyApp.Helpers;\n"
+        deps = mapper.extract_test_dependencies("FooTest.cs", content)
+        names = [d["name"] for d in deps]
+        assert "System" in names
+        assert "Models" in names
+        assert "Helpers" in names
+
+    def test_java_import(self, mapper):
+        content = (
+            "import org.junit.jupiter.api.Test;\n"
+            "import com.myapp.Calculator;\n"
+            "import static org.junit.Assert.*;\n"
+        )
+        deps = mapper.extract_test_dependencies("CalculatorTest.java", content)
+        names = [d["name"] for d in deps]
+        assert "Test" in names
+        assert "Calculator" in names
+
+    def test_kotlin_import(self, mapper):
+        content = "import org.junit.Test\nimport com.myapp.Engine\n"
+        deps = mapper.extract_test_dependencies("EngineTest.kt", content)
+        names = [d["name"] for d in deps]
+        assert "Test" in names
+        assert "Engine" in names
+
+    def test_cpp_include(self, mapper):
+        content = '#include <gtest/gtest.h>\n#include "mylib/utils.h"\n'
+        deps = mapper.extract_test_dependencies("test_utils.cpp", content)
+        names = [d["name"] for d in deps]
+        assert "gtest" in names
+        assert "utils" in names
+
+    def test_c_include(self, mapper):
+        content = '#include <stdio.h>\n#include "parser.h"\n'
+        deps = mapper.extract_test_dependencies("test_parser.c", content)
+        names = [d["name"] for d in deps]
+        assert "stdio" in names
+        assert "parser" in names
+
+    def test_swift_import(self, mapper):
+        content = "import XCTest\nimport MyModule\n"
+        deps = mapper.extract_test_dependencies("MyModuleTests.swift", content)
+        names = [d["name"] for d in deps]
+        assert "XCTest" in names
+        assert "MyModule" in names
+
+    def test_php_use_and_require(self, mapper):
+        content = (
+            "<?php\n"
+            "use App\\Models\\User;\n"
+            "use PHPUnit\\Framework\\TestCase;\n"
+            "require_once 'helpers/math.php';\n"
+        )
+        deps = mapper.extract_test_dependencies("UserTest.php", content)
+        names = [d["name"] for d in deps]
+        assert "User" in names
+        assert "TestCase" in names
+        assert "math" in names
+
+    def test_ruby_require(self, mapper):
+        content = (
+            "require 'rspec'\n"
+            "require_relative 'lib/calculator'\n"
+        )
+        deps = mapper.extract_test_dependencies("calculator_spec.rb", content)
+        names = [d["name"] for d in deps]
+        assert "rspec" in names
+        assert "calculator" in names
+
+    def test_dart_import(self, mapper):
+        content = (
+            "import 'package:flutter_test/flutter_test.dart';\n"
+            "import 'package:myapp/utils.dart';\n"
+        )
+        deps = mapper.extract_test_dependencies("utils_test.dart", content)
+        names = [d["name"] for d in deps]
+        assert "flutter_test" in names
+        assert "utils" in names
+
+    def test_wildcard_java_import_skipped(self, mapper):
+        content = "import com.myapp.*;\n"
+        deps = mapper.extract_test_dependencies("FooTest.java", content)
+        names = [d["name"] for d in deps]
+        assert "*" not in names
+
+
 class TestDepExtractionEdgeCases:
     def test_python_syntax_error_fallback(self, mapper):
         """SyntaxError in Python falls back to regex extraction."""

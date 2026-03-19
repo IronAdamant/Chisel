@@ -151,6 +151,20 @@ class TestMapper:
             return _extract_go_deps(content)
         if lang == "rust":
             return _extract_rust_deps(content)
+        if lang == "csharp":
+            return _extract_csharp_deps(content)
+        if lang == "java" or lang == "kotlin":
+            return _extract_java_deps(content)
+        if lang in ("c", "cpp"):
+            return _extract_cpp_deps(content)
+        if lang == "swift":
+            return _extract_swift_deps(content)
+        if lang == "php":
+            return _extract_php_deps(content)
+        if lang == "ruby":
+            return _extract_ruby_deps(content)
+        if lang == "dart":
+            return _extract_dart_deps(content)
         return []
 
     # ------------------------------------------------------------------ #
@@ -422,6 +436,135 @@ def _extract_rust_deps(content):
             deps.append({"name": name, "dep_type": "import"})
     return _dedupe_deps(deps)
 
+
+# ------------------------------------------------------------------ #
+# C# dependency extraction
+# ------------------------------------------------------------------ #
+
+_CS_USING_RE = re.compile(r"^\s*using\s+(?:static\s+)?([A-Za-z_][\w.]*)\s*;", re.MULTILINE)
+
+
+def _extract_csharp_deps(content):
+    """Extract using statements from C# content."""
+    deps = []
+    for m in _CS_USING_RE.finditer(content):
+        name = m.group(1).rsplit(".", 1)[-1]
+        deps.append({"name": name, "dep_type": "import"})
+    return _dedupe_deps(deps)
+
+
+# ------------------------------------------------------------------ #
+# Java / Kotlin dependency extraction
+# ------------------------------------------------------------------ #
+
+_JAVA_IMPORT_RE = re.compile(r"^\s*import\s+(?:static\s+)?([A-Za-z_][\w.]*)\s*;?", re.MULTILINE)
+
+
+def _extract_java_deps(content):
+    """Extract import statements from Java/Kotlin content."""
+    deps = []
+    for m in _JAVA_IMPORT_RE.finditer(content):
+        name = m.group(1).rsplit(".", 1)[-1]
+        if name != "*":
+            deps.append({"name": name, "dep_type": "import"})
+    return _dedupe_deps(deps)
+
+
+# ------------------------------------------------------------------ #
+# C / C++ dependency extraction
+# ------------------------------------------------------------------ #
+
+_CPP_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
+
+
+def _extract_cpp_deps(content):
+    """Extract #include directives from C/C++ content."""
+    deps = []
+    for m in _CPP_INCLUDE_RE.finditer(content):
+        header = m.group(1)
+        # Extract base name: "mylib/utils.h" -> "utils"
+        name = header.rsplit("/", 1)[-1].split(".")[0]
+        deps.append({"name": name, "dep_type": "import"})
+    return _dedupe_deps(deps)
+
+
+# ------------------------------------------------------------------ #
+# Swift dependency extraction
+# ------------------------------------------------------------------ #
+
+_SWIFT_IMPORT_RE = re.compile(r"^\s*import\s+(\w+)", re.MULTILINE)
+
+
+def _extract_swift_deps(content):
+    """Extract import statements from Swift content."""
+    deps = []
+    for m in _SWIFT_IMPORT_RE.finditer(content):
+        deps.append({"name": m.group(1), "dep_type": "import"})
+    return _dedupe_deps(deps)
+
+
+# ------------------------------------------------------------------ #
+# PHP dependency extraction
+# ------------------------------------------------------------------ #
+
+_PHP_USE_RE = re.compile(r"^\s*use\s+([A-Za-z_][\w\\]*)\s*;", re.MULTILINE)
+_PHP_REQUIRE_RE = re.compile(
+    r"(?:require|require_once|include|include_once)\s*\(?\s*['\"]([^'\"]+)['\"]\s*\)?",
+    re.MULTILINE,
+)
+
+
+def _extract_php_deps(content):
+    """Extract use statements and require/include from PHP content."""
+    deps = []
+    for m in _PHP_USE_RE.finditer(content):
+        name = m.group(1).rsplit("\\", 1)[-1]
+        deps.append({"name": name, "dep_type": "import"})
+    for m in _PHP_REQUIRE_RE.finditer(content):
+        path = m.group(1)
+        name = path.rsplit("/", 1)[-1].split(".")[0]
+        deps.append({"name": name, "dep_type": "import"})
+    return _dedupe_deps(deps)
+
+
+# ------------------------------------------------------------------ #
+# Ruby dependency extraction
+# ------------------------------------------------------------------ #
+
+_RB_REQUIRE_RE = re.compile(r"^\s*require(?:_relative)?\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
+
+
+def _extract_ruby_deps(content):
+    """Extract require/require_relative from Ruby content."""
+    deps = []
+    for m in _RB_REQUIRE_RE.finditer(content):
+        path = m.group(1)
+        name = path.rsplit("/", 1)[-1]
+        deps.append({"name": name, "dep_type": "import"})
+    return _dedupe_deps(deps)
+
+
+# ------------------------------------------------------------------ #
+# Dart dependency extraction
+# ------------------------------------------------------------------ #
+
+_DART_IMPORT_RE = re.compile(r"^\s*import\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
+
+
+def _extract_dart_deps(content):
+    """Extract import statements from Dart content."""
+    deps = []
+    for m in _DART_IMPORT_RE.finditer(content):
+        path = m.group(1)
+        # "package:myapp/utils.dart" -> "utils"
+        name = path.rsplit("/", 1)[-1].split(".")[0]
+        deps.append({"name": name, "dep_type": "import"})
+    return _dedupe_deps(deps)
+
+
+# ------------------------------------------------------------------ #
+# Shared utility
+# ------------------------------------------------------------------ #
 
 def _dedupe_deps(deps):
     """Remove duplicate dependencies, keeping first occurrence."""
