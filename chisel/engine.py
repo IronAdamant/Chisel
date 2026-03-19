@@ -407,6 +407,6 @@ class ChiselEngine:
         for root, dirs, filenames in os.walk(start_dir):
             dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
             for fname in filenames:
-                if Path(fname).suffix.lower() in _CODE_EXTENSIONS:
+                if os.path.splitext(fname)[1].lower() in _CODE_EXTENSIONS:
                     files.append(os.path.join(root, fname))
         return sorted(files)

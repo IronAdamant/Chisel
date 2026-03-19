@@ -76,7 +76,7 @@ def create_server(storage_dir=None, project_dir=None):
         project_dir: Root of the project to analyze. Defaults to cwd.
 
     Returns:
-        A configured ``mcp.server.Server`` instance.
+        A tuple of (configured ``mcp.server.Server`` instance, ``ChiselEngine``).
     """
     if not _MCP_AVAILABLE:
         raise RuntimeError(
@@ -93,8 +93,7 @@ def create_server(storage_dir=None, project_dir=None):
     except Exception:
         engine.close()
         raise
-    server._engine = engine  # Expose for caller cleanup
-    return server
+    return server, engine
 
 
 async def _run_server():
@@ -102,8 +101,7 @@ async def _run_server():
     project_dir = os.environ.get("CHISEL_PROJECT_DIR")
     storage_dir = os.environ.get("CHISEL_STORAGE_DIR")
 
-    server = create_server(storage_dir=storage_dir, project_dir=project_dir)
-    engine = server._engine
+    server, engine = create_server(storage_dir=storage_dir, project_dir=project_dir)
     try:
         async with stdio_server() as (read_stream, write_stream):
             await server.run(

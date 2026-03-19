@@ -94,7 +94,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         """Read and parse the JSON request body. Returns None on failure."""
         try:
             content_length = int(self.headers.get("Content-Length", 0))
-        except (ValueError, TypeError):
+        except ValueError:
             self._send_error_json(400, "Invalid Content-Length header")
             return None
         if content_length == 0:

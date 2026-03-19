@@ -51,6 +51,8 @@ def create_parser():
     p_impact = sub.add_parser("impact", parents=[shared],
                               help="Show impacted tests for files")
     p_impact.add_argument("files", nargs="+", help="File paths to check")
+    p_impact.add_argument("--functions", nargs="*", default=None,
+                          help="Optional function names to scope impact")
 
     # suggest-tests
     p_suggest = sub.add_parser("suggest-tests", parents=[shared],
@@ -213,7 +215,10 @@ def cmd_analyze(args):
 
 
 def cmd_impact(args):
-    return _run_tool(args, "tool_impact", {"files": args.files},
+    kwargs = {"files": args.files}
+    if args.functions:
+        kwargs["functions"] = args.functions
+    return _run_tool(args, "tool_impact", kwargs,
                      _fmt_list("No impacted tests found.", "Impacted tests:",
                                lambda i: f"{i['test_id']}  ({i['reason']})"))
 

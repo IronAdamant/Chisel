@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence for LLM agents. Zero external dependencies.
 
-**Version:** 0.3.2
+**Version:** 0.4.0
 **License:** MIT
 **Python:** >= 3.9
 
@@ -29,13 +29,15 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 | `chisel/__init__.py` | Package init, exports `__version__` | -- | -- |
 | `chisel/ast_utils.py` | Multi-language AST extraction (Python/JS/TS/Go/Rust), `CodeUnit` dataclass, `_SKIP_DIRS` constant, `compute_file_hash`, `detect_language` | `ast`, `hashlib`, `re`, `dataclasses`, `pathlib` | [glossary: code unit](wiki-local/glossary.md) |
 | `chisel/storage.py` | SQLite persistence layer (WAL mode, 10 tables, single persistent connection), all CRUD operations | `sqlite3`, `datetime`, `pathlib` | [glossary: blame cache](wiki-local/glossary.md) |
-| `chisel/git_analyzer.py` | Git log/blame parsing via subprocess, churn computation, ownership computation, co-change coupling, diff function extraction | `re`, `subprocess`, `collections`, `datetime`, `itertools` | [glossary: churn score](wiki-local/glossary.md) |
+| `chisel/git_analyzer.py` | Git log/blame parsing via subprocess, branch/diff queries, function-level log | `re`, `subprocess`, `datetime` | [glossary: churn score](wiki-local/glossary.md) |
+| `chisel/metrics.py` | Pure computation: churn scoring, ownership aggregation, co-change detection | `collections`, `datetime`, `itertools` | [glossary: churn score](wiki-local/glossary.md) |
 | `chisel/test_mapper.py` | Test file discovery, framework detection (pytest/Jest/Go/Rust/Playwright), dependency extraction, test edge building | `ast`, `os`, `re`, `pathlib`, `chisel.ast_utils` | [glossary: test edge](wiki-local/glossary.md) |
-| `chisel/impact.py` | Impact analysis, risk scoring, stale test detection, ownership queries, reviewer suggestions | `collections`, `datetime`, `chisel.git_analyzer`, `chisel.storage` (via constructor injection) | [glossary: risk score](wiki-local/glossary.md) |
+| `chisel/impact.py` | Impact analysis, risk scoring, stale test detection, ownership queries, reviewer suggestions | `collections`, `datetime`, `chisel.metrics`, `chisel.storage` (via constructor injection) | [glossary: risk score](wiki-local/glossary.md) |
 | `chisel/engine.py` | Orchestrator -- owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock; exposes `tool_*()` methods for all 15 MCP tools | `os`, `pathlib`, `chisel.ast_utils`, `chisel.git_analyzer`, `chisel.impact`, `chisel.rwlock`, `chisel.storage`, `chisel.test_mapper` | [spec-project](wiki-local/spec-project.md) |
 | `chisel/cli.py` | argparse CLI with 18 subcommands, dispatch table, output formatting | `argparse`, `json`, `os`, `chisel.engine` | [spec-project: CLI](wiki-local/spec-project.md) |
 | `chisel/mcp_server.py` | HTTP MCP server (GET /tools, /health; POST /call), ThreadedHTTPServer, tool schemas and dispatch table | `json`, `logging`, `threading`, `http.server`, `socketserver`, `chisel.engine` | [spec-project: MCP tools](wiki-local/spec-project.md) |
-| `chisel/mcp_stdio.py` | stdio MCP server for Claude Desktop/Cursor integration, requires optional `mcp` package | `asyncio`, `json`, `os`, `sys`, `chisel.engine`, `chisel.mcp_server` (imports `dispatch_tool`, `_TOOL_SCHEMAS`) | [spec-project: MCP tools](wiki-local/spec-project.md) |
+| `chisel/mcp_stdio.py` | stdio MCP server for Claude Desktop/Cursor integration, requires optional `mcp` package | `asyncio`, `json`, `os`, `sys`, `chisel.engine`, `chisel.mcp_server` (imports `dispatch_tool`), `chisel.schemas` (imports `_TOOL_SCHEMAS`) | [spec-project: MCP tools](wiki-local/spec-project.md) |
+| `chisel/schemas.py` | JSON Schema definitions for all 15 tools + dispatch table, shared by HTTP and stdio servers | -- (pure data module) | -- |
 | `chisel/rwlock.py` | Read-write lock (multiple readers or one exclusive writer) for concurrent access | `threading`, `contextlib` | -- |
 
 ### tests/ -- Test Suite
@@ -60,10 +62,12 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 ```
 engine.py --> storage.py, ast_utils.py, git_analyzer.py, test_mapper.py, impact.py, rwlock.py
 test_mapper.py --> ast_utils.py
-impact.py --> storage.py (injected), git_analyzer.py
+impact.py --> storage.py (injected), metrics.py
+metrics.py --> (no internal deps)
+schemas.py --> (no internal deps)
 cli.py --> engine.py, mcp_server.py (lazy), mcp_stdio.py (lazy)
-mcp_server.py --> engine.py
-mcp_stdio.py --> engine.py, mcp_server.py
+mcp_server.py --> engine.py, schemas.py
+mcp_stdio.py --> engine.py, mcp_server.py, schemas.py
 ```
 
 ## SQLite Tables (10)

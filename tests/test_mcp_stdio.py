@@ -5,6 +5,7 @@ that create_server / main behave correctly when the optional ``mcp``
 package is or is not installed.
 """
 
+import builtins as _builtins
 import importlib
 import sys
 from unittest import mock
@@ -26,7 +27,7 @@ class TestSharedImports:
         assert stdio_fn is server_fn
 
     def test_tool_schemas_is_same_object_as_mcp_server(self):
-        """_TOOL_SCHEMAS should be imported from mcp_server, not duplicated."""
+        """_TOOL_SCHEMAS should be the same object in both modules (both import from schemas.py)."""
         from chisel.mcp_stdio import _TOOL_SCHEMAS as stdio_schemas
         from chisel.mcp_server import _TOOL_SCHEMAS as server_schemas
         assert stdio_schemas is server_schemas
@@ -300,7 +301,7 @@ class TestCreateServerAvailable:
             # ChiselEngine is a module-level name from "from chisel.engine import".
             with mock.patch.object(mcp_stdio, "Server", fake_server_cls, create=True), \
                  mock.patch.object(mcp_stdio, "ChiselEngine", mock_engine_cls):
-                result = mcp_stdio.create_server(
+                server, engine = mcp_stdio.create_server(
                     storage_dir=str(tmp_path / "storage"),
                     project_dir=str(tmp_path),
                 )
@@ -313,8 +314,9 @@ class TestCreateServerAvailable:
         )
         # Server("chisel") should have been called
         fake_server_cls.assert_called_once_with("chisel")
-        # The return value is the mocked server instance
-        assert result is fake_server_instance
+        # The return value is the mocked server instance and engine
+        assert server is fake_server_instance
+        assert engine is mock_engine_cls.return_value
 
     def test_create_server_defaults_project_dir_to_cwd(self, tmp_path):
         """When project_dir is None, create_server should default to os.getcwd()."""
@@ -344,7 +346,7 @@ class TestCreateServerAvailable:
 # Helpers
 # ------------------------------------------------------------------ #
 
-_real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+_real_import = _builtins.__import__
 
 
 def _make_import_blocker(blocked_name):

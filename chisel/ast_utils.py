@@ -6,13 +6,14 @@ Swift, PHP, Ruby, and Dart. Fully self-contained with zero external
 dependencies beyond the Python standard library.
 """
 
+from __future__ import annotations
+
 import ast
 import hashlib
 import re
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import List, Optional
 
 # Directories to always skip when walking the project tree.
 _SKIP_DIRS = {
@@ -67,7 +68,7 @@ _EXTENSION_MAP = {
 }
 
 
-def detect_language(file_path: str) -> Optional[str]:
+def detect_language(file_path: str) -> str | None:
     """Return the language string for a file path based on its extension."""
     ext = Path(file_path).suffix.lower()
     return _EXTENSION_MAP.get(ext)
@@ -92,7 +93,7 @@ def compute_file_hash(file_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _find_block_end(lines: List[str], start_idx: int) -> int:
+def _find_block_end(lines: list[str], start_idx: int) -> int:
     """Find the line number (1-based) of the closing brace for a block.
 
     Scans forward from *start_idx* (0-based index into *lines*) looking for
@@ -123,14 +124,23 @@ def _find_block_end(lines: List[str], start_idx: int) -> int:
 
 
 def _strip_strings_and_comments(line: str) -> str:
-    """Remove string literals and trailing ``//`` comments from a single line."""
+    """Remove string literals, ``//`` comments, and ``/* */`` blocks from a line."""
     result: list = []
     i = 0
     length = len(line)
     while i < length:
         ch = line[i]
+        # Single-line comment: //
         if ch == "/" and i + 1 < length and line[i + 1] == "/":
             break
+        # Block comment: /* ... */ (may not close on same line)
+        if ch == "/" and i + 1 < length and line[i + 1] == "*":
+            end = line.find("*/", i + 2)
+            if end != -1:
+                i = end + 2
+            else:
+                break  # unclosed block comment — ignore rest of line
+            continue
         if ch in ('"', "'", "`"):
             quote = ch
             i += 1
@@ -148,14 +158,14 @@ def _strip_strings_and_comments(line: str) -> str:
 
 def _extract_brace_lang(
     file_path: str, content: str, patterns: list,
-) -> List[CodeUnit]:
+) -> list[CodeUnit]:
     """Extract code units from a brace-delimited language.
 
     Args:
         patterns: list of (compiled_regex, unit_type) tuples.
                   unit_type is a string, OR a callable(match) -> (name, type).
     """
-    units: List[CodeUnit] = []
+    units: list[CodeUnit] = []
     lines = content.splitlines()
 
     for idx, line in enumerate(lines):
@@ -187,14 +197,14 @@ _PY_CLASS_RE = re.compile(
 )
 
 
-def _extract_python_ast(file_path: str, content: str) -> List[CodeUnit]:
+def _extract_python_ast(file_path: str, content: str) -> list[CodeUnit]:
     """Extract code units from Python source using the ``ast`` module."""
     try:
         tree = ast.parse(content, filename=file_path)
     except SyntaxError:
         return _extract_python_regex(file_path, content)
 
-    units: List[CodeUnit] = []
+    units: list[CodeUnit] = []
 
     parent_map: dict = {}
     for cls_node in ast.walk(tree):
@@ -221,11 +231,11 @@ def _extract_python_ast(file_path: str, content: str) -> List[CodeUnit]:
     return units
 
 
-def _extract_python_regex(file_path: str, content: str) -> List[CodeUnit]:
+def _extract_python_regex(file_path: str, content: str) -> list[CodeUnit]:
     """Regex fallback for Python files that fail ``ast.parse``."""
-    units: List[CodeUnit] = []
+    units: list[CodeUnit] = []
     lines = content.splitlines()
-    current_class: Optional[str] = None
+    current_class: str | None = None
     current_class_indent: int = -1
 
     for idx, line in enumerate(lines):
@@ -245,7 +255,7 @@ def _extract_python_regex(file_path: str, content: str) -> List[CodeUnit]:
         if fn_m:
             indent_len = len(fn_m.group("indent"))
             name = fn_m.group("name")
-            is_async = "async" in line.split("def")[0]
+            is_async = line.lstrip().startswith("async ")
 
             if current_class and indent_len > current_class_indent:
                 name = f"{current_class}.{name}"
@@ -260,7 +270,7 @@ def _extract_python_regex(file_path: str, content: str) -> List[CodeUnit]:
     return units
 
 
-def _py_block_end(lines: List[str], start_idx: int, indent: int) -> int:
+def _py_block_end(lines: list[str], start_idx: int, indent: int) -> int:
     """Estimate the end line of a Python block starting at *start_idx*."""
     for i in range(start_idx + 1, len(lines)):
         stripped = lines[i].strip()
@@ -428,7 +438,7 @@ _RB_DEF_RE = re.compile(
 )
 
 
-def _ruby_block_end(lines: List[str], start_idx: int, indent: int) -> int:
+def _ruby_block_end(lines: list[str], start_idx: int, indent: int) -> int:
     """Find the closing ``end`` for a Ruby block at the given indent level."""
     for i in range(start_idx + 1, len(lines)):
         stripped = lines[i].strip()
@@ -440,9 +450,9 @@ def _ruby_block_end(lines: List[str], start_idx: int, indent: int) -> int:
     return len(lines)
 
 
-def _extract_ruby(file_path: str, content: str) -> List[CodeUnit]:
+def _extract_ruby(file_path: str, content: str) -> list[CodeUnit]:
     """Extract code units from Ruby source using keyword-based block detection."""
-    units: List[CodeUnit] = []
+    units: list[CodeUnit] = []
     lines = content.splitlines()
 
     for idx, line in enumerate(lines):
@@ -466,6 +476,12 @@ def _extract_ruby(file_path: str, content: str) -> List[CodeUnit]:
 # Per-language pattern tables
 # ---------------------------------------------------------------------------
 
+
+def _name_kind(m):
+    """Extract (name, kind) groups from a regex match — shared by many pattern tables."""
+    return m.group("name"), m.group("kind")
+
+
 _JS_TS_PATTERNS = [
     (_JS_NAMED_FUNC_RE, "function"),
     (_JS_CLASS_RE, "class"),
@@ -474,7 +490,7 @@ _JS_TS_PATTERNS = [
 
 _GO_PATTERNS = [
     (_GO_FUNC_RE, "function"),
-    (_GO_TYPE_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_GO_TYPE_RE, _name_kind),
 ]
 
 _RS_PATTERNS = [
@@ -485,38 +501,38 @@ _RS_PATTERNS = [
 ]
 
 _CS_PATTERNS = [
-    (_CS_CLASS_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_CS_CLASS_RE, _name_kind),
     (_CS_METHOD_RE, "function"),
 ]
 
 _JAVA_PATTERNS = [
-    (_JAVA_CLASS_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_JAVA_CLASS_RE, _name_kind),
     (_JAVA_METHOD_RE, "function"),
 ]
 
 _CPP_PATTERNS = [
-    (_CPP_CLASS_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_CPP_CLASS_RE, _name_kind),
     (_CPP_ENUM_RE, "enum"),
     (_CPP_FUNC_RE, "function"),
 ]
 
 _KT_PATTERNS = [
-    (_KT_CLASS_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_KT_CLASS_RE, _name_kind),
     (_KT_FUN_RE, "function"),
 ]
 
 _SWIFT_PATTERNS = [
-    (_SWIFT_TYPE_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_SWIFT_TYPE_RE, _name_kind),
     (_SWIFT_FUNC_RE, "function"),
 ]
 
 _PHP_PATTERNS = [
-    (_PHP_CLASS_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_PHP_CLASS_RE, _name_kind),
     (_PHP_FUNC_RE, "function"),
 ]
 
 _DART_PATTERNS = [
-    (_DART_CLASS_RE, lambda m: (m.group("name"), m.group("kind"))),
+    (_DART_CLASS_RE, _name_kind),
     (_DART_FUNC_RE, "function"),
 ]
 
@@ -543,13 +559,13 @@ _EXTRACTORS = {
 }
 
 
-def extract_code_units(file_path: str, content: str) -> List[CodeUnit]:
+def extract_code_units(file_path: str, content: str) -> list[CodeUnit]:
     """Extract code units from *content* using the appropriate language parser.
 
     Dispatches to a language-specific extractor based on the file extension.
     Returns an empty list for unsupported languages.
     """
     lang = detect_language(file_path)
-    if lang is None:
+    if lang is None or lang not in _EXTRACTORS:
         return []
     return _EXTRACTORS[lang](file_path, content)

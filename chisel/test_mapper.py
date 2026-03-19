@@ -99,9 +99,8 @@ class TestMapper:
         """
         framework = self.detect_framework(file_path)
 
-        try:
-            content = Path(file_path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        content = _read_file(file_path)
+        if content is None:
             return []
 
         if framework is None and file_path.endswith(".rs"):
@@ -228,22 +227,26 @@ def _is_test_name(name, framework):
     if framework == "rust":
         return base.startswith("test_")
     if framework in ("csharp_test", "gtest"):
-        # C# test methods can be named anything; C++ gtest macros start with TEST
         return True
-    if framework in ("junit", "xctest", "minitest"):
+    if framework in ("junit", "xctest", "minitest", "phpunit", "dart_test"):
         return base.startswith("test") or base.startswith("Test")
     if framework == "rspec":
         return base in ("describe", "it", "context") or base.startswith("test")
-    if framework in ("phpunit", "dart_test"):
-        return base.startswith("test") or base.startswith("Test")
     return False
+
+
+def _read_file(file_path):
+    """Read a file's text content, returning None on failure."""
+    try:
+        return Path(file_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def _check_playwright(file_path):
     """Check if a .spec.ts/.spec.js file actually uses Playwright."""
-    try:
-        content = Path(file_path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    content = _read_file(file_path)
+    if content is None:
         return "jest"
     if "playwright" in content or "@playwright" in content:
         return "playwright"
@@ -252,18 +255,16 @@ def _check_playwright(file_path):
 
 def _check_rust_test(file_path):
     """Check if a .rs file contains #[test] or #[cfg(test)]."""
-    try:
-        content = Path(file_path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    content = _read_file(file_path)
+    if content is None:
         return False
     return "#[test]" in content or "#[cfg(test)]" in content
 
 
 def _check_cpp_test(file_path):
     """Check if a C/C++ file contains test framework macros."""
-    try:
-        content = Path(file_path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    content = _read_file(file_path)
+    if content is None:
         return False
     return ("TEST(" in content or "TEST_F(" in content
             or "TEST_CASE(" in content or "BOOST_AUTO_TEST_CASE(" in content)
@@ -272,6 +273,16 @@ def _check_cpp_test(file_path):
 # ------------------------------------------------------------------ #
 # Python dependency extraction
 # ------------------------------------------------------------------ #
+
+_PY_KEYWORDS = frozenset({
+    "if", "for", "while", "with", "return", "print",
+    "class", "def", "import", "from", "raise", "assert",
+    "del", "yield", "lambda", "elif", "except", "async",
+    "await", "not", "and", "or", "in", "is", "pass",
+    "break", "continue", "try", "finally", "global",
+    "nonlocal",
+})
+
 
 def _extract_python_deps(content):
     """Extract imports and function calls from Python test content."""
@@ -322,6 +333,12 @@ def _extract_python_deps_regex(content):
 # JS/TS dependency extraction
 # ------------------------------------------------------------------ #
 
+_JS_KEYWORDS = frozenset({
+    "if", "for", "while", "switch", "import", "require",
+    "describe", "it", "test", "expect", "beforeEach",
+    "afterEach", "beforeAll", "afterAll",
+})
+
 _JS_IMPORT_RE = re.compile(
     r"""(?:import\s+(?:\{[^}]*\}|\w+).*?from\s+['"]([^'"]+)['"]|"""
     r"""require\s*\(\s*['"]([^'"]+)['"]\s*\))""",
@@ -362,21 +379,6 @@ _GO_IMPORT_SINGLE_RE = re.compile(r'^import\s+"([^"]+)"', re.MULTILINE)
 
 
 _GO_IMPORT_LINE_RE = re.compile(r'"([^"]+)"')
-
-_PY_KEYWORDS = frozenset({
-    "if", "for", "while", "with", "return", "print",
-    "class", "def", "import", "from", "raise", "assert",
-    "del", "yield", "lambda", "elif", "except", "async",
-    "await", "not", "and", "or", "in", "is", "pass",
-    "break", "continue", "try", "finally", "global",
-    "nonlocal",
-})
-
-_JS_KEYWORDS = frozenset({
-    "if", "for", "while", "switch", "import", "require",
-    "describe", "it", "test", "expect", "beforeEach",
-    "afterEach", "beforeAll", "afterAll",
-})
 
 
 def _extract_go_deps(content):

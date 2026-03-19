@@ -163,9 +163,9 @@ class Storage:
             return dict(row) if row else None
 
     def _execute(self, sql, params=()):
-        """Execute a write query within a transaction."""
+        """Execute a write query within a transaction. Returns the cursor."""
         with self._conn as conn:
-            conn.execute(sql, params)
+            return conn.execute(sql, params)
 
     # --- code_units ---
 
@@ -328,11 +328,14 @@ class Storage:
 
     # --- churn_stats ---
 
+    @staticmethod
+    def _normalize_unit_name(unit_name):
+        return unit_name if unit_name is not None else ""
+
     def upsert_churn_stat(self, file_path, unit_name, commit_count=0,
                           distinct_authors=0, total_insertions=0, total_deletions=0,
                           last_changed=None, churn_score=0.0):
-        if unit_name is None:
-            unit_name = ""
+        unit_name = self._normalize_unit_name(unit_name)
         self._execute(
             """INSERT INTO churn_stats (file_path, unit_name, commit_count,
                distinct_authors, total_insertions, total_deletions,
@@ -350,8 +353,7 @@ class Storage:
         )
 
     def get_churn_stat(self, file_path, unit_name=None):
-        if unit_name is None:
-            unit_name = ""
+        unit_name = self._normalize_unit_name(unit_name)
         return self._fetchone(
             "SELECT * FROM churn_stats WHERE file_path = ? AND unit_name = ?",
             (file_path, unit_name),
@@ -463,31 +465,33 @@ class Storage:
         Returns:
             Number of orphaned rows deleted.
         """
-        with self._conn as conn:
-            cursor = conn.execute(
-                """DELETE FROM test_results
-                   WHERE test_id NOT IN (SELECT id FROM test_units)"""
-            )
-            return cursor.rowcount
+        cursor = self._execute(
+            """DELETE FROM test_results
+               WHERE test_id NOT IN (SELECT id FROM test_units)"""
+        )
+        return cursor.rowcount
 
     def get_stats(self):
-        """Get summary counts for all tables.
+        """Get summary counts for all tables in a single query.
 
         Returns:
             Dict: {code_units, test_units, test_edges, commits,
                    commit_files, blame_cache, co_changes, churn_stats,
                    file_hashes, test_results}
         """
-        tables = [
-            "code_units", "test_units", "test_edges", "commits",
-            "commit_files", "blame_cache", "co_changes", "churn_stats",
-            "file_hashes", "test_results",
-        ]
-        stats = {}
-        for table in tables:
-            row = self._fetchone(f"SELECT COUNT(*) AS cnt FROM {table}")
-            stats[table] = row["cnt"]
-        return stats
+        rows = self._fetchall(
+            """SELECT 'code_units' AS tbl, COUNT(*) AS cnt FROM code_units
+               UNION ALL SELECT 'test_units', COUNT(*) FROM test_units
+               UNION ALL SELECT 'test_edges', COUNT(*) FROM test_edges
+               UNION ALL SELECT 'commits', COUNT(*) FROM commits
+               UNION ALL SELECT 'commit_files', COUNT(*) FROM commit_files
+               UNION ALL SELECT 'blame_cache', COUNT(*) FROM blame_cache
+               UNION ALL SELECT 'co_changes', COUNT(*) FROM co_changes
+               UNION ALL SELECT 'churn_stats', COUNT(*) FROM churn_stats
+               UNION ALL SELECT 'file_hashes', COUNT(*) FROM file_hashes
+               UNION ALL SELECT 'test_results', COUNT(*) FROM test_results"""
+        )
+        return {r["tbl"]: r["cnt"] for r in rows}
 
     # --- file_hashes ---
 

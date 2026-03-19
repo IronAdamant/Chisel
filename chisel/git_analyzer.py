@@ -10,10 +10,19 @@ _BLAME_HEADER_RE = re.compile(
 )
 
 _HUNK_RE = re.compile(r"^@@\s+[^@]+\s+@@\s*(.+)$")
-# Patterns to extract the bare name from common declaration styles
+# Patterns to extract the bare name from common declaration styles.
+# Covers Python (def/async def), JS/TS (function/async function),
+# Go (func), Rust (fn), Kotlin (fun), plus a fallback for return-type
+# declarations in C#/Java/C++/Dart/Swift.
 _FUNC_NAME_RE = re.compile(
-    r"(?:def|func|fn|function|async\s+def|async\s+function)"
+    r"(?:"
+    r"(?:def|func|fn|fun|function|async\s+def|async\s+function)"
     r"\s+(?:\([^)]*\)\s+)?(\w+)"
+    r"|"
+    r"(?:(?:public|private|protected|internal|static|virtual|override|abstract"
+    r"|async|final|synchronized|open|sealed|inline)\s+)*"
+    r"(?:\w+(?:<[^>]*>)?(?:\[\])*\??\s+)(\w+)\s*\("
+    r")"
 )
 
 
@@ -115,8 +124,8 @@ class GitAnalyzer:
             diff_ins = 0
             diff_del = 0
             has_numstat = False
-            for line in lines[1:]:
-                line = line.strip()
+            for raw_line in lines[1:]:
+                line = raw_line.strip()
                 if not line:
                     continue
                 file_parts = line.split("\t")
@@ -277,7 +286,7 @@ class GitAnalyzer:
         Uses git diff --name-only against the ref.
         """
         raw = self._run_git(["diff", "--name-only", ref])
-        return [line.strip() for line in raw.strip().split("\n") if line.strip()]
+        return [line.strip() for line in raw.strip().splitlines() if line.strip()]
 
     def get_changed_functions(self, file_path, ref="HEAD~1"):
         """Extract function names from diff hunk headers.
@@ -312,7 +321,7 @@ class GitAnalyzer:
                 nm = _FUNC_NAME_RE.search(context)
                 if not nm:
                     continue
-                func_name = nm.group(1)
+                func_name = nm.group(1) or nm.group(2)
                 if func_name and func_name not in seen:
                     seen.add(func_name)
                     functions.append(func_name)

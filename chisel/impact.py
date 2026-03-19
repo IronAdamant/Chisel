@@ -303,8 +303,14 @@ class ImpactAnalyzer:
             info["email"] = commit.get("author_email", "")
             info["insertions"] += commit.get("insertions", 0)
             info["deletions"] += commit.get("deletions", 0)
-            if not info["last_date"] or commit["date"] > info["last_date"]:
+            if not info["last_date"]:
                 info["last_date"] = commit["date"]
+            else:
+                try:
+                    if _parse_iso_date(commit["date"]) > _parse_iso_date(info["last_date"]):
+                        info["last_date"] = commit["date"]
+                except (ValueError, TypeError):
+                    pass
             # Weight by recency: recent commits count more
             try:
                 cdate = _parse_iso_date(commit["date"])

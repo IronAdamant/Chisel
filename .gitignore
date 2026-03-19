@@ -15,6 +15,7 @@ htmlcov/
 *.db-wal
 *.db-shm
 .chisel/
+.stele/
 Text_Files/
 .venv/
 venv/
