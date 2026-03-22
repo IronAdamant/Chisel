@@ -3,6 +3,7 @@
 Test impact analysis and code intelligence for LLM agents. Zero external dependencies.
 
 **Version:** 0.5.0
+**PyPI:** `chisel-test-impact`
 **License:** MIT
 **Python:** >= 3.9
 
@@ -13,7 +14,8 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 | `pyproject.toml` | Build config, version, scripts, dev deps | setuptools >= 68.0 | -- |
 | `LICENSE` | MIT license text | -- | -- |
 | `.gitignore` | Git ignore rules for caches, DBs, virtualenvs | -- | -- |
-| `.github/workflows/ci.yml` | GitHub Actions CI workflow | -- | -- |
+| `.github/workflows/ci.yml` | GitHub Actions CI workflow (lint + test, Python 3.9-3.13) | -- | -- |
+| `.github/workflows/publish.yml` | PyPI publish on tag push (OIDC trusted publishing) | -- | -- |
 | `CLAUDE.md` | Claude Code agent instructions for this project | -- | -- |
 | `ARCHITECTURE.md` | Data model, SQL schemas, design decisions | -- | [spec-project](wiki-local/spec-project.md) |
 | `CHANGELOG.md` | Versioned changelog (Keep a Changelog format) | -- | -- |
@@ -56,6 +58,8 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 | `tests/test_mcp_server.py` | Tests for HTTP MCP server endpoints using a real server on OS-assigned port | `pytest`, `json`, `os`, `subprocess`, `urllib`, `chisel.mcp_server` | -- |
 | `tests/test_mcp_stdio.py` | Tests for stdio MCP server creation, tool listing, tool dispatch | `pytest`, `json`, `unittest.mock`, `chisel.mcp_stdio` | -- |
 | `tests/test_rwlock.py` | Tests for RWLock concurrent reader/writer semantics, ordering, starvation | `pytest`, `threading`, `time`, `chisel.rwlock` | -- |
+| `tests/test_metrics.py` | Tests for churn computation, co-change detection, date parsing | `pytest`, `chisel.metrics` | -- |
+| `tests/test_project.py` | Tests for project root detection, path normalization, storage resolution, ProcessLock | `pytest`, `os`, `subprocess`, `chisel.project` | -- |
 | `tests/conftest.py` | Shared pytest fixtures: temp git repos, `run_git` helper | `pytest`, `os`, `subprocess` | -- |
 
 ## Module Dependency Graph
