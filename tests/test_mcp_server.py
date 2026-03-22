@@ -278,3 +278,24 @@ class TestErrorHandling:
         })
         assert status == 400
         assert "error" in body
+
+
+# ------------------------------------------------------------------ #
+# Tests: Limit parameter pass-through
+# ------------------------------------------------------------------ #
+
+class TestToolCall:
+    def test_call_with_limit(self, base_url):
+        """Verify that the limit parameter caps the number of results."""
+        # Seed the database so history has data to return
+        _request(base_url, "POST", "/call", {
+            "tool": "analyze",
+            "arguments": {},
+        })
+        status, body = _request(base_url, "POST", "/call", {
+            "tool": "history",
+            "arguments": {"file_path": "app.py", "limit": 1},
+        })
+        assert status == 200
+        assert isinstance(body["result"], list)
+        assert len(body["result"]) <= 1

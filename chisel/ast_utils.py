@@ -101,14 +101,18 @@ def _find_block_end(lines: list[str], start_idx: int) -> int:
     line number where depth returns to zero.  If no opening brace is found,
     returns ``start_idx + 1`` (the 1-based line of the start line itself).
 
-    String literals and single-line comments are stripped before counting
-    braces so that ``"{"`` or ``// }`` do not cause false matches.
+    String literals, single-line comments, and multi-line ``/* */`` block
+    comments are stripped before counting braces so that braces inside
+    strings or comments do not cause false matches.
     """
     depth = 0
     found_open = False
+    in_block_comment = False
 
     for i in range(start_idx, len(lines)):
-        cleaned = _strip_strings_and_comments(lines[i])
+        cleaned, in_block_comment = _strip_strings_and_comments(
+            lines[i], in_block_comment,
+        )
         for ch in cleaned:
             if ch == "{":
                 depth += 1
@@ -123,23 +127,42 @@ def _find_block_end(lines: list[str], start_idx: int) -> int:
     return start_idx + 1
 
 
-def _strip_strings_and_comments(line: str) -> str:
-    """Remove string literals, ``//`` comments, and ``/* */`` blocks from a line."""
+def _strip_strings_and_comments(
+    line: str, in_block_comment: bool = False,
+) -> tuple[str, bool]:
+    """Remove string literals, ``//`` comments, and ``/* */`` blocks from a line.
+
+    Tracks multi-line block comment state across calls.  Returns
+    ``(cleaned_line, still_in_block_comment)`` so callers can propagate
+    state across lines.
+    """
     result: list[str] = []
     i = 0
     length = len(line)
+
     while i < length:
+        # Inside a multi-line block comment — scan for closing */
+        if in_block_comment:
+            end = line.find("*/", i)
+            if end != -1:
+                i = end + 2
+                in_block_comment = False
+            else:
+                break  # rest of line is still inside block comment
+            continue
+
         ch = line[i]
         # Single-line comment: //
         if ch == "/" and i + 1 < length and line[i + 1] == "/":
             break
-        # Block comment: /* ... */ (may not close on same line)
+        # Block comment: /* ... */ (may span multiple lines)
         if ch == "/" and i + 1 < length and line[i + 1] == "*":
             end = line.find("*/", i + 2)
             if end != -1:
                 i = end + 2
             else:
-                break  # unclosed block comment — ignore rest of line
+                in_block_comment = True
+                break  # rest of line is inside block comment
             continue
         if ch in ('"', "'", "`"):
             quote = ch
@@ -149,11 +172,12 @@ def _strip_strings_and_comments(line: str) -> str:
                     i += 2
                     continue
                 i += 1
-            i += 1  # skip closing quote
+            if i < length:
+                i += 1  # skip closing quote
             continue
         result.append(ch)
         i += 1
-    return "".join(result)
+    return "".join(result), in_block_comment
 
 
 def _extract_brace_lang(

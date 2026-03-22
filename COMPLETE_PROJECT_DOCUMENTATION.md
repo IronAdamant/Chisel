@@ -2,10 +2,10 @@
 
 Test impact analysis and code intelligence for LLM agents. Zero external dependencies.
 
-**Version:** 0.6.0
+**Version:** 0.6.1
 **PyPI:** `chisel-test-impact`
 **License:** MIT
-**Python:** >= 3.9
+**Python:** >= 3.11
 
 ## File Table
 
@@ -14,7 +14,7 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 | `pyproject.toml` | Build config, version, scripts, dev deps | setuptools >= 68.0 | -- |
 | `LICENSE` | MIT license text | -- | -- |
 | `.gitignore` | Git ignore rules for caches, DBs, virtualenvs | -- | -- |
-| `.github/workflows/ci.yml` | GitHub Actions CI workflow (lint + test, Python 3.9-3.13) | -- | -- |
+| `.github/workflows/ci.yml` | GitHub Actions CI workflow (lint + test, Python 3.11-3.14) | -- | -- |
 | `.github/workflows/publish.yml` | PyPI publish on tag push (OIDC trusted publishing) | -- | -- |
 | `CLAUDE.md` | Claude Code agent instructions for this project | -- | -- |
 | `ARCHITECTURE.md` | Data model, SQL schemas, design decisions | -- | [spec-project](wiki-local/spec-project.md) |

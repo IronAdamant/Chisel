@@ -11,7 +11,7 @@ Chisel is a test impact analysis and code intelligence tool designed for LLM age
 3. **Ownership and review intelligence**: Identify who wrote the code (blame-based ownership) and who is best positioned to review changes (commit-activity-based).
 4. **Change coupling detection**: Identify files that frequently change together, revealing hidden architectural dependencies.
 5. **Stale test detection**: Find tests that reference code units that no longer exist.
-6. **Zero dependencies**: Run anywhere Python 3.9+ is available with no pip installs beyond Chisel itself.
+6. **Zero dependencies**: Run anywhere Python 3.11+ is available with no pip installs beyond Chisel itself.
 7. **LLM agent integration**: Expose all capabilities as MCP tools via HTTP and stdio servers.
 8. **Incremental analysis**: Track file content hashes and only re-process changed files.
 

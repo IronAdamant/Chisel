@@ -23,7 +23,7 @@ chisel/
 
 ## Key Design Decisions
 
-- **Zero deps**: stdlib only. `ast` for Python, regex for JS/TS/Go/Rust. `subprocess.run(["git", ...])` for git.
+- **Zero deps**: stdlib only. `ast` for Python, regex for JS/TS/Go/Rust. `subprocess.run(["git", ...])` for git. Requires Python >= 3.11.
 - **FK enforcement disabled** in SQLite: stale test detection relies on orphaned edge refs; re-analysis deletes/recreates code_units freely.
 - **Churn formula**: `sum(1 / (1 + days_since_commit))` — recent changes weigh heavily.
 - **Risk formula**: `0.35*churn + 0.25*coupling + 0.2*coverage_gap + 0.1*author_concentration + 0.1*test_instability`

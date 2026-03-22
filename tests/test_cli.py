@@ -3,6 +3,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
+from chisel.cli import _limit
 from chisel.cli import cmd_analyze, cmd_churn, cmd_coupling, cmd_diff_impact
 from chisel.cli import cmd_history, cmd_impact, cmd_ownership, cmd_record_result
 from chisel.cli import cmd_risk_map, cmd_serve, cmd_serve_mcp, cmd_stale_tests
@@ -768,3 +769,43 @@ class TestMain:
         main(["stats", "--project-dir", "/tmp/p"])
 
         engine.tool_stats.assert_called_once()
+
+
+# ------------------------------------------------------------------ #
+# Limit parameter tests
+# ------------------------------------------------------------------ #
+
+class TestLimitParameter:
+    """Tests for the _limit() helper and limit pass-through in handlers."""
+
+    def test_limit_truncates_list(self):
+        args = _make_args(limit=2)
+        result = _limit([1, 2, 3, 4, 5], args)
+        assert result == [1, 2]
+
+    def test_limit_none_returns_full_list(self):
+        args = _make_args(limit=None)
+        result = _limit([1, 2, 3, 4, 5], args)
+        assert result == [1, 2, 3, 4, 5]
+
+    def test_limit_non_list_returns_unchanged(self):
+        args = _make_args(limit=5)
+        data = {"key": "value", "count": 42}
+        result = _limit(data, args)
+        assert result == {"key": "value", "count": 42}
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_cmd_with_limit(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_impact.return_value = [
+            {"test_id": f"test_{i}", "reason": "import"} for i in range(10)
+        ]
+        mock_cls.return_value = engine
+
+        args = _make_args(files=["a.py"], limit=3)
+        result = cmd_impact(args)
+
+        assert len(result) == 3
+        output = capsys.readouterr().out
+        assert "test_0" in output
+        assert "test_2" in output

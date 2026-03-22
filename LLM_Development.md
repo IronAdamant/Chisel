@@ -4,6 +4,31 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## v0.6.1 -- 2026-03-22 -- Multi-Line Block Comments, Python 3.11+, Test Coverage Gaps
+
+### Summary
+Three targeted fixes: multi-line `/* */` block comment tracking across lines (correctness bug), minimum Python bumped to 3.11 with Z-suffix workaround removed, and test coverage gaps filled for `_limit`, `tool_record_result`, `tool_stats`, and MCP `limit` parameter.
+
+### Block Comment Fix (ast_utils.py)
+- `_strip_strings_and_comments` now accepts and returns `in_block_comment: bool` state
+- `_find_block_end` propagates block comment state across lines
+- Previously, braces inside multi-line `/* ... */` comments were counted, potentially returning wrong block-end positions for C/C++/Java/Go/Rust/etc.
+- 6 new tests verify enter/exit/spanning behavior
+
+### Python 3.11+ (metrics.py, pyproject.toml, ci.yml)
+- Minimum Python bumped from 3.9 to 3.11 (Python 3.9 EOL October 2025, 3.10 EOL October 2026)
+- Removed dead `Z`-suffix workaround in `_parse_iso_date` — `fromisoformat` handles `Z` natively since 3.11
+- CI matrix updated: 3.9-3.13 → 3.11-3.14
+- Removed 3.9/3.10 classifiers
+
+### Test Coverage Gaps Filled
+- `test_engine.py`: `test_tool_record_result` and `test_tool_stats` at integration level
+- `test_cli.py`: `TestLimitParameter` class — `_limit()` helper, CLI truncation, non-list passthrough
+- `test_mcp_server.py`: `test_call_with_limit` — MCP server limit pass-through
+- 553 tests total, all passing
+
+---
+
 ## v0.6.0 -- 2026-03-22 -- Pluggable Extractors, Batch Queries, Cross-Platform Locks
 
 ### Summary

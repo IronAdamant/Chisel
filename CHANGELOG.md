@@ -5,6 +5,27 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-03-22
+
+### Fixed
+
+- `ast_utils.py`: `_strip_strings_and_comments` now tracks multi-line `/* */` block comment state across lines — braces inside multi-line comments were being counted, potentially returning wrong block end positions in C/C++/Java/Go/Rust/etc.
+- `metrics.py`: Removed dead `Z`-suffix workaround in `_parse_iso_date` — `fromisoformat` handles `Z` natively since Python 3.11
+
+### Changed
+
+- Minimum Python version bumped from 3.9 to 3.11 (Python 3.9 is EOL, 3.10 EOL October 2026)
+- `_strip_strings_and_comments` now returns `(cleaned_line, in_block_comment)` tuple for state propagation
+- CI matrix updated from 3.9-3.13 to 3.11-3.14
+- Removed 3.9 and 3.10 classifiers from pyproject.toml
+
+### Added
+
+- Tests for `tool_record_result` and `tool_stats` at engine integration level (were only tested via CLI mocks)
+- Tests for `--limit` / `limit` parameter: CLI `_limit()` helper, CLI command truncation, MCP server pass-through
+- Tests for multi-line block comment handling (6 tests)
+- 553 tests pass (up from 540)
+
 ## [0.6.0] - 2026-03-22
 
 ### Added

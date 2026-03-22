@@ -131,7 +131,7 @@ chisel stats
 
 ## Features
 
-- **Zero dependencies** — stdlib only, works everywhere Python 3.9+ runs
+- **Zero dependencies** — stdlib only, works everywhere Python 3.11+ runs
 - **Multi-language** — Python, JavaScript/TypeScript, Go, Rust, C#, Java, Kotlin, C/C++, Swift, PHP, Ruby, Dart
 - **Framework detection** — pytest, Jest, Go test, Rust #[test], Playwright, xUnit/NUnit/MSTest, JUnit, XCTest, PHPUnit, RSpec, Minitest, gtest, Dart test
 - **Incremental** — only re-processes changed files via content hashing

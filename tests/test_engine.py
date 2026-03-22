@@ -191,6 +191,32 @@ class TestToolMethods:
         if result:
             assert all("test_id" in item for item in result)
 
+    def test_tool_record_result(self, engine):
+        engine.analyze()
+        all_tests = engine.storage.get_all_test_units()
+        assert len(all_tests) > 0
+        test_id = all_tests[0]["id"]
+        result = engine.tool_record_result(test_id, passed=True, duration_ms=150)
+        assert isinstance(result, dict)
+        assert result["recorded"] is True
+        assert result["passed"] is True
+        assert result["test_id"] == test_id
+
+    def test_tool_stats(self, engine):
+        engine.analyze()
+        result = engine.tool_stats()
+        assert isinstance(result, dict)
+        expected_keys = {
+            "code_units", "test_units", "test_edges", "commits",
+            "commit_files", "blame_cache", "co_changes", "churn_stats",
+            "file_hashes", "test_results",
+        }
+        assert set(result.keys()) == expected_keys
+        for key in expected_keys:
+            assert isinstance(result[key], int)
+            assert result[key] >= 0
+        assert result["code_units"] > 0
+
 
 # ------------------------------------------------------------------ #
 # Unit tests for private methods

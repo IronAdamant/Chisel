@@ -202,27 +202,90 @@ class TestStripStringsAndComments:
     """Tests for the helper that removes strings and comments."""
 
     def test_double_quoted_string(self):
-        assert _strip_strings_and_comments('x = "{" + y') == "x =  + y"
+        text, in_comment = _strip_strings_and_comments('x = "{" + y')
+        assert text == "x =  + y"
+        assert not in_comment
 
     def test_single_quoted_string(self):
-        assert _strip_strings_and_comments("x = '{' + y") == "x =  + y"
+        text, in_comment = _strip_strings_and_comments("x = '{' + y")
+        assert text == "x =  + y"
+        assert not in_comment
 
     def test_line_comment_slash(self):
-        result = _strip_strings_and_comments("code() // } comment")
-        assert "}" not in result
+        text, _ = _strip_strings_and_comments("code() // } comment")
+        assert "}" not in text
 
     def test_hash_not_treated_as_comment(self):
         # '#' is only a comment in Python, which uses _py_block_end instead.
         # For JS/TS/Go/Rust (which use _strip_strings_and_comments), '#' is not a comment.
-        result = _strip_strings_and_comments("code() # } comment")
-        assert "}" in result
+        text, _ = _strip_strings_and_comments("code() # } comment")
+        assert "}" in text
 
     def test_escaped_quote(self):
-        result = _strip_strings_and_comments(r'x = "\"{" + y')
-        assert "{" not in result
+        text, _ = _strip_strings_and_comments(r'x = "\"{" + y')
+        assert "{" not in text
 
     def test_no_special_chars(self):
-        assert _strip_strings_and_comments("plain line") == "plain line"
+        text, in_comment = _strip_strings_and_comments("plain line")
+        assert text == "plain line"
+        assert not in_comment
+
+
+class TestMultiLineBlockComments:
+    """Tests for multi-line /* */ block comment tracking."""
+
+    def test_strip_strings_enters_block_comment(self):
+        """Opening /* without closing */ should flag in_block_comment."""
+        cleaned, still_in = _strip_strings_and_comments("code /* start")
+        assert cleaned == "code "
+        assert still_in is True
+
+    def test_strip_strings_exits_block_comment(self):
+        """Closing */ while in_block_comment should resume normal parsing."""
+        cleaned, still_in = _strip_strings_and_comments(
+            "end */ code", in_block_comment=True,
+        )
+        assert cleaned == " code"
+        assert still_in is False
+
+    def test_strip_strings_full_block_comment_line(self):
+        """Entire line suppressed when inside a block comment with no closing */."""
+        cleaned, still_in = _strip_strings_and_comments(
+            "  } // not this", in_block_comment=True,
+        )
+        assert cleaned == ""
+        assert still_in is True
+
+    def test_strip_strings_block_comment_with_braces(self):
+        """Braces inside an active block comment should be suppressed."""
+        cleaned, still_in = _strip_strings_and_comments(
+            "  { } ", in_block_comment=True,
+        )
+        assert cleaned == ""
+        assert still_in is True
+
+    def test_find_block_end_multiline_comment_with_braces(self):
+        """Braces inside multi-line block comments must not affect depth tracking.
+
+        This was the bug that was fixed: the } on line 3 (inside the comment)
+        used to be counted, causing _find_block_end to return 3 instead of 5.
+        """
+        lines = [
+            "void foo() {",
+            "/*",
+            "  }",
+            "*/",
+            "}",
+        ]
+        assert _find_block_end(lines, 0) == 5
+
+    def test_strip_strings_not_in_comment_unchanged(self):
+        """Normal code with in_block_comment=False should pass through unchanged."""
+        cleaned, still_in = _strip_strings_and_comments(
+            "int x = 5;", in_block_comment=False,
+        )
+        assert cleaned == "int x = 5;"
+        assert still_in is False
 
 
 # =========================================================================

@@ -12,12 +12,10 @@ from itertools import combinations
 def _parse_iso_date(date_str):
     """Parse an ISO 8601 date string into a timezone-aware datetime.
 
-    Handles the ``Z`` suffix (not supported by ``fromisoformat`` before
-    Python 3.11) and ensures the result is always timezone-aware (defaults
-    to UTC when no timezone info is present).
+    Python 3.11+ ``fromisoformat`` handles the ``Z`` suffix natively.
+    Ensures the result is always timezone-aware (defaults to UTC when
+    no timezone info is present).
     """
-    if date_str.endswith("Z"):
-        date_str = date_str[:-1] + "+00:00"
     dt = datetime.fromisoformat(date_str)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
