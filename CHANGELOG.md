@@ -79,7 +79,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `compute_risk_score()` accepts optional `failure_rates` parameter for batch use
 - Shared `storage` fixture moved from `test_impact.py`/`test_storage.py` into `conftest.py`
 - `_make_args()` in test_cli.py now includes `limit=None` default
-- Package name changed to `chisel-ai` for PyPI (bare `chisel` is taken)
+- Package name changed to `chisel-test-impact` for PyPI (bare `chisel` is taken)
 
 ### Fixed
 

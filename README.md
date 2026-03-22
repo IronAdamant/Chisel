@@ -17,7 +17,7 @@ When multiple agents (or agents + humans) work on the same codebase, changes in 
 ## Install
 
 ```bash
-pip install chisel-ai
+pip install chisel-test-impact
 ```
 
 Or from source:
@@ -58,7 +58,7 @@ Once connected, Claude Code can use all 15 tools directly — `analyze`, `diff_i
 Chisel exposes a standard MCP interface. For stdio-based clients:
 
 ```bash
-pip install chisel-ai[mcp]
+pip install chisel-test-impact[mcp]
 chisel-mcp
 ```
 
