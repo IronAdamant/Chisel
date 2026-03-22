@@ -332,14 +332,16 @@ _RS_IMPL_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 _CS_CLASS_RE = re.compile(
-    r"^\s*(?:(?:public|private|protected|internal)\s+)?"
+    r"^(?:\s*\[[^\]]*\]\s*)*"
+    r"\s*(?:(?:public|private|protected|internal)\s+)?"
     r"(?:(?:static|abstract|sealed|partial)\s+)*"
     r"(?P<kind>class|struct|interface|enum|record)\s+(?P<name>[A-Za-z_]\w*)",
 )
 _CS_METHOD_RE = re.compile(
-    r"^\s*(?:(?:public|private|protected|internal)\s+)?"
+    r"^(?:\s*\[[^\]]*\]\s*)*"
+    r"\s*(?:(?:public|private|protected|internal)\s+)?"
     r"(?:(?:static|virtual|override|abstract|async|new|partial|extern|sealed|unsafe)\s+)*"
-    r"(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:<[^>]*>)?(?:\[\])*\??\s+)"
+    r"(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:<(?:[^<>]|<[^>]*>)*>)?(?:\[\])*\??\s+)"
     r"(?P<name>[A-Za-z_]\w*)\s*[<(]",
 )
 
@@ -348,14 +350,16 @@ _CS_METHOD_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 _JAVA_CLASS_RE = re.compile(
-    r"^\s*(?:(?:public|private|protected)\s+)?"
+    r"^(?:\s*@\w+(?:\s*\([^)]*\))?\s*)*"
+    r"\s*(?:(?:public|private|protected)\s+)?"
     r"(?:(?:static|final|abstract|sealed)\s+)*"
     r"(?P<kind>class|interface|enum|record)\s+(?P<name>[A-Za-z_]\w*)",
 )
 _JAVA_METHOD_RE = re.compile(
-    r"^\s*(?:(?:public|private|protected)\s+)?"
+    r"^(?:\s*@\w+(?:\s*\([^)]*\))?\s*)*"
+    r"\s*(?:(?:public|private|protected)\s+)?"
     r"(?:(?:static|final|abstract|synchronized|native|default)\s+)*"
-    r"(?:[A-Za-z_]\w*(?:<[^>]*>)?(?:\[\])*\s+)"
+    r"(?:[A-Za-z_]\w*(?:<(?:[^<>]|<[^>]*>)*>)?(?:\[\])*\s+)"
     r"(?P<name>[A-Za-z_]\w*)\s*\(",
 )
 
@@ -371,9 +375,10 @@ _CPP_ENUM_RE = re.compile(
     r"^\s*enum\s+(?:class\s+)?(?P<name>[A-Za-z_]\w*)",
 )
 _CPP_FUNC_RE = re.compile(
-    r"^\s*(?:(?:static|inline|virtual|explicit|constexpr|extern|friend)\s+)*"
-    r"(?:[A-Za-z_]\w*(?:::\w+)*(?:\s*<[^>]*>)?\s*[*&]?\s+)"
-    r"(?P<name>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)\s*\(",
+    r"^\s*(?:template\s*<[^>]*>\s+)?"
+    r"(?:(?:static|inline|virtual|explicit|constexpr|extern|friend)\s+)*"
+    r"(?:[A-Za-z_]\w*(?:::\w+)*(?:\s*<(?:[^<>]|<[^>]*>)*>)?\s*[*&]?\s+)"
+    r"(?P<name>~?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)\s*\(",
 )
 
 # ---------------------------------------------------------------------------
@@ -381,12 +386,12 @@ _CPP_FUNC_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 _KT_CLASS_RE = re.compile(
-    r"^\s*(?:(?:private|public|internal|protected|open|abstract|sealed|data|enum|inner|value)\s+)*"
+    r"^\s*(?:(?:private|public|internal|protected|open|abstract|sealed|data|enum|inner|value|inline)\s+)*"
     r"(?P<kind>class|object|interface)\s+(?P<name>[A-Za-z_]\w*)",
 )
 _KT_FUN_RE = re.compile(
     r"^\s*(?:(?:private|public|internal|protected|open|override|suspend|inline|tailrec)\s+)*"
-    r"fun\s+(?P<name>[A-Za-z_]\w*)\s*[<(]",
+    r"fun\s+(?:[A-Za-z_]\w*(?:<[^>]*>)?\.)?(?P<name>[A-Za-z_]\w*)\s*[<(]",
 )
 
 # ---------------------------------------------------------------------------
@@ -394,11 +399,13 @@ _KT_FUN_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 _SWIFT_TYPE_RE = re.compile(
-    r"^\s*(?:(?:private|public|internal|fileprivate|open|final)\s+)*"
+    r"^(?:\s*@\w+(?:\s*\([^)]*\))?\s*)*"
+    r"\s*(?:(?:private|public|internal|fileprivate|open|final)\s+)*"
     r"(?P<kind>class|struct|enum|protocol|actor)\s+(?P<name>[A-Za-z_]\w*)",
 )
 _SWIFT_FUNC_RE = re.compile(
-    r"^\s*(?:(?:private|public|internal|fileprivate|open|static|class|override|mutating|final)\s+)*"
+    r"^(?:\s*@\w+(?:\s*\([^)]*\))?\s*)*"
+    r"\s*(?:(?:private|public|internal|fileprivate|open|static|class|override|mutating|final)\s+)*"
     r"func\s+(?P<name>[A-Za-z_]\w*)\s*[<(]",
 )
 
@@ -422,8 +429,8 @@ _DART_CLASS_RE = re.compile(
 )
 _DART_FUNC_RE = re.compile(
     r"^\s*(?:(?:static|external)\s+)?"
-    r"(?:[A-Za-z_]\w*(?:<[^>]*>)?\??\s+)"
-    r"(?P<name>[A-Za-z_]\w*)\s*[<(]",
+    r"(?:factory\s+|(?:[A-Za-z_]\w*(?:<[^>]*>)?\??\s+)?(?:(?:get|set)\s+)?)"
+    r"(?P<name>[A-Za-z_]\w*)\s*[<(={]",
 )
 
 # ---------------------------------------------------------------------------

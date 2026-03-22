@@ -4,6 +4,37 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## v0.5.0 -- 2026-03-22 -- Improved Edge Quality, AST Robustness, PyPI Publishing
+
+### Summary
+Addressed three structural gaps identified in codebase assessment: (1) fragile regex AST extraction for newer languages, (2) name-only test edge matching creating false positives, (3) missing PyPI publish automation. Added proximity-based edge weighting, Python import-path matching, improved regex patterns for 8 languages, and comprehensive test coverage for all of them.
+
+### Edge Quality Improvements
+- **Proximity weighting**: `_compute_proximity_weight()` in `test_mapper.py` scores test-to-code edges based on directory distance (1.0 same dir → 0.4 distant). Stored in the existing `weight` column on `test_edges`.
+- **Python import-path matching**: `_matches_import_path()` resolves `from myapp.utils import foo` to `myapp/utils.py:foo` specifically, preventing false edges to unrelated `foo` functions in other modules. Falls back to name-based matching for calls and non-Python languages.
+- **Impact on existing behavior**: All edge weights are ≤ 1.0 (same as before for same-directory matches). `impact.py` already uses the `weight` field, so impact analysis automatically benefits from higher-precision edges.
+
+### AST Regex Improvements
+- **Nested generics** (C#, Java, C++): `(?:<[^>]*>)` → `(?:<(?:[^<>]|<[^>]*>)*>)` — handles `Dictionary<string, List<int>>`, `Map<String, List<Integer>>`
+- **Annotations/attributes** (C#, Java, Swift): Added prefix patterns `^(?:\s*@\w+...)*` and `^(?:\s*\[[^\]]*\]...)*` to handle `@Override`, `@Entity`, `[Test]`, `[Serializable]`, `@objc`
+- **Kotlin extension functions**: `fun\s+(?:[A-Za-z_]\w*\.)?(?P<name>...)` — `fun String.toSnake()` now extracts `toSnake` (was extracting `String`)
+- **C++ template functions + destructors**: Added `template<...>` prefix, `~?` in name capture for destructors
+- **Dart factory/getters/setters**: Regex accepts `factory` keyword and `get`/`set` keyword before function names
+
+### PyPI Publishing
+- Added `.github/workflows/publish.yml` — triggers on tag push (`v*`), builds with `python -m build`, publishes via OIDC trusted publishing (`pypa/gh-action-pypi-publish`)
+
+### Documentation
+- **spec-project.md**: Complete rewrite — all 15 tools specified (was missing diff_impact, update, test_gaps, record_result, stats), all 12 languages in table with AST method details, all 18 CLI subcommands listed, new "Test Edge Weighting" section
+- Updated CLAUDE.md with edge weighting and AST improvement notes
+
+### Tests
+- 63 new tests for 8 newer languages (C#: 9, Java: 8, Kotlin: 8, C++: 8, Swift: 7, PHP: 6, Ruby: 8, Dart: 9)
+- 9 new tests for proximity weighting and import-path matching
+- 522 tests total, all passing
+
+---
+
 ## v0.4.1 -- 2026-03-22 -- Codebase Audit: Simplify, Modernize, Fix
 
 ### Summary

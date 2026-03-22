@@ -33,6 +33,14 @@ Chisel is a test impact analysis and code intelligence tool designed for LLM age
 | TypeScript | Regex patterns (same as JS) | `.ts`, `.tsx` | Jest, Playwright |
 | Go | Regex patterns | `.go` | Go test (`Test*`, `Benchmark*`) |
 | Rust | Regex patterns | `.rs` | `#[test]`, `#[cfg(test)]` |
+| C# | Regex patterns (supports attributes, nested generics) | `.cs` | xUnit, NUnit, MSTest |
+| Java | Regex patterns (supports annotations, nested generics) | `.java` | JUnit |
+| Kotlin | Regex patterns (supports extension functions) | `.kt`, `.kts` | JUnit |
+| C/C++ | Regex patterns (supports templates, destructors) | `.c`, `.h`, `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` | gtest, Catch2 |
+| Swift | Regex patterns (supports @attributes) | `.swift` | XCTest |
+| PHP | Regex patterns | `.php` | PHPUnit |
+| Ruby | Keyword-based block detection (`end`) | `.rb` | RSpec, Minitest |
+| Dart | Regex patterns (supports factory, getters/setters) | `.dart` | Dart test |
 
 ### Code Unit Types Extracted
 
@@ -40,6 +48,14 @@ Chisel is a test impact analysis and code intelligence tool designed for LLM age
 - **JavaScript/TypeScript**: `function` (named functions, arrow functions), `class`
 - **Go**: `function` (including methods with receivers), `struct`, `interface`
 - **Rust**: `function`, `struct`, `enum`, `impl`
+- **C#**: `function` (methods with generics/attributes), `class`, `struct`, `interface`, `enum`, `record`
+- **Java**: `function` (methods with annotations/generics), `class`, `interface`, `enum`, `record`
+- **Kotlin**: `function` (extension functions, suspend), `class`, `object`, `interface`
+- **C/C++**: `function` (templates, destructors), `class`, `struct`, `namespace`, `enum`
+- **Swift**: `function` (with @attributes), `class`, `struct`, `enum`, `protocol`, `actor`
+- **PHP**: `function`, `class`, `interface`, `trait`, `enum`
+- **Ruby**: `function`, `class`, `module`
+- **Dart**: `function` (factory, getters/setters), `class`, `mixin`, `extension`
 
 ## MCP Tool Specifications
 
@@ -112,6 +128,46 @@ All 15 tools are accessible through three interfaces: CLI subcommands, HTTP POST
 - **Output**: List of dicts: `{author, author_email, recent_commits, last_commit_date, days_since_last_commit, insertions, deletions, percentage, role}`
 - **Behavior**: Suggests reviewers based on recent commit activity. Each entry has `role: "suggested_reviewer"`. Unlike `ownership` (which shows who wrote the code), this shows who has been actively maintaining the file. Activity score uses the same recency formula as churn: `1 / (1 + days_since_commit)`.
 
+### diff_impact
+
+- **Input**: `ref` (optional string)
+- **Output**: List of dicts: `{test_id, file_path, name, reason, score}`
+- **Behavior**: Auto-detects changed files and functions from `git diff` and returns impacted tests. Branch-aware: on a feature branch diffs against main/master; on main diffs against HEAD (unstaged changes). Optionally accepts a custom git ref to diff against.
+
+### update
+
+- **Input**: None
+- **Output**: Dict with keys: `files_updated`, `code_units_found`, `new_commits`, `orphaned_results_cleaned`
+- **Behavior**: Incremental re-analysis. Only re-processes files whose content hash has changed and stores new commits not yet in the database. Recomputes churn and coupling if any changes are detected.
+
+### test_gaps
+
+- **Input**: `file_path` (optional string), `directory` (optional string), `exclude_tests` (optional boolean, default true)
+- **Output**: List of dicts: `{id, file_path, name, unit_type, line_start, line_end, churn_score, commit_count}`
+- **Behavior**: Finds code units with zero test edges, prioritized by churn score descending. By default excludes units from test files. Can be scoped to a single file or directory.
+
+### record_result
+
+- **Input**: `test_id` (required string), `passed` (required boolean), `duration_ms` (optional integer)
+- **Output**: Dict: `{test_id, passed, recorded: true}`
+- **Behavior**: Records a test pass/fail outcome in the `test_results` table. Feeds into `suggest_tests` (failure rate boost) and `risk_map` (test instability component).
+
+### stats
+
+- **Input**: None
+- **Output**: Dict: `{code_units, test_units, test_edges, commits, commit_files, blame_cache, co_changes, churn_stats, file_hashes, test_results}`
+- **Behavior**: Returns summary counts for all 10 database tables in a single query.
+
+## Test Edge Weighting
+
+Test edges carry a `weight` (0.4-1.0) based on confidence:
+
+- **File proximity**: Tests in the same directory as the code get weight 1.0. Sibling directories get 0.8, shared ancestor 0.6, distant files 0.4.
+- **Python import-path matching**: When a test imports `from myapp.utils import foo`, Chisel matches specifically to `myapp/utils.py:foo` rather than any `foo` in any file, then applies proximity weighting.
+- **Non-Python languages**: Fall back to name-based matching with proximity weighting.
+
+This reduces false positive edges in projects where multiple modules export identically-named functions.
+
 ## Server Interfaces
 
 ### HTTP MCP Server (`chisel serve`)
@@ -134,16 +190,21 @@ All 15 tools are accessible through three interfaces: CLI subcommands, HTTP POST
 | Command | Arguments | Description |
 |---------|-----------|-------------|
 | `analyze` | `[directory]`, `--force` | Full project analysis |
-| `impact` | `<files...>` | Show impacted tests |
+| `update` | (none) | Incremental re-analysis of changed files |
+| `impact` | `<files...>`, `--functions` | Show impacted tests |
+| `diff-impact` | `[--ref]` | Auto-detect changes, show impacted tests |
 | `suggest-tests` | `<file>` | Suggest tests to run |
 | `churn` | `<file>`, `--unit` | Show churn statistics |
 | `ownership` | `<file>` | Show blame-based ownership |
+| `who-reviews` | `<file>` | Suggest reviewers |
 | `coupling` | `<file>`, `--min-count` | Show co-change partners |
 | `risk-map` | `[directory]` | Risk score heatmap |
 | `stale-tests` | (none) | Detect stale tests |
+| `test-gaps` | `[--file]`, `[--directory]`, `[--no-exclude-tests]` | Find untested code units |
 | `history` | `<file>` | Commit history for a file |
-| `who-reviews` | `<file>` | Suggest reviewers |
+| `record-result` | `<test_id>`, `--passed`/`--failed`, `[--duration-ms]` | Record test outcome |
+| `stats` | (none) | Database summary counts |
 | `serve` | `--port`, `--host` | Start HTTP MCP server |
 | `serve-mcp` | (none) | Start stdio MCP server |
 
-All subcommands accept `--project-dir`, `--storage-dir`, and `--json` flags.
+All subcommands accept `--project-dir`, `--storage-dir`, `--json`, and `--limit` flags.

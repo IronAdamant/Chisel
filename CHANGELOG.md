@@ -5,6 +5,29 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-03-22
+
+### Added
+
+- **Proximity-based edge weighting**: Test edges now carry weights (0.4-1.0) based on file-path proximity. Same directory = 1.0, sibling dirs = 0.8, shared ancestor = 0.6, distant = 0.4. Reduces false positive edges from name collisions in multi-package projects.
+- **Python import-path matching**: `from myapp.utils import foo` now matches specifically to `myapp/utils.py:foo` rather than any `foo` in any file. Falls back to name-based matching when import path doesn't resolve. New helpers: `_compute_proximity_weight()`, `_matches_import_path()` in `test_mapper.py`.
+- **C# regex: nested generics and attributes**: `Dictionary<string, List<int>> Build()` and `[Test] public void Run()` now correctly extracted. Patterns handle `[Attribute]` prefixes and `<A<B>>` nesting.
+- **Java regex: annotations and nested generics**: `@Override public void process()` and `Map<String, List<Integer>> build()` now correctly extracted. Patterns handle `@Annotation` prefixes.
+- **Kotlin regex: extension functions**: `fun String.toSnake()` now extracts `toSnake` as the function name (was incorrectly extracting `String`). `inline` added to class modifiers.
+- **C++ regex: template functions and destructors**: `template<typename T> void process(T)` and `void ~Foo()` now extracted. Nested template generics supported.
+- **Swift regex: @attributes**: `@objc func setup()` and `@objc class Bridge` now correctly extracted.
+- **Dart regex: factory constructors, getters/setters**: `factory Foo.fromJson()` and `String get name` now extracted.
+- **PyPI publish workflow**: `.github/workflows/publish.yml` publishes to PyPI on tag push using OIDC trusted publishing.
+- 63 new AST extraction tests for all 8 newer languages (C#, Java, Kotlin, C++, Swift, PHP, Ruby, Dart)
+- 9 new edge weighting and import-path matching tests
+- **spec-project.md**: Full rewrite — all 15 tools documented, all 12 languages in table, 18 CLI subcommands listed, test edge weighting section added
+
+### Changed
+
+- `test_mapper.py`: `build_test_edges()` now computes proximity-based weights instead of hardcoded 1.0
+- `test_mapper.py`: `_extract_python_deps()` and `_extract_python_deps_regex()` now return `module_path` field for import-path matching
+- 522 tests pass (up from 450)
+
 ## [0.4.1] - 2026-03-22
 
 ### Fixed

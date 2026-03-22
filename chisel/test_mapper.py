@@ -184,14 +184,18 @@ class TestMapper:
         """
         # Build lookup: name -> list of code unit ids
         name_to_ids = {}
+        id_to_file = {}
         for cu in code_units:
             if isinstance(cu, CodeUnit):
                 name = cu.name
                 cid = f"{cu.file_path}:{cu.name}:{cu.unit_type}"
+                cfile = cu.file_path
             else:
                 name = cu["name"]
                 cid = cu["id"]
+                cfile = cu.get("file_path", "")
             name_to_ids.setdefault(name, []).append(cid)
+            id_to_file[cid] = cfile
 
         edges = []
         file_cache = {}
@@ -211,15 +215,32 @@ class TestMapper:
             deps = self.extract_test_dependencies(file_path, content)
             seen = set()
             for dep in deps:
-                for cid in name_to_ids.get(dep["name"], []):
+                module_path = dep.get("module_path")
+                # Try import-path matching for Python deps with module_path
+                matched_ids = []
+                if module_path:
+                    for cid, cfile in id_to_file.items():
+                        if _matches_import_path(cfile, module_path):
+                            # Only match if the code unit name also matches
+                            if cid in name_to_ids.get(dep["name"], []):
+                                matched_ids.append(cid)
+                # Fall back to name-based matching
+                if not matched_ids:
+                    matched_ids = name_to_ids.get(dep["name"], [])
+
+                for cid in matched_ids:
                     key = (tu["id"], cid, dep["dep_type"])
                     if key not in seen:
                         seen.add(key)
+                        code_file = id_to_file.get(cid, "")
+                        proximity = _compute_proximity_weight(
+                            file_path, code_file,
+                        )
                         edges.append({
                             "test_id": tu["id"],
                             "code_id": cid,
                             "edge_type": dep["dep_type"],
-                            "weight": 1.0,
+                            "weight": proximity,
                         })
         return edges
 
@@ -315,15 +336,23 @@ def _extract_python_deps(content):
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                deps.append({"name": alias.name.split(".")[-1], "dep_type": "import"})
+                deps.append({
+                    "name": alias.name.split(".")[-1],
+                    "dep_type": "import",
+                    "module_path": alias.name,
+                })
         elif isinstance(node, ast.ImportFrom):
             if node.module:
                 for alias in node.names:
-                    deps.append({"name": alias.name, "dep_type": "import"})
+                    deps.append({
+                        "name": alias.name,
+                        "dep_type": "import",
+                        "module_path": node.module,
+                    })
         elif isinstance(node, ast.Call):
             name = _get_call_name(node)
             if name:
-                deps.append({"name": name, "dep_type": "call"})
+                deps.append({"name": name, "dep_type": "call", "module_path": None})
 
     return _dedupe_deps(deps)
 
@@ -340,12 +369,18 @@ def _get_call_name(node):
 def _extract_python_deps_regex(content):
     """Regex fallback for Python dependency extraction."""
     deps = []
-    for m in re.finditer(r"^(?:from\s+\S+\s+)?import\s+(\w+)", content, re.MULTILINE):
-        deps.append({"name": m.group(1), "dep_type": "import"})
+    for m in re.finditer(r"^(?:from\s+(\S+)\s+)?import\s+(\w+)", content, re.MULTILINE):
+        module = m.group(1)  # from X import Y -> X; import Y -> None
+        name = m.group(2)
+        deps.append({
+            "name": name,
+            "dep_type": "import",
+            "module_path": module if module else name,
+        })
     for m in re.finditer(r"(\w+)\s*\(", content):
         name = m.group(1)
         if name not in _PY_KEYWORDS:
-            deps.append({"name": name, "dep_type": "call"})
+            deps.append({"name": name, "dep_type": "call", "module_path": None})
     return _dedupe_deps(deps)
 
 
@@ -571,6 +606,44 @@ def _extract_dart_deps(content):
 # ------------------------------------------------------------------ #
 # Shared utility
 # ------------------------------------------------------------------ #
+
+def _compute_proximity_weight(test_path, code_path):
+    """Compute edge weight based on file-path proximity (0.4-1.0).
+
+    Same directory: 1.0, sibling dirs: 0.8, shared ancestor: 0.6, distant: 0.4.
+    """
+    test_parts = test_path.replace("\\", "/").split("/")[:-1]  # dir parts only
+    code_parts = code_path.replace("\\", "/").split("/")[:-1]
+    common = 0
+    for t, c in zip(test_parts, code_parts):
+        if t == c:
+            common += 1
+        else:
+            break
+    if not test_parts and not code_parts:
+        return 1.0  # both at root
+    max_depth = max(len(test_parts), len(code_parts), 1)
+    if common == len(test_parts) == len(code_parts):
+        return 1.0  # same directory
+    ratio = common / max_depth
+    if ratio >= 0.5:
+        return 0.8
+    if common >= 1:
+        return 0.6
+    return 0.4
+
+
+def _matches_import_path(code_file_path, module_path):
+    """Check if a code file path matches a Python module path.
+
+    'myapp.utils' matches 'myapp/utils.py' or 'src/myapp/utils.py'.
+    """
+    if not module_path:
+        return False
+    module_as_path = module_path.replace(".", "/") + ".py"
+    normalized = code_file_path.replace("\\", "/")
+    return normalized == module_as_path or normalized.endswith("/" + module_as_path)
+
 
 def _dedupe_deps(deps):
     """Remove duplicate dependencies, keeping first occurrence."""

@@ -457,3 +457,61 @@ class TestBuildEdges:
         matched = [e for e in edges if "zzz" in e["code_id"]]
         # zzz doesn't appear in any import/call in test_example.py
         assert len(matched) == 0
+
+    def test_edges_have_proximity_weight(self, mapper):
+        """Edge weights reflect file proximity instead of always being 1.0."""
+        test_units = [{
+            "id": "tests/test_example.py:test_foo",
+            "file_path": "tests/test_example.py",
+            "name": "test_foo",
+            "framework": "pytest",
+            "line_start": 4,
+            "line_end": 5,
+            "content_hash": "abc",
+        }]
+        code_units = [
+            CodeUnit("mymodule.py", "foo", "function", 1, 2),
+        ]
+        edges = mapper.build_test_edges(test_units, code_units)
+        foo_edges = [e for e in edges if "foo" in e["code_id"]]
+        assert len(foo_edges) > 0
+        for e in foo_edges:
+            assert 0.4 <= e["weight"] <= 1.0
+
+
+class TestProximityWeight:
+    def test_same_directory(self):
+        from chisel.test_mapper import _compute_proximity_weight
+        assert _compute_proximity_weight("tests/test_foo.py", "tests/foo.py") == 1.0
+
+    def test_sibling_directories(self):
+        from chisel.test_mapper import _compute_proximity_weight
+        w = _compute_proximity_weight("tests/unit/test_foo.py", "tests/integration/foo.py")
+        assert 0.6 <= w <= 0.8
+
+    def test_distant_files(self):
+        from chisel.test_mapper import _compute_proximity_weight
+        w = _compute_proximity_weight("tests/test_foo.py", "lib/deep/nested/foo.py")
+        assert w == 0.4
+
+    def test_root_level(self):
+        from chisel.test_mapper import _compute_proximity_weight
+        assert _compute_proximity_weight("test_foo.py", "foo.py") == 1.0
+
+
+class TestImportPathMatching:
+    def test_exact_match(self):
+        from chisel.test_mapper import _matches_import_path
+        assert _matches_import_path("myapp/utils.py", "myapp.utils") is True
+
+    def test_nested_match(self):
+        from chisel.test_mapper import _matches_import_path
+        assert _matches_import_path("src/myapp/utils.py", "myapp.utils") is True
+
+    def test_no_match(self):
+        from chisel.test_mapper import _matches_import_path
+        assert _matches_import_path("other/helpers.py", "myapp.utils") is False
+
+    def test_none_module_path(self):
+        from chisel.test_mapper import _matches_import_path
+        assert _matches_import_path("foo.py", None) is False

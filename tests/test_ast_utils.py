@@ -787,6 +787,746 @@ class TestRustExtraction:
 
 
 # =========================================================================
+# C# extraction
+# =========================================================================
+
+
+class TestCSharpExtraction:
+    """Tests for C# regex-based extraction."""
+
+    def test_basic_class(self):
+        src = textwrap.dedent("""\
+            public class Foo {
+            }
+        """)
+        units = extract_code_units("app.cs", src)
+        cls = _units_by_name(units, "Foo")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_method_generic_return(self):
+        src = textwrap.dedent("""\
+            public class Svc {
+                public List<string> GetItems() {
+                    return new List<string>();
+                }
+            }
+        """)
+        units = extract_code_units("svc.cs", src)
+        fns = _units_by_name(units, "GetItems")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_method_nested_generics(self):
+        src = textwrap.dedent("""\
+            public class Builder {
+                Dictionary<string, List<int>> Build() {
+                    return null;
+                }
+            }
+        """)
+        units = extract_code_units("builder.cs", src)
+        fns = _units_by_name(units, "Build")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_attributed_method(self):
+        src = textwrap.dedent("""\
+            public class Tests {
+                [Test] public void RunTest() {
+                    Assert.Pass();
+                }
+            }
+        """)
+        units = extract_code_units("tests.cs", src)
+        fns = _units_by_name(units, "RunTest")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_attributed_class(self):
+        src = textwrap.dedent("""\
+            [Serializable] public class Data {
+                public int Id;
+            }
+        """)
+        units = extract_code_units("data.cs", src)
+        cls = _units_by_name(units, "Data")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_static_method(self):
+        src = textwrap.dedent("""\
+            public class Program {
+                public static void Main() {
+                    Console.WriteLine("Hello");
+                }
+            }
+        """)
+        units = extract_code_units("program.cs", src)
+        fns = _units_by_name(units, "Main")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_interface(self):
+        src = textwrap.dedent("""\
+            public interface IFoo {
+                void DoWork();
+            }
+        """)
+        units = extract_code_units("ifoo.cs", src)
+        ifaces = _units_by_name(units, "IFoo")
+        assert len(ifaces) == 1
+        assert ifaces[0].unit_type == "interface"
+
+    def test_async_method(self):
+        src = textwrap.dedent("""\
+            public class Client {
+                public async Task<int> FetchAsync() {
+                    return await GetValueAsync();
+                }
+            }
+        """)
+        units = extract_code_units("client.cs", src)
+        fns = _units_by_name(units, "FetchAsync")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_empty_csharp(self):
+        units = extract_code_units("empty.cs", "")
+        assert units == []
+
+
+# =========================================================================
+# Java extraction
+# =========================================================================
+
+
+class TestJavaExtraction:
+    """Tests for Java regex-based extraction."""
+
+    def test_basic_class(self):
+        src = textwrap.dedent("""\
+            public class Foo {
+            }
+        """)
+        units = extract_code_units("Foo.java", src)
+        cls = _units_by_name(units, "Foo")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_annotated_method(self):
+        src = textwrap.dedent("""\
+            public class Svc {
+                @Override public void process() {
+                    // impl
+                }
+            }
+        """)
+        units = extract_code_units("Svc.java", src)
+        fns = _units_by_name(units, "process")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_generic_return_type(self):
+        src = textwrap.dedent("""\
+            public class Repo {
+                public List<String> getItems() {
+                    return Collections.emptyList();
+                }
+            }
+        """)
+        units = extract_code_units("Repo.java", src)
+        fns = _units_by_name(units, "getItems")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_nested_generics_package_private(self):
+        src = textwrap.dedent("""\
+            class Builder {
+                Map<String, List<Integer>> build() {
+                    return new HashMap<>();
+                }
+            }
+        """)
+        units = extract_code_units("Builder.java", src)
+        fns = _units_by_name(units, "build")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_record(self):
+        src = textwrap.dedent("""\
+            public record Point(int x, int y) {
+            }
+        """)
+        units = extract_code_units("Point.java", src)
+        recs = _units_by_name(units, "Point")
+        assert len(recs) == 1
+        assert recs[0].unit_type == "record"
+
+    def test_interface(self):
+        src = textwrap.dedent("""\
+            public interface Foo {
+                void doWork();
+            }
+        """)
+        units = extract_code_units("Foo.java", src)
+        ifaces = _units_by_name(units, "Foo")
+        assert len(ifaces) == 1
+        assert ifaces[0].unit_type == "interface"
+
+    def test_annotated_class(self):
+        src = textwrap.dedent("""\
+            @Entity public class User {
+                private String name;
+            }
+        """)
+        units = extract_code_units("User.java", src)
+        cls = _units_by_name(units, "User")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_empty_java(self):
+        units = extract_code_units("Empty.java", "")
+        assert units == []
+
+
+# =========================================================================
+# Kotlin extraction
+# =========================================================================
+
+
+class TestKotlinExtraction:
+    """Tests for Kotlin regex-based extraction."""
+
+    def test_basic_class(self):
+        src = textwrap.dedent("""\
+            class Foo {
+            }
+        """)
+        units = extract_code_units("Foo.kt", src)
+        cls = _units_by_name(units, "Foo")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_data_class(self):
+        src = textwrap.dedent("""\
+            data class User(val name: String) {
+            }
+        """)
+        units = extract_code_units("User.kt", src)
+        cls = _units_by_name(units, "User")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_extension_function(self):
+        src = textwrap.dedent("""\
+            fun String.toSnake() {
+                // impl
+            }
+        """)
+        units = extract_code_units("ext.kt", src)
+        fns = _units_by_name(units, "toSnake")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_suspend_function(self):
+        src = textwrap.dedent("""\
+            suspend fun fetch() {
+                // coroutine
+            }
+        """)
+        units = extract_code_units("async.kt", src)
+        fns = _units_by_name(units, "fetch")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_object(self):
+        src = textwrap.dedent("""\
+            object Singleton {
+                val x = 1
+            }
+        """)
+        units = extract_code_units("single.kt", src)
+        objs = _units_by_name(units, "Singleton")
+        assert len(objs) == 1
+        assert objs[0].unit_type == "object"
+
+    def test_sealed_class(self):
+        src = textwrap.dedent("""\
+            sealed class Result {
+            }
+        """)
+        units = extract_code_units("result.kt", src)
+        cls = _units_by_name(units, "Result")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_inline_class(self):
+        src = textwrap.dedent("""\
+            inline class Password(val value: String) {
+            }
+        """)
+        units = extract_code_units("password.kt", src)
+        cls = _units_by_name(units, "Password")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_empty_kotlin(self):
+        units = extract_code_units("empty.kt", "")
+        assert units == []
+
+
+# =========================================================================
+# C / C++ extraction
+# =========================================================================
+
+
+class TestCppExtraction:
+    """Tests for C/C++ regex-based extraction."""
+
+    def test_basic_class(self):
+        src = textwrap.dedent("""\
+            class Foo {
+            };
+        """)
+        units = extract_code_units("foo.cpp", src)
+        cls = _units_by_name(units, "Foo")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_template_class(self):
+        src = textwrap.dedent("""\
+            template<typename T> class Container {
+            };
+        """)
+        units = extract_code_units("container.hpp", src)
+        cls = _units_by_name(units, "Container")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_namespace(self):
+        src = textwrap.dedent("""\
+            namespace MyLib {
+                int x = 1;
+            }
+        """)
+        units = extract_code_units("lib.cpp", src)
+        ns = _units_by_name(units, "MyLib")
+        assert len(ns) == 1
+        assert ns[0].unit_type == "namespace"
+
+    def test_enum_class(self):
+        src = textwrap.dedent("""\
+            enum class Color {
+                Red,
+                Green,
+                Blue,
+            };
+        """)
+        units = extract_code_units("color.cpp", src)
+        enums = _units_by_name(units, "Color")
+        assert len(enums) == 1
+        assert enums[0].unit_type == "enum"
+
+    def test_template_function(self):
+        src = textwrap.dedent("""\
+            template<typename T> void process(T item) {
+                // impl
+            }
+        """)
+        units = extract_code_units("util.cpp", src)
+        fns = _units_by_name(units, "process")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_namespace_qualified_return(self):
+        src = textwrap.dedent("""\
+            std::string getName() {
+                return "hello";
+            }
+        """)
+        units = extract_code_units("name.cpp", src)
+        fns = _units_by_name(units, "getName")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_c_header_struct(self):
+        """C header with struct should be recognized via .h extension."""
+        src = textwrap.dedent("""\
+            struct Point {
+                int x;
+                int y;
+            };
+        """)
+        units = extract_code_units("point.h", src)
+        structs = _units_by_name(units, "Point")
+        assert len(structs) == 1
+        assert structs[0].unit_type == "struct"
+
+    def test_empty_cpp(self):
+        units = extract_code_units("empty.cpp", "")
+        assert units == []
+
+
+# =========================================================================
+# Swift extraction
+# =========================================================================
+
+
+class TestSwiftExtraction:
+    """Tests for Swift regex-based extraction."""
+
+    def test_basic_class(self):
+        src = textwrap.dedent("""\
+            class Foo {
+            }
+        """)
+        units = extract_code_units("Foo.swift", src)
+        cls = _units_by_name(units, "Foo")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_protocol(self):
+        src = textwrap.dedent("""\
+            protocol Drawable {
+                func draw()
+            }
+        """)
+        units = extract_code_units("draw.swift", src)
+        protos = _units_by_name(units, "Drawable")
+        assert len(protos) == 1
+        assert protos[0].unit_type == "protocol"
+
+    def test_attributed_func(self):
+        src = textwrap.dedent("""\
+            @objc func setup() {
+                // bridge
+            }
+        """)
+        units = extract_code_units("bridge.swift", src)
+        fns = _units_by_name(units, "setup")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_attributed_class(self):
+        src = textwrap.dedent("""\
+            @objc class Bridge {
+                var x = 0
+            }
+        """)
+        units = extract_code_units("bridge.swift", src)
+        cls = _units_by_name(units, "Bridge")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_static_func(self):
+        src = textwrap.dedent("""\
+            class Factory {
+                static func create() {
+                    // factory
+                }
+            }
+        """)
+        units = extract_code_units("factory.swift", src)
+        fns = _units_by_name(units, "create")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_mutating_func(self):
+        src = textwrap.dedent("""\
+            struct Toggle {
+                mutating func toggle() {
+                    self.on = !self.on
+                }
+            }
+        """)
+        units = extract_code_units("toggle.swift", src)
+        fns = _units_by_name(units, "toggle")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_empty_swift(self):
+        units = extract_code_units("empty.swift", "")
+        assert units == []
+
+
+# =========================================================================
+# PHP extraction
+# =========================================================================
+
+
+class TestPhpExtraction:
+    """Tests for PHP regex-based extraction."""
+
+    def test_basic_class(self):
+        src = textwrap.dedent("""\
+            class Foo {
+            }
+        """)
+        units = extract_code_units("Foo.php", src)
+        cls = _units_by_name(units, "Foo")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_trait(self):
+        src = textwrap.dedent("""\
+            trait Loggable {
+                public function log() {}
+            }
+        """)
+        units = extract_code_units("loggable.php", src)
+        traits = _units_by_name(units, "Loggable")
+        assert len(traits) == 1
+        assert traits[0].unit_type == "trait"
+
+    def test_public_method(self):
+        src = textwrap.dedent("""\
+            class Svc {
+                public function process() {
+                    // impl
+                }
+            }
+        """)
+        units = extract_code_units("svc.php", src)
+        fns = _units_by_name(units, "process")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_static_method(self):
+        src = textwrap.dedent("""\
+            class Factory {
+                public static function create() {
+                    return new self();
+                }
+            }
+        """)
+        units = extract_code_units("factory.php", src)
+        fns = _units_by_name(units, "create")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_abstract_class(self):
+        src = textwrap.dedent("""\
+            abstract class Base {
+                abstract public function run();
+            }
+        """)
+        units = extract_code_units("base.php", src)
+        cls = _units_by_name(units, "Base")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_empty_php(self):
+        units = extract_code_units("empty.php", "")
+        assert units == []
+
+
+# =========================================================================
+# Ruby extraction
+# =========================================================================
+
+
+class TestRubyExtraction:
+    """Tests for Ruby end-delimited extraction."""
+
+    def test_basic_class(self):
+        src = textwrap.dedent("""\
+            class Foo
+              def bar
+                1
+              end
+            end
+        """)
+        units = extract_code_units("foo.rb", src)
+        cls = _units_by_name(units, "Foo")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_module(self):
+        src = textwrap.dedent("""\
+            module MyApp
+              VERSION = "1.0"
+            end
+        """)
+        units = extract_code_units("app.rb", src)
+        mods = _units_by_name(units, "MyApp")
+        assert len(mods) == 1
+        assert mods[0].unit_type == "module"
+
+    def test_method(self):
+        src = textwrap.dedent("""\
+            def process
+              true
+            end
+        """)
+        units = extract_code_units("util.rb", src)
+        fns = _units_by_name(units, "process")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_self_method(self):
+        src = textwrap.dedent("""\
+            class Maker
+              def self.build
+                new
+              end
+            end
+        """)
+        units = extract_code_units("maker.rb", src)
+        fns = _units_by_name(units, "build")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_bang_method(self):
+        src = textwrap.dedent("""\
+            def save!
+              true
+            end
+        """)
+        units = extract_code_units("model.rb", src)
+        fns = _units_by_name(units, "save!")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_predicate_method(self):
+        src = textwrap.dedent("""\
+            def empty?
+              false
+            end
+        """)
+        units = extract_code_units("check.rb", src)
+        fns = _units_by_name(units, "empty?")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_namespaced_class(self):
+        src = textwrap.dedent("""\
+            class Foo::Bar
+              def hello
+                puts "hi"
+              end
+            end
+        """)
+        units = extract_code_units("bar.rb", src)
+        cls = _units_by_name(units, "Foo::Bar")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_empty_ruby(self):
+        units = extract_code_units("empty.rb", "")
+        assert units == []
+
+
+# =========================================================================
+# Dart extraction
+# =========================================================================
+
+
+class TestDartExtraction:
+    """Tests for Dart regex-based extraction."""
+
+    def test_basic_class(self):
+        src = textwrap.dedent("""\
+            class Foo {
+            }
+        """)
+        units = extract_code_units("foo.dart", src)
+        cls = _units_by_name(units, "Foo")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_mixin(self):
+        src = textwrap.dedent("""\
+            mixin Printable {
+                void printSelf() {}
+            }
+        """)
+        units = extract_code_units("printable.dart", src)
+        mixins = _units_by_name(units, "Printable")
+        assert len(mixins) == 1
+        assert mixins[0].unit_type == "mixin"
+
+    def test_method_with_return_type(self):
+        src = textwrap.dedent("""\
+            class Person {
+                String getName() {
+                    return name;
+                }
+            }
+        """)
+        units = extract_code_units("person.dart", src)
+        fns = _units_by_name(units, "getName")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_factory_constructor(self):
+        """Factory constructor captures the class name."""
+        src = textwrap.dedent("""\
+            class Foo {
+                factory Foo() {
+                    return _instance;
+                }
+            }
+        """)
+        units = extract_code_units("foo.dart", src)
+        # The factory regex captures "Foo" as the name
+        factories = [u for u in units if u.name == "Foo" and u.unit_type == "function"]
+        assert len(factories) == 1
+
+    def test_getter(self):
+        src = textwrap.dedent("""\
+            class Config {
+                String get name {
+                    return _name;
+                }
+            }
+        """)
+        units = extract_code_units("config.dart", src)
+        fns = _units_by_name(units, "name")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_static_method(self):
+        src = textwrap.dedent("""\
+            class Utils {
+                static void process() {
+                    // impl
+                }
+            }
+        """)
+        units = extract_code_units("utils.dart", src)
+        fns = _units_by_name(units, "process")
+        assert len(fns) == 1
+        assert fns[0].unit_type == "function"
+
+    def test_abstract_class(self):
+        src = textwrap.dedent("""\
+            abstract class Base {
+                void run();
+            }
+        """)
+        units = extract_code_units("base.dart", src)
+        cls = _units_by_name(units, "Base")
+        assert len(cls) == 1
+        assert cls[0].unit_type == "class"
+
+    def test_extension(self):
+        src = textwrap.dedent("""\
+            extension StringExt on String {
+                bool get isBlank => trim().isEmpty;
+            }
+        """)
+        units = extract_code_units("ext.dart", src)
+        exts = _units_by_name(units, "StringExt")
+        assert len(exts) == 1
+        assert exts[0].unit_type == "extension"
+
+    def test_empty_dart(self):
+        units = extract_code_units("empty.dart", "")
+        assert units == []
+
+
+# =========================================================================
 # Unsupported language
 # =========================================================================
 

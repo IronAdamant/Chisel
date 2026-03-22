@@ -36,6 +36,8 @@ chisel/
 - **Ownership vs Reviewers**: `ownership` = blame-based (who wrote the code, `role: "original_author"`). `who_reviews` = commit-activity-based (who maintains it, `role: "suggested_reviewer"`).
 - **Shared constants**: `_SKIP_DIRS` and `_EXTENSION_MAP` live in `ast_utils.py`. `_CODE_EXTENSIONS` in `engine.py` is derived from `_EXTENSION_MAP`.
 - **Shared dispatch**: `dispatch_tool()` in `mcp_server.py` is used by both HTTP and stdio servers. Tool schemas and dispatch tables live in `schemas.py`.
+- **Edge weighting**: Test edges carry a weight (0.4-1.0) based on file proximity. Python import-path matching (`from myapp.utils import foo` → `myapp/utils.py:foo`) takes priority over name-only matching. `_compute_proximity_weight()` and `_matches_import_path()` in `test_mapper.py`.
+- **AST regex improvements**: C#/Java support nested generics `<A<B>>` and annotations/attributes `@Override`/`[Test]`. Kotlin supports extension functions `fun String.foo()`. C++ supports template functions and destructors `~Foo()`. Swift supports `@objc`-style attributes. Dart supports factory constructors and getters/setters.
 
 ## Dev Commands
 

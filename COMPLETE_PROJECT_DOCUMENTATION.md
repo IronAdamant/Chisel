@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence for LLM agents. Zero external dependencies.
 
-**Version:** 0.4.1
+**Version:** 0.5.0
 **License:** MIT
 **Python:** >= 3.9
 
