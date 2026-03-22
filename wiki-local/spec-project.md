@@ -180,7 +180,7 @@ This reduces false positive edges in projects where multiple modules export iden
 
 ### stdio MCP Server (`chisel-mcp` or `chisel serve-mcp`)
 
-- Requires optional `mcp` package (`pip install chisel[mcp]`)
+- Requires optional `mcp` package (`pip install chisel-ai[mcp]`)
 - Communicates over stdin/stdout per MCP protocol specification
 - Environment variables: `CHISEL_PROJECT_DIR`, `CHISEL_STORAGE_DIR`
 - Runs synchronous engine methods in a thread executor to avoid blocking the async event loop

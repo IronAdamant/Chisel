@@ -10,7 +10,7 @@ Entry point::
     python -m chisel.mcp_stdio
 
 Requires the optional ``mcp`` dependency:
-    pip install chisel[mcp]
+    pip install chisel-ai[mcp]
 """
 
 import asyncio
@@ -85,7 +85,7 @@ def create_server(storage_dir=None, project_dir=None):
     if not _MCP_AVAILABLE:
         raise RuntimeError(
             "The 'mcp' package is not installed. "
-            "Install it with: pip install chisel[mcp]"
+            "Install it with: pip install chisel-ai[mcp]"
         )
 
     if project_dir is None:
@@ -126,7 +126,7 @@ def main():
             "The Chisel stdio MCP server requires the 'mcp' Python package.\n"
             "Install it with:\n"
             "\n"
-            "    pip install chisel[mcp]\n"
+            "    pip install chisel-ai[mcp]\n"
             "\n"
             "Or install the mcp package directly:\n"
             "\n"
