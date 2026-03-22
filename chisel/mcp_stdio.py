@@ -19,6 +19,10 @@ import logging
 import os
 import sys
 
+from chisel.engine import ChiselEngine
+from chisel.mcp_server import dispatch_tool
+from chisel.schemas import _TOOL_SCHEMAS
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -28,10 +32,6 @@ try:
     _MCP_AVAILABLE = True
 except ImportError:
     _MCP_AVAILABLE = False
-
-from chisel.engine import ChiselEngine
-from chisel.mcp_server import dispatch_tool
-from chisel.schemas import _TOOL_SCHEMAS
 
 
 def _configure_server(engine):

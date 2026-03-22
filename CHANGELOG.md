@@ -5,6 +5,12 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-03-22
+
+### Fixed
+
+- `mcp_stdio.py`: Moved chisel imports above the optional `mcp` try/except block to fix ruff E402 (module-level import not at top of file) — CI was failing on Python 3.11
+
 ## [0.5.2] - 2026-03-22
 
 ### Fixed
