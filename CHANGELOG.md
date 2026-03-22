@@ -5,6 +5,18 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-03-22
+
+### Fixed
+
+- `git_analyzer.py`: Diff lines containing tabs in `git log -L` output were misidentified as numstat entries, causing `ValueError` crash on non-numeric fields. Now validates fields are digits or `-` before `int()` conversion. Found via Grafana stress test (21k files).
+
+### Changed
+
+- `engine.py`: Unit-level churn (`git log -L` per function) is skipped when the repo exceeds 2,000 code files (`_UNIT_CHURN_FILE_LIMIT`). Each function spawns a subprocess, making it O(n×m) — impractical for large monorepos. File-level churn is always computed.
+- Stress tested on Grafana: 14,334 code files, 62,379 code units, 22,155 test edges in ~3 minutes. `risk_map` for 14k files in 0.8 seconds.
+- 553 tests pass, no regressions
+
 ## [0.6.1] - 2026-03-22
 
 ### Fixed

@@ -1,6 +1,6 @@
 # Chisel — Architecture
 
-**Version:** 0.6.1 | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
+**Version:** 0.6.2 | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
 
 Test impact analysis and code intelligence for LLM agents. Maps tests to code, code to git history, and answers: "what to run, what's risky, who touched it."
 
@@ -130,6 +130,8 @@ All list-returning tools accept a `limit` parameter to cap result size.
 - **Cross-platform locking**: `ProcessLock` uses `fcntl.flock` (Unix) / `LockFileEx` via ctypes (Windows). Shared locks for reads, exclusive for writes.
 - **Thread safety**: RWLock (in-process) + ProcessLock (cross-process). Lock order: process lock outer, RWLock inner.
 - **Multi-line block comments**: `_strip_strings_and_comments` tracks `/* */` state across lines for correct brace matching.
+- **Unit-churn scaling**: `_UNIT_CHURN_FILE_LIMIT = 2000` — repos exceeding this skip per-function `git log -L` (each function spawns a subprocess, O(n*m)). File-level churn always computed. Validated on Grafana (21k files, 62k units in ~3 min).
+- **Numstat validation**: `_parse_log_output` validates tab-separated fields are digits or `-` before treating lines as numstat. Prevents diff lines with tabs from crashing the parser.
 
 ## Supported Languages (12)
 

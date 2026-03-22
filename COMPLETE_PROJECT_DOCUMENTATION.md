@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence for LLM agents. Zero external dependencies.
 
-**Version:** 0.6.1
+**Version:** 0.6.2
 **PyPI:** `chisel-test-impact`
 **License:** MIT
 **Python:** >= 3.11

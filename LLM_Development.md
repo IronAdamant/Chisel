@@ -4,6 +4,29 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## v0.6.2 -- 2026-03-22 -- Scale Validation on Grafana (21k files)
+
+### Summary
+Stress tested Chisel against Grafana's 21,464-file monorepo. Found and fixed two bugs that only appear at scale: numstat parsing crash and unit-level churn subprocess explosion.
+
+### Bugs Fixed
+- **git_analyzer.py**: `_parse_log_output` — diff lines with tabs in `git log -L` output were being split into 3 tab-separated fields and misidentified as numstat entries, causing `ValueError: invalid literal for int() with base 10: '+'`. Fixed by validating that the first two fields are digits or `-` before `int()` conversion.
+- **engine.py**: Unit-level churn via `git log -L` spawns one subprocess per function. With 62k code units, the analysis ran for 24+ minutes before being killed. Added `_UNIT_CHURN_FILE_LIMIT = 2000` — repos above this threshold skip per-function churn while still computing file-level churn for all files.
+
+### Stress Test Results (Grafana)
+- 14,334 code files scanned
+- 62,379 code units extracted (Go + TypeScript + JavaScript)
+- 3,870 test files discovered (Go test + Jest + Playwright)
+- 22,155 test edges built
+- Full analysis: ~3 minutes
+- `risk_map` (14k files): 0.8 seconds (batch queries)
+- `test_gaps` (48k results): 0.2 seconds
+
+### Tests
+- 553 tests, all passing
+
+---
+
 ## v0.6.1 -- 2026-03-22 -- Multi-Line Block Comments, Python 3.11+, Test Coverage Gaps
 
 ### Summary

@@ -41,6 +41,8 @@ chisel/
 - **Pluggable extractors**: `register_extractor(lang, fn)` in `ast_utils.py` lets users override built-in regex extractors with tree-sitter or LSP-backed ones. `_custom_extractors` checked before `_EXTRACTORS` in `extract_code_units()`. Zero-dep — the registry is just hooks.
 - **Batch SQL queries**: `storage.py` provides `get_*_batch()` methods for edges, code units, co-changes, churn, and blame. `impact.get_risk_map()` uses these to compute all risk scores in ~5 queries total instead of N*5. `_chunked()` helper splits large batches to stay under SQLite's variable limit.
 - **Process-level read locks**: All read tool methods in `engine.py` acquire `_process_lock.shared()` (outer) + `lock.read_lock()` (inner). Writes acquire `_process_lock.exclusive()` + `lock.write_lock()`. This allows concurrent reads from multiple processes while blocking during writes.
+- **Unit-churn scaling**: `_UNIT_CHURN_FILE_LIMIT = 2000` in `engine.py`. Repos with more than 2000 code files skip per-function `git log -L` churn (each function spawns a subprocess). File-level churn is always computed. Validated on Grafana (21k files, 62k units in ~3 min).
+- **Numstat validation**: `_parse_log_output` in `git_analyzer.py` validates tab-separated fields are digits or `-` before treating them as numstat. Diff lines with tabs were being misidentified as numstat entries in `git log -L` output.
 
 ## Dev Commands
 
