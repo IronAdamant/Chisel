@@ -296,6 +296,9 @@ class ImpactAnalyzer:
             "last_date": "", "score": 0.0,
         })
 
+        # Track parsed last_date per author to avoid redundant parsing
+        author_last_dt = {}
+
         for commit in commits:
             author = commit["author"]
             info = author_stats[author]
@@ -303,32 +306,24 @@ class ImpactAnalyzer:
             info["email"] = commit.get("author_email", "")
             info["insertions"] += commit.get("insertions", 0)
             info["deletions"] += commit.get("deletions", 0)
-            if not info["last_date"]:
-                info["last_date"] = commit["date"]
-            else:
-                try:
-                    if _parse_iso_date(commit["date"]) > _parse_iso_date(info["last_date"]):
-                        info["last_date"] = commit["date"]
-                except (ValueError, TypeError):
-                    pass
-            # Weight by recency: recent commits count more
             try:
                 cdate = _parse_iso_date(commit["date"])
-                days = max((now - cdate).total_seconds() / 86400, 0)
-                info["score"] += 1.0 / (1.0 + days)
             except (ValueError, TypeError):
                 info["score"] += 0.01
+                continue
+            prev_dt = author_last_dt.get(author)
+            if prev_dt is None or cdate > prev_dt:
+                author_last_dt[author] = cdate
+                info["last_date"] = commit["date"]
+            # Weight by recency: recent commits count more
+            days = max((now - cdate).total_seconds() / 86400, 0)
+            info["score"] += 1.0 / (1.0 + days)
 
         total_score = sum(info["score"] for info in author_stats.values())
         result = []
         for author, info in author_stats.items():
-            days_since = None
-            if info["last_date"]:
-                try:
-                    last = _parse_iso_date(info["last_date"])
-                    days_since = round((now - last).total_seconds() / 86400)
-                except (ValueError, TypeError):
-                    pass
+            last_dt = author_last_dt.get(author)
+            days_since = round((now - last_dt).total_seconds() / 86400) if last_dt else None
             pct = (info["score"] / total_score * 100) if total_score > 0 else 0
             result.append({
                 "author": author,

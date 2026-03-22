@@ -185,8 +185,7 @@ class GitAnalyzer:
         commit_info = {}
 
         for line in raw.split("\n"):
-            m = _BLAME_HEADER_RE.match(line)
-            if m:
+            if m := _BLAME_HEADER_RE.match(line):
                 commit_hash = m.group(1)
                 final_line = int(m.group(2))
                 # Each entry represents exactly one line in the final file.
@@ -314,8 +313,7 @@ class GitAnalyzer:
         functions = []
         seen = set()
         for line in raw.split("\n"):
-            m = _HUNK_RE.match(line)
-            if m:
+            if m := _HUNK_RE.match(line):
                 context = m.group(1).strip()
                 # Only extract recognized function declarations
                 nm = _FUNC_NAME_RE.search(context)

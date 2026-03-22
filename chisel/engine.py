@@ -220,7 +220,7 @@ class ChiselEngine:
                 pass
         with self.lock.read_lock():
             return self.impact.get_impacted_tests(
-                changed_files, functions if functions else None,
+                changed_files, functions or None,
             )
 
     def tool_update(self):

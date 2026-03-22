@@ -5,6 +5,30 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-03-22
+
+### Fixed
+
+- `project.py`: Removed dead `self._fd = None` attribute on `ProcessLock` (never read or assigned after init)
+- `storage.py`: Removed redundant `timeout=30` from `sqlite3.connect()` — the `PRAGMA busy_timeout=30000` already controls this and takes precedence
+- `storage.py`: Simplified redundant condition logic in `get_direct_impacted_tests()` — early-return for empty list now groups naturally with the non-empty branch
+- `mcp_server.py`: Negative `Content-Length` values no longer bypass validation (now rejected alongside zero)
+- `metrics.py`: Fixed inaccurate docstring in `compute_churn()` that claimed "no file path filtering needed" when filtering is actually performed
+- `mcp_stdio.py`: Added missing `logger.exception()` call in `call_tool()` — exceptions were silently swallowed with no server-side logging
+
+### Changed
+
+- `project.py`: Consolidated duplicated `exclusive()`/`shared()` lock methods into shared `_acquire(lock_type)` helper
+- `project.py`: Uses `str.removeprefix("./")` instead of manual slicing (Python 3.9+)
+- `engine.py`: `functions if functions else None` simplified to `functions or None`
+- `test_mapper.py`: Extracted `_check_rust_test_content()` and `_check_cpp_test_content()` helpers; `parse_test_file()` now reuses them instead of duplicating detection logic
+- `test_mapper.py`: `lang == "java" or lang == "kotlin"` changed to `lang in ("java", "kotlin")` for consistency
+- `impact.py`: `suggest_reviewers()` caches parsed datetimes per author instead of re-parsing on every comparison and recency calculation
+- `git_analyzer.py`: Uses walrus operator (`:=`) for regex matches in `_parse_blame_output()` and `_parse_diff_functions()`
+- `wiki-local/spec-project.md`: Updated risk formula to current 5-component weights (was still showing old 4-component formula)
+- `README.md`: Updated language and framework lists to include all 12 supported languages
+- 450 tests pass, no regressions
+
 ## [0.4.0] - 2026-03-18
 
 ### Added

@@ -97,7 +97,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         except ValueError:
             self._send_error_json(400, "Invalid Content-Length header")
             return None
-        if content_length == 0:
+        if content_length <= 0:
             self._send_error_json(400, "Empty request body")
             return None
         raw = self.rfile.read(content_length)

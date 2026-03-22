@@ -31,7 +31,7 @@ class Storage:
         Uses a 30-second busy timeout so concurrent processes wait rather
         than immediately failing with SQLITE_BUSY.
         """
-        conn = sqlite3.connect(str(self.db_path), timeout=30, check_same_thread=False)
+        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -415,15 +415,15 @@ class Storage:
                       JOIN test_edges te ON cu.id = te.code_id
                       JOIN test_units tu ON te.test_id = tu.id
                       WHERE cu.file_path = ?"""
-        if changed_functions is not None and len(changed_functions) > 0:
+        if changed_functions is not None:
+            if not changed_functions:
+                # Explicit empty list means no functions changed — return nothing
+                return []
             placeholders = ",".join("?" for _ in changed_functions)
             return self._fetchall(
                 f"{base_sql} AND cu.name IN ({placeholders})",
                 (file_path, *changed_functions),
             )
-        if changed_functions is not None:
-            # Explicit empty list means no functions changed — return nothing
-            return []
         return self._fetchall(base_sql, (file_path,))
 
     def delete_test_units_by_file(self, file_path):

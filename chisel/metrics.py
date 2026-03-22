@@ -30,8 +30,8 @@ def compute_churn(commits, file_path, unit_name=None, now=None):
     Churn score formula: sum(1 / (1 + days_since_commit))
 
     When unit_name is provided and commits were obtained via
-    get_function_log(), each commit is counted directly (no file
-    path filtering needed since git log -L already scoped them).
+    get_function_log(), each commit is used directly.  File-path
+    filtering still extracts per-file stats from numstat when available.
 
     Args:
         commits: List of commit dicts (from parse_log or get_function_log).

@@ -104,10 +104,10 @@ class TestMapper:
             return []
 
         if framework is None and file_path.endswith(".rs"):
-            if "#[test]" in content or "#[cfg(test)]" in content:
+            if _check_rust_test_content(content):
                 framework = "rust"
-        if framework is None and file_path.endswith((".cpp", ".cc", ".cxx", ".c")):
-            if "TEST(" in content or "TEST_F(" in content or "TEST_CASE(" in content:
+        elif framework is None and file_path.endswith((".cpp", ".cc", ".cxx", ".c")):
+            if _check_cpp_test_content(content):
                 framework = "gtest"
         if framework is None:
             return []
@@ -153,7 +153,7 @@ class TestMapper:
             return _extract_rust_deps(content)
         if lang == "csharp":
             return _extract_csharp_deps(content)
-        if lang == "java" or lang == "kotlin":
+        if lang in ("java", "kotlin"):
             return _extract_java_deps(content)
         if lang in ("c", "cpp"):
             return _extract_cpp_deps(content)
@@ -267,21 +267,27 @@ def _check_playwright(file_path):
     return "jest"
 
 
+def _check_rust_test_content(content):
+    """Check if content contains Rust test markers."""
+    return "#[test]" in content or "#[cfg(test)]" in content
+
+
 def _check_rust_test(file_path):
     """Check if a .rs file contains #[test] or #[cfg(test)]."""
     content = _read_file(file_path)
-    if content is None:
-        return False
-    return "#[test]" in content or "#[cfg(test)]" in content
+    return content is not None and _check_rust_test_content(content)
+
+
+def _check_cpp_test_content(content):
+    """Check if content contains C/C++ test framework macros."""
+    return ("TEST(" in content or "TEST_F(" in content
+            or "TEST_CASE(" in content or "BOOST_AUTO_TEST_CASE(" in content)
 
 
 def _check_cpp_test(file_path):
     """Check if a C/C++ file contains test framework macros."""
     content = _read_file(file_path)
-    if content is None:
-        return False
-    return ("TEST(" in content or "TEST_F(" in content
-            or "TEST_CASE(" in content or "BOOST_AUTO_TEST_CASE(" in content)
+    return content is not None and _check_cpp_test_content(content)
 
 
 # ------------------------------------------------------------------ #

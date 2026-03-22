@@ -43,7 +43,7 @@ Chisel is a test impact analysis and code intelligence tool designed for LLM age
 
 ## MCP Tool Specifications
 
-All 10 tools are accessible through three interfaces: CLI subcommands, HTTP POST /call, and stdio MCP. Each tool maps to an `engine.tool_*()` method.
+All 15 tools are accessible through three interfaces: CLI subcommands, HTTP POST /call, and stdio MCP. Each tool maps to an `engine.tool_*()` method.
 
 ### analyze
 
@@ -87,11 +87,12 @@ All 10 tools are accessible through three interfaces: CLI subcommands, HTTP POST
 - **Input**: `directory` (optional string)
 - **Output**: List of dicts: `{file_path, unit_name, risk_score, breakdown}`
 - **Behavior**: Computes risk scores for all tracked files, optionally scoped to a directory. Sorted by risk score descending.
-- **Risk formula**: `0.4 * churn + 0.3 * coupling_breadth + 0.2 * (1 - test_coverage) + 0.1 * author_concentration`
+- **Risk formula**: `0.35 * churn + 0.25 * coupling_breadth + 0.2 * (1 - test_coverage) + 0.1 * author_concentration + 0.1 * test_instability`
   - Churn: normalized to 0-1 (5.0 raw score = 1.0)
   - Coupling breadth: normalized to 0-1 (10+ coupled files = 1.0)
   - Test coverage: fraction of code units with at least one test edge
   - Author concentration: Herfindahl index of blame line ownership (0 = many authors, 1 = single author)
+  - Test instability: average failure rate of covering tests (0 = stable, 1 = always fails)
 
 ### stale_tests
 

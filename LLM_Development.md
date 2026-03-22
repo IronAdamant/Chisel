@@ -4,6 +4,45 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## v0.4.1 -- 2026-03-22 -- Codebase Audit: Simplify, Modernize, Fix
+
+### Summary
+Full codebase audit across all 12 source files using 6 parallel exploration agents. Removed dead code, consolidated duplicated logic, modernized syntax, fixed documentation drift, and added missing error logging.
+
+### Dead Code Removed
+- **project.py**: `self._fd = None` on `ProcessLock` — never read or assigned after init
+
+### Code Consolidated
+- **project.py**: `exclusive()` and `shared()` were near-identical 10-line methods differing only in lock type; consolidated into shared `_acquire(lock_type)` helper
+- **test_mapper.py**: `parse_test_file()` duplicated the exact logic from `_check_rust_test()` and `_check_cpp_test()` inline; extracted `_check_rust_test_content()` and `_check_cpp_test_content()` content-only helpers shared by both paths
+
+### Bugs Fixed
+- **storage.py**: `timeout=30` on `sqlite3.connect()` was redundant — `PRAGMA busy_timeout=30000` (set on the next line) overrides it. Removed the dead parameter
+- **storage.py**: Restructured `get_direct_impacted_tests()` condition — the old `len(changed_functions) > 0` followed by a separate `changed_functions is not None` check was logically redundant
+- **mcp_server.py**: Negative `Content-Length` values were not rejected (only zero was checked)
+- **mcp_stdio.py**: `call_tool()` caught exceptions but never logged them server-side, making debugging impossible
+- **metrics.py**: Docstring claimed "no file path filtering needed" for unit-level churn, but the code does filter
+
+### Modernization
+- **project.py**: `str.removeprefix("./")` replaces manual `if startswith / slice` pattern (Python 3.9+)
+- **git_analyzer.py**: Walrus operator (`:=`) for regex match-then-check in `_parse_blame_output()` and `_parse_diff_functions()`
+- **engine.py**: `functions if functions else None` → `functions or None`
+- **test_mapper.py**: `lang == "java" or lang == "kotlin"` → `lang in ("java", "kotlin")`
+
+### Performance
+- **impact.py**: `suggest_reviewers()` parsed the same ISO dates 2-3 times per commit; now caches parsed datetimes per author
+
+### Documentation
+- Updated risk formula in `spec-project.md` (was still showing old 4-component 0.4/0.3/0.2/0.1 weights instead of current 5-component 0.35/0.25/0.2/0.1/0.1)
+- Updated tool count from "10" to "15" in spec-project.md
+- Updated README language/framework lists to include all 12 supported languages
+- Updated version across `__init__.py`, `pyproject.toml`, `COMPLETE_PROJECT_DOCUMENTATION.md`, `CHANGELOG.md`
+
+### Tests
+- All 450 tests pass, no regressions
+
+---
+
 ## v0.3.3 -- 2026-03-17 -- Codebase Audit & Cleanup
 
 ### Summary

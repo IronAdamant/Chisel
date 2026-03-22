@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence for LLM agents. Zero external dependencies.
 
-**Version:** 0.4.0
+**Version:** 0.4.1
 **License:** MIT
 **Python:** >= 3.9
 
@@ -37,7 +37,7 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 | `chisel/engine.py` | Orchestrator -- owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock, ProcessLock; exposes `tool_*()` methods for all 15 MCP tools | `os`, `pathlib`, `chisel.ast_utils`, `chisel.git_analyzer`, `chisel.impact`, `chisel.project`, `chisel.rwlock`, `chisel.storage`, `chisel.test_mapper` | [spec-project](wiki-local/spec-project.md) |
 | `chisel/cli.py` | argparse CLI with 18 subcommands, dispatch table, output formatting | `argparse`, `json`, `os`, `chisel.engine` | [spec-project: CLI](wiki-local/spec-project.md) |
 | `chisel/mcp_server.py` | HTTP MCP server (GET /tools, /health; POST /call), ThreadedHTTPServer, tool schemas and dispatch table | `json`, `logging`, `threading`, `http.server`, `socketserver`, `chisel.engine` | [spec-project: MCP tools](wiki-local/spec-project.md) |
-| `chisel/mcp_stdio.py` | stdio MCP server for Claude Desktop/Cursor integration, requires optional `mcp` package | `asyncio`, `json`, `os`, `sys`, `chisel.engine`, `chisel.mcp_server` (imports `dispatch_tool`), `chisel.schemas` (imports `_TOOL_SCHEMAS`) | [spec-project: MCP tools](wiki-local/spec-project.md) |
+| `chisel/mcp_stdio.py` | stdio MCP server for Claude Desktop/Cursor integration, requires optional `mcp` package | `asyncio`, `json`, `logging`, `os`, `sys`, `chisel.engine`, `chisel.mcp_server` (imports `dispatch_tool`), `chisel.schemas` (imports `_TOOL_SCHEMAS`) | [spec-project: MCP tools](wiki-local/spec-project.md) |
 | `chisel/schemas.py` | JSON Schema definitions for all 15 tools + dispatch table, shared by HTTP and stdio servers | -- (pure data module) | -- |
 | `chisel/rwlock.py` | Read-write lock (multiple readers or one exclusive writer) for concurrent access | `threading`, `contextlib` | -- |
 

@@ -95,9 +95,7 @@ def normalize_path(file_path, project_root):
         rel = os.path.normpath(file_path)
     # Ensure consistent forward slashes and no leading ./
     rel = rel.replace(os.sep, "/")
-    if rel.startswith("./"):
-        rel = rel[2:]
-    return rel
+    return rel.removeprefix("./")
 
 
 def resolve_storage_dir(project_dir=None, explicit_dir=None):
@@ -146,33 +144,31 @@ class ProcessLock:
     def __init__(self, lock_dir):
         self._lock_path = os.path.join(lock_dir, "chisel.lock")
         os.makedirs(lock_dir, exist_ok=True)
-        self._fd = None
+
+    @contextmanager
+    def _acquire(self, lock_type):
+        """Acquire a file lock of the given type, yielding control."""
+        fd = open(self._lock_path, "w")
+        try:
+            fcntl.flock(fd, lock_type)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            fd.close()
 
     @contextmanager
     def exclusive(self):
         """Acquire an exclusive file lock, yielding control to the caller."""
-        fd = open(self._lock_path, "w")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            fd.close()
+        with self._acquire(fcntl.LOCK_EX):
+            yield
 
     @contextmanager
     def shared(self):
         """Acquire a shared file lock (allows concurrent readers)."""
-        fd = open(self._lock_path, "w")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_SH)
-            try:
-                yield
-            finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            fd.close()
+        with self._acquire(fcntl.LOCK_SH):
+            yield
 
 
 # ------------------------------------------------------------------ #

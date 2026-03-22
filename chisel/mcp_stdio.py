@@ -15,8 +15,11 @@ Requires the optional ``mcp`` dependency:
 
 import asyncio
 import json
+import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 
 try:
     from mcp.server import Server
@@ -60,6 +63,7 @@ def _configure_server(engine):
                 None, lambda: dispatch_tool(engine, name, arguments),
             )
         except Exception as exc:
+            logger.exception("Error executing tool %s", name)
             return [TextContent(type="text", text=f"Error: {exc}")]
 
         text = json.dumps(result, indent=2, default=str)
