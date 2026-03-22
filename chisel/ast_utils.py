@@ -221,11 +221,10 @@ def _extract_python_ast(file_path: str, content: str) -> list[CodeUnit]:
                 if isinstance(node, ast.AsyncFunctionDef)
                 else "function"
             )
-            end = getattr(node, "end_lineno", None) or node.lineno
-            units.append(CodeUnit(file_path, name, unit_type, node.lineno, end))
+            units.append(CodeUnit(file_path, name, unit_type, node.lineno, node.end_lineno))
 
         elif isinstance(node, ast.ClassDef):
-            end = getattr(node, "end_lineno", None) or node.lineno
+            end = node.end_lineno
             units.append(CodeUnit(file_path, node.name, "class", node.lineno, end))
 
     return units
@@ -573,6 +572,6 @@ def extract_code_units(file_path: str, content: str) -> list[CodeUnit]:
     Returns an empty list for unsupported languages.
     """
     lang = detect_language(file_path)
-    if lang is None or lang not in _EXTRACTORS:
+    if lang not in _EXTRACTORS:
         return []
     return _EXTRACTORS[lang](file_path, content)

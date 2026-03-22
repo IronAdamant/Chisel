@@ -5,6 +5,31 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-03-22
+
+### Fixed
+
+- `engine.py`: Unhandled `OSError` when a file vanishes between scan and parse in `_parse_and_store_code_units()` — now gracefully skips the file
+- `schemas.py`: All tool schemas shared a single mutable `_LIMIT_PROP` dict reference — mutation by any consumer would silently corrupt all schemas; now each schema gets its own copy
+- `cli.py`: `record-result` without `--passed` or `--failed` silently defaulted to "passed" — the mutually exclusive group is now `required=True`
+- `wiki-local/glossary.md`: Co-change coupling risk weight was listed as 0.3 (old formula) instead of current 0.25
+- `wiki-local/glossary.md`: Tool dispatch table reference pointed to `mcp_server.py` instead of `schemas.py`
+
+### Changed
+
+- `engine.py`: Simplified `_detect_diff_base()` using `next()` with generator expression (replaces for-loop + early return)
+- `engine.py`: Removed `pathlib.Path` import — replaced single `Path.read_text()` usage with `open()` + error handling
+- `ast_utils.py`: Removed unnecessary `getattr(node, "end_lineno", None)` guards — `end_lineno` is guaranteed on all AST nodes in Python 3.9+
+- `ast_utils.py`: Removed redundant `lang is None` check in `extract_code_units()` — `None` is never a key in `_EXTRACTORS`
+- `git_analyzer.py`: Used walrus operator in `get_changed_files()` to eliminate double `.strip()` call per line
+- `storage.py`: Simplified `_normalize_unit_name` from explicit `if is not None` to `or ""`
+- `impact.py`: Replaced loop-building-a-set with set comprehension in `get_risk_map()`
+- `test_mapper.py`: Converted `extract_test_dependencies()` from instance method to `@staticmethod` with dispatch dict (replaces 11-branch if-chain)
+- `test_mapper.py`: Uses `normalize_path()` from `project.py` instead of `os.path.relpath()` — ensures consistent forward-slash paths across platforms
+- `pyproject.toml`: Added Python 3.14 classifier
+- Updated all documentation: `COMPLETE_PROJECT_DOCUMENTATION.md`, `CLAUDE.md`, `CHANGELOG.md`, `LLM_Development.md`, glossary, spec-project
+- 522 tests pass, no regressions
+
 ## [0.5.3] - 2026-03-22
 
 ### Fixed

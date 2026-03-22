@@ -280,5 +280,5 @@ _LIMIT_PROP = {
 }
 for _name, _schema in _TOOL_SCHEMAS.items():
     if _name not in ("analyze", "update", "record_result", "stats"):
-        _schema["parameters"]["properties"]["limit"] = _LIMIT_PROP
+        _schema["parameters"]["properties"]["limit"] = dict(_LIMIT_PROP)
 del _name, _schema

@@ -8,6 +8,7 @@ from pathlib import Path
 from chisel.ast_utils import (
     CodeUnit, _SKIP_DIRS, compute_file_hash, detect_language, extract_code_units,
 )
+from chisel.project import normalize_path
 
 # Framework detection patterns: (regex pattern, framework name)
 _FRAMEWORK_PATTERNS = [
@@ -112,7 +113,7 @@ class TestMapper:
         if framework is None:
             return []
 
-        rel_path = os.path.relpath(file_path, self.project_dir)
+        rel_path = normalize_path(file_path, self.project_dir)
         file_hash = compute_file_hash(file_path)
         units = extract_code_units(file_path, content)
 
@@ -136,36 +137,16 @@ class TestMapper:
     # Dependency extraction
     # ------------------------------------------------------------------ #
 
-    def extract_test_dependencies(self, file_path, content):
+    @staticmethod
+    def extract_test_dependencies(file_path, content):
         """Extract imports and call targets from a test file.
 
         Returns a list of dependency dicts: {name, dep_type}
         where dep_type is "import" or "call".
         """
         lang = detect_language(file_path)
-        if lang == "python":
-            return _extract_python_deps(content)
-        if lang in ("javascript", "typescript"):
-            return _extract_js_deps(content)
-        if lang == "go":
-            return _extract_go_deps(content)
-        if lang == "rust":
-            return _extract_rust_deps(content)
-        if lang == "csharp":
-            return _extract_csharp_deps(content)
-        if lang in ("java", "kotlin"):
-            return _extract_java_deps(content)
-        if lang in ("c", "cpp"):
-            return _extract_cpp_deps(content)
-        if lang == "swift":
-            return _extract_swift_deps(content)
-        if lang == "php":
-            return _extract_php_deps(content)
-        if lang == "ruby":
-            return _extract_ruby_deps(content)
-        if lang == "dart":
-            return _extract_dart_deps(content)
-        return []
+        extractor = _DEP_EXTRACTORS.get(lang)
+        return extractor(content) if extractor else []
 
     # ------------------------------------------------------------------ #
     # Edge building
@@ -606,6 +587,24 @@ def _extract_dart_deps(content):
 # ------------------------------------------------------------------ #
 # Shared utility
 # ------------------------------------------------------------------ #
+
+_DEP_EXTRACTORS = {
+    "python": _extract_python_deps,
+    "javascript": _extract_js_deps,
+    "typescript": _extract_js_deps,
+    "go": _extract_go_deps,
+    "rust": _extract_rust_deps,
+    "csharp": _extract_csharp_deps,
+    "java": _extract_java_deps,
+    "kotlin": _extract_java_deps,
+    "c": _extract_cpp_deps,
+    "cpp": _extract_cpp_deps,
+    "swift": _extract_swift_deps,
+    "php": _extract_php_deps,
+    "ruby": _extract_ruby_deps,
+    "dart": _extract_dart_deps,
+}
+
 
 def _compute_proximity_weight(test_path, code_path):
     """Compute edge weight based on file-path proximity (0.4-1.0).

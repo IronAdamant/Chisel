@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence for LLM agents. Zero external dependencies.
 
-**Version:** 0.5.3
+**Version:** 0.5.4
 **PyPI:** `chisel-test-impact`
 **License:** MIT
 **Python:** >= 3.9
@@ -33,11 +33,11 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 | `chisel/storage.py` | SQLite persistence layer (WAL mode, 10 tables, single persistent connection), all CRUD operations | `sqlite3`, `datetime`, `pathlib` | [glossary: blame cache](wiki-local/glossary.md) |
 | `chisel/git_analyzer.py` | Git log/blame parsing via subprocess, branch/diff queries, function-level log | `re`, `subprocess`, `datetime` | [glossary: churn score](wiki-local/glossary.md) |
 | `chisel/metrics.py` | Pure computation: churn scoring, ownership aggregation, co-change detection | `collections`, `datetime`, `itertools` | [glossary: churn score](wiki-local/glossary.md) |
-| `chisel/test_mapper.py` | Test file discovery, framework detection (pytest/Jest/Go/Rust/Playwright), dependency extraction, test edge building | `ast`, `os`, `re`, `pathlib`, `chisel.ast_utils` | [glossary: test edge](wiki-local/glossary.md) |
+| `chisel/test_mapper.py` | Test file discovery, framework detection (pytest/Jest/Go/Rust/Playwright), dependency extraction, test edge building | `ast`, `os`, `re`, `pathlib`, `chisel.ast_utils`, `chisel.project` | [glossary: test edge](wiki-local/glossary.md) |
 | `chisel/impact.py` | Impact analysis, risk scoring, stale test detection, ownership queries, reviewer suggestions | `collections`, `datetime`, `chisel.metrics`, `chisel.storage` (via constructor injection) | [glossary: risk score](wiki-local/glossary.md) |
 | `chisel/project.py` | Multi-agent safety: project root detection (worktree-aware), path normalization, storage dir resolution, cross-process file lock (ProcessLock) | `fcntl`, `os`, `subprocess`, `contextlib` | -- |
-| `chisel/engine.py` | Orchestrator -- owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock, ProcessLock; exposes `tool_*()` methods for all 15 MCP tools | `os`, `pathlib`, `chisel.ast_utils`, `chisel.git_analyzer`, `chisel.impact`, `chisel.project`, `chisel.rwlock`, `chisel.storage`, `chisel.test_mapper` | [spec-project](wiki-local/spec-project.md) |
-| `chisel/cli.py` | argparse CLI with 18 subcommands, dispatch table, output formatting | `argparse`, `json`, `os`, `chisel.engine` | [spec-project: CLI](wiki-local/spec-project.md) |
+| `chisel/engine.py` | Orchestrator -- owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock, ProcessLock; exposes `tool_*()` methods for all 15 MCP tools | `os`, `chisel.ast_utils`, `chisel.git_analyzer`, `chisel.impact`, `chisel.project`, `chisel.rwlock`, `chisel.storage`, `chisel.test_mapper` | [spec-project](wiki-local/spec-project.md) |
+| `chisel/cli.py` | argparse CLI with 17 subcommands, dispatch table, output formatting | `argparse`, `json`, `os`, `chisel.engine` | [spec-project: CLI](wiki-local/spec-project.md) |
 | `chisel/mcp_server.py` | HTTP MCP server (GET /tools, /health; POST /call), ThreadedHTTPServer, tool schemas and dispatch table | `json`, `logging`, `threading`, `http.server`, `socketserver`, `chisel.engine` | [spec-project: MCP tools](wiki-local/spec-project.md) |
 | `chisel/mcp_stdio.py` | stdio MCP server for Claude Desktop/Cursor integration, requires optional `mcp` package | `asyncio`, `json`, `logging`, `os`, `sys`, `chisel.engine`, `chisel.mcp_server` (imports `dispatch_tool`), `chisel.schemas` (imports `_TOOL_SCHEMAS`) | [spec-project: MCP tools](wiki-local/spec-project.md) |
 | `chisel/schemas.py` | JSON Schema definitions for all 15 tools + dispatch table, shared by HTTP and stdio servers | -- (pure data module) | -- |
@@ -66,7 +66,7 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 
 ```
 engine.py --> project.py, storage.py, ast_utils.py, git_analyzer.py, test_mapper.py, impact.py, rwlock.py
-test_mapper.py --> ast_utils.py
+test_mapper.py --> ast_utils.py, project.py
 impact.py --> storage.py (injected), metrics.py
 metrics.py --> (no internal deps)
 project.py --> (no internal deps)
@@ -84,5 +84,5 @@ mcp_stdio.py --> engine.py, mcp_server.py, schemas.py
 
 | Script | Target | Description |
 |--------|--------|-------------|
-| `chisel` | `chisel.cli:main` | CLI with 18 subcommands |
+| `chisel` | `chisel.cli:main` | CLI with 17 subcommands |
 | `chisel-mcp` | `chisel.mcp_stdio:main` | stdio MCP server |

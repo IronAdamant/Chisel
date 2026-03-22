@@ -17,7 +17,7 @@ A numeric measure of how actively a file or function is being changed. Computed 
 The full set of metrics stored per file or function in the `churn_stats` table: `commit_count`, `distinct_authors`, `total_insertions`, `total_deletions`, `last_changed`, and `churn_score`. When `unit_name` is empty, the row represents file-level stats. When `unit_name` is set, it represents function-level stats obtained via `git log -L`.
 
 **Co-change coupling**
-A relationship between two files that frequently appear in the same commits. Stored in the `co_changes` table with a `co_commit_count` and `last_co_commit` date. Only pairs with >= 3 co-commits are stored (configurable via `min_count`). Used by impact analysis to find transitive test relationships and as a component of the risk score (weight: 0.3).
+A relationship between two files that frequently appear in the same commits. Stored in the `co_changes` table with a `co_commit_count` and `last_co_commit` date. Only pairs with >= 3 co-commits are stored (configurable via `min_count`). Used by impact analysis to find transitive test relationships and as a component of the risk score (weight: 0.25).
 
 **Code unit**
 The fundamental unit of code that Chisel tracks. Represented by the `CodeUnit` dataclass in `ast_utils.py` and stored in the `code_units` SQLite table. A code unit has a `file_path`, `name`, `unit_type`, `line_start`, and `line_end`. Types include `function`, `async_function`, `class`, `struct`, `enum`, `interface`, and `impl`. The primary key is `file:name:type`. Methods inside classes are qualified as `ClassName.method_name`.
@@ -68,7 +68,7 @@ A directed relationship from a test unit to a code unit, stored in the `test_edg
 A single test function or method discovered by the test mapper. Stored in the `test_units` SQLite table with `id`, `file_path`, `name`, `framework`, `line_start`, `line_end`, and `content_hash`. The ID format is `relative_path:function_name`. Test names are identified by framework conventions (e.g., `test_*` for pytest, `Test*` for Go).
 
 **Tool dispatch table**
-The `_TOOL_DISPATCH` dict in `mcp_server.py` that maps each tool name to its engine method name and list of accepted argument names. Used by both the HTTP server and the stdio server (which imports it) to route tool calls to the correct `engine.tool_*()` method.
+The `_TOOL_DISPATCH` dict in `schemas.py` that maps each tool name to its engine method name and list of accepted argument names. Used by both the HTTP server and the stdio server (which imports it) to route tool calls to the correct `engine.tool_*()` method.
 
 **WAL mode (Write-Ahead Logging)**
 The SQLite journal mode used by Chisel's storage. Enables concurrent readers alongside a single writer without blocking. Set once at connection creation with `PRAGMA journal_mode=WAL`. Combined with `PRAGMA synchronous=NORMAL` for a balance of durability and performance.

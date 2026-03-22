@@ -285,7 +285,7 @@ class GitAnalyzer:
         Uses git diff --name-only against the ref.
         """
         raw = self._run_git(["diff", "--name-only", ref])
-        return [line.strip() for line in raw.strip().splitlines() if line.strip()]
+        return [s for line in raw.strip().splitlines() if (s := line.strip())]
 
     def get_changed_functions(self, file_path, ref="HEAD~1"):
         """Extract function names from diff hunk headers.

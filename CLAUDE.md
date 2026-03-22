@@ -54,7 +54,7 @@ chisel serve --port 8377                          # HTTP MCP server
 ```
 engine.py → project.py, storage.py, ast_utils.py, git_analyzer.py, metrics.py, test_mapper.py, impact.py, rwlock.py
 project.py → (no internal deps, uses subprocess for git)
-test_mapper.py → ast_utils.py
+test_mapper.py → ast_utils.py, project.py
 impact.py → metrics.py
 metrics.py → (no internal deps)
 cli.py → engine.py, mcp_server.py, mcp_stdio.py

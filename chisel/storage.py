@@ -358,7 +358,7 @@ class Storage:
 
     @staticmethod
     def _normalize_unit_name(unit_name):
-        return unit_name if unit_name is not None else ""
+        return unit_name or ""
 
     def upsert_churn_stat(self, file_path, unit_name, commit_count=0,
                           distinct_authors=0, total_insertions=0, total_deletions=0,

@@ -1,7 +1,6 @@
 """ChiselEngine — main orchestrator tying together all subsystems."""
 
 import os
-from pathlib import Path
 
 from chisel.ast_utils import _EXTENSION_MAP, _SKIP_DIRS, compute_file_hash, extract_code_units
 from chisel.git_analyzer import GitAnalyzer
@@ -257,10 +256,10 @@ class ChiselEngine:
             branch = self.git.get_current_branch()
             if branch in ("main", "master"):
                 return "HEAD"
-            for name in ("main", "master"):
-                if self.git.branch_exists(name):
-                    return name
-            return "HEAD"
+            return next(
+                (name for name in ("main", "master") if self.git.branch_exists(name)),
+                "HEAD",
+            )
         except RuntimeError:
             return "HEAD"
 
@@ -287,7 +286,11 @@ class ChiselEngine:
         for fpath, rel, new_hash in changed_files:
             self.storage.set_file_hash(rel, new_hash)
             self.storage.delete_code_units_by_file(rel)
-            content = Path(fpath).read_text(encoding="utf-8", errors="replace")
+            try:
+                with open(fpath, encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+            except OSError:
+                continue
             units = extract_code_units(fpath, content)
             for u in units:
                 cid = f"{rel}:{u.name}:{u.unit_type}"

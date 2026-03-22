@@ -121,7 +121,7 @@ def create_parser():
     p_record = sub.add_parser("record-result", parents=[shared],
                               help="Record a test result (pass/fail)")
     p_record.add_argument("test_id", help="Test ID")
-    result_group = p_record.add_mutually_exclusive_group()
+    result_group = p_record.add_mutually_exclusive_group(required=True)
     result_group.add_argument("--passed", action="store_true", default=False,
                               help="Mark test as passed")
     result_group.add_argument("--failed", action="store_true", default=False,

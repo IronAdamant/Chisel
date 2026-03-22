@@ -202,7 +202,7 @@ This reduces false positive edges in projects where multiple modules export iden
 | `stale-tests` | (none) | Detect stale tests |
 | `test-gaps` | `[--file]`, `[--directory]`, `[--no-exclude-tests]` | Find untested code units |
 | `history` | `<file>` | Commit history for a file |
-| `record-result` | `<test_id>`, `--passed`/`--failed`, `[--duration-ms]` | Record test outcome |
+| `record-result` | `<test_id>`, `--passed`\|`--failed` (required), `[--duration-ms]` | Record test outcome |
 | `stats` | (none) | Database summary counts |
 | `serve` | `--port`, `--host` | Start HTTP MCP server |
 | `serve-mcp` | (none) | Start stdio MCP server |

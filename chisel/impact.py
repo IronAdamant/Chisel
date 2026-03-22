@@ -231,10 +231,10 @@ class ImpactAnalyzer:
         """
         all_churn = self.storage.get_all_churn_stats()
         dir_prefix = directory.rstrip("/") + "/" if directory else ""
-        files = set()
-        for stat in all_churn:
-            if not directory or stat["file_path"].startswith(dir_prefix):
-                files.add(stat["file_path"])
+        files = {
+            stat["file_path"] for stat in all_churn
+            if not directory or stat["file_path"].startswith(dir_prefix)
+        }
 
         # Fetch failure rates once for all files instead of per-file
         failure_rates = _fetch_failure_rates(self.storage)

@@ -4,6 +4,41 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## v0.5.4 -- 2026-03-22 -- Codebase Audit: Simplify, Modernize, Harden
+
+### Summary
+Full codebase audit across all 12 source files using 7 parallel exploration agents. Fixed latent bugs, simplified code patterns, modernized Python syntax, consolidated dispatch logic, corrected stale documentation.
+
+### Bugs Fixed
+- **engine.py**: `_parse_and_store_code_units()` read files with `Path.read_text()` without error handling — if a file vanished between scan and parse, the entire analysis crashed with an unhandled `OSError`. Now gracefully skips the file.
+- **schemas.py**: The `_LIMIT_PROP` dict was shared by reference across all 11 tool schemas — any mutation would silently corrupt all schemas. Now each schema gets its own copy via `dict()`.
+- **cli.py**: `record-result` without `--passed` or `--failed` silently defaulted to "passed", making the `--passed` flag useless. The mutually exclusive group is now `required=True`.
+- **glossary.md**: Co-change coupling risk weight listed as 0.3 (old 4-component formula) instead of current 0.25.
+- **glossary.md**: Tool dispatch table reference pointed to `mcp_server.py` instead of `schemas.py` (moved in v0.4.0).
+
+### Code Simplified
+- **engine.py**: `_detect_diff_base()` for-loop + early return replaced with `next()` generator expression
+- **engine.py**: Removed `pathlib.Path` import — single `Path.read_text()` replaced with `open()` + try/except
+- **ast_utils.py**: Removed `getattr(node, "end_lineno", None)` guards (unnecessary since Python 3.9+ guarantees `end_lineno`)
+- **ast_utils.py**: Removed redundant `lang is None` check in `extract_code_units()` (`None` is never a key in `_EXTRACTORS`)
+- **storage.py**: `_normalize_unit_name` simplified from `if is not None` to `or ""`
+- **impact.py**: Loop-building-a-set in `get_risk_map()` replaced with set comprehension
+
+### Code Modernized
+- **git_analyzer.py**: Walrus operator in `get_changed_files()` eliminates double `.strip()` per line
+- **test_mapper.py**: `extract_test_dependencies()` converted from instance method to `@staticmethod` with `_DEP_EXTRACTORS` dispatch dict (replaces 11-branch if/if chain)
+- **test_mapper.py**: Uses `normalize_path()` from `project.py` instead of `os.path.relpath()` for cross-platform path consistency
+
+### Documentation
+- Updated all docs to reflect changes: COMPLETE_PROJECT_DOCUMENTATION.md, CLAUDE.md, CHANGELOG.md, glossary.md, spec-project.md
+- Fixed stale co-change weight, tool dispatch location, dep graph, CLI subcommand count
+- Added Python 3.14 classifier to pyproject.toml
+
+### Tests
+- All 522 tests pass, no regressions
+
+---
+
 ## v0.5.0 -- 2026-03-22 -- Improved Edge Quality, AST Robustness, PyPI Publishing
 
 ### Summary
