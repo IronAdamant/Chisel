@@ -131,7 +131,16 @@ class GitAnalyzer:
                 file_parts = line.split("\t")
                 if len(file_parts) == 3:
                     ins_str, del_str, path = file_parts
-                    # Binary files show '-' for insertions/deletions
+                    # Validate numstat format: first two fields must be digits or '-'
+                    if not (ins_str == "-" or ins_str.isdigit()) or \
+                       not (del_str == "-" or del_str.isdigit()):
+                        # Not numstat — likely a diff line with tabs
+                        if not has_numstat:
+                            if line.startswith("+") and not line.startswith("+++"):
+                                diff_ins += 1
+                            elif line.startswith("-") and not line.startswith("---"):
+                                diff_del += 1
+                        continue
                     insertions = int(ins_str) if ins_str != "-" else 0
                     deletions = int(del_str) if del_str != "-" else 0
                     commit["files"].append({

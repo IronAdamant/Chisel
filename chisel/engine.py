@@ -340,6 +340,11 @@ class ChiselEngine:
                     commit["hash"], f["path"], f["insertions"], f["deletions"],
                 )
 
+    # Skip unit-level churn (git log -L per function) for repos above this
+    # file count — each function spawns a subprocess, so 10k+ files with
+    # multiple functions each would mean tens of thousands of subprocess calls.
+    _UNIT_CHURN_FILE_LIMIT = 2000
+
     def _compute_churn_and_coupling(self, commits, code_files):
         """Compute file-level and unit-level churn stats, plus co-change coupling."""
         for fpath in code_files:
@@ -350,21 +355,25 @@ class ChiselEngine:
                 churn["total_insertions"], churn["total_deletions"],
                 churn["last_changed"], churn["churn_score"],
             )
-            # Unit-level churn via git log -L
-            for cu in self.storage.get_code_units_by_file(rel):
-                if cu["unit_type"] in ("function", "async_function"):
-                    bare_name = cu["name"].rsplit(".", 1)[-1]
-                    func_commits = self.git.get_function_log(rel, bare_name)
-                    if func_commits:
-                        fc = compute_churn(
-                            func_commits, rel, unit_name=cu["name"],
-                        )
-                        self.storage.upsert_churn_stat(
-                            rel, cu["name"], fc["commit_count"],
-                            fc["distinct_authors"], fc["total_insertions"],
-                            fc["total_deletions"], fc["last_changed"],
-                            fc["churn_score"],
-                        )
+
+        # Unit-level churn via git log -L (expensive: one subprocess per function)
+        if len(code_files) <= self._UNIT_CHURN_FILE_LIMIT:
+            for fpath in code_files:
+                rel = normalize_path(fpath, self.project_dir)
+                for cu in self.storage.get_code_units_by_file(rel):
+                    if cu["unit_type"] in ("function", "async_function"):
+                        bare_name = cu["name"].rsplit(".", 1)[-1]
+                        func_commits = self.git.get_function_log(rel, bare_name)
+                        if func_commits:
+                            fc = compute_churn(
+                                func_commits, rel, unit_name=cu["name"],
+                            )
+                            self.storage.upsert_churn_stat(
+                                rel, cu["name"], fc["commit_count"],
+                                fc["distinct_authors"], fc["total_insertions"],
+                                fc["total_deletions"], fc["last_changed"],
+                                fc["churn_score"],
+                            )
 
         adaptive_min = max(3, len(commits) // 4)
         co_changes = compute_co_changes(commits, min_count=adaptive_min)
