@@ -53,7 +53,7 @@ A composite metric indicating how risky it is to change a file. Formula: `0.35 *
 A concurrency primitive in `rwlock.py` that allows multiple concurrent readers or one exclusive writer. Used by `ChiselEngine` to protect storage access: `tool_*()` read methods acquire a read lock, while `analyze()` and `update()` acquire a write lock.
 
 **Skip directories**
-The set of directory names that are always excluded when walking the project tree. Defined as `_SKIP_DIRS` in `ast_utils.py` and imported by `engine.py` and `test_mapper.py`. Includes `.git`, `node_modules`, `__pycache__`, `.tox`, `.venv`, `venv`, `env`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `dist`, `build`, `.eggs`, and `target`.
+The set of directory names that are always excluded when walking the project tree. Defined as `_SKIP_DIRS` in `ast_utils.py` and imported by `engine.py` and `test_mapper.py`. Includes `.git`, `node_modules`, `__pycache__`, `.tox`, `.venv`, `venv`, `env`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `dist`, `build`, `.eggs`, `target`, `vendor`, and `Pods`.
 
 **Stale test**
 A test whose edges point to code units that have been removed or renamed. Detected by `ImpactAnalyzer.detect_stale_tests()`, which scans all test edges and checks whether the referenced code unit still exists in the `code_units` table.

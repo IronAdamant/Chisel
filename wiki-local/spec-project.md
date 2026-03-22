@@ -22,7 +22,7 @@ Chisel is a test impact analysis and code intelligence tool designed for LLM age
 - **Language Server Protocol**: Chisel is not an LSP server. It provides batch analysis and MCP tool access.
 - **Real-time file watching**: Chisel does not watch the filesystem for changes. Analysis is triggered explicitly via `chisel analyze` or the MCP `analyze` tool.
 - **Multi-repo support**: Each Chisel instance operates on a single git repository.
-- **Branch-aware analysis**: Chisel analyzes the current working tree and git history. It does not compare across branches.
+- **Full branch comparison**: While `diff_impact` is branch-aware (auto-detects feature branch vs main for diffs), Chisel does not maintain separate analysis databases per branch.
 
 ## Supported Languages
 
@@ -200,7 +200,7 @@ This reduces false positive edges in projects where multiple modules export iden
 | `coupling` | `<file>`, `--min-count` | Show co-change partners |
 | `risk-map` | `[directory]` | Risk score heatmap |
 | `stale-tests` | (none) | Detect stale tests |
-| `test-gaps` | `[--file]`, `[--directory]`, `[--no-exclude-tests]` | Find untested code units |
+| `test-gaps` | `[file]`, `[--directory]`, `[--no-exclude-tests]` | Find untested code units |
 | `history` | `<file>` | Commit history for a file |
 | `record-result` | `<test_id>`, `--passed`\|`--failed` (required), `[--duration-ms]` | Record test outcome |
 | `stats` | (none) | Database summary counts |

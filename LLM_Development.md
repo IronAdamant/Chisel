@@ -122,7 +122,7 @@ Addressed three structural gaps identified in codebase assessment: (1) fragile r
 - Added `.github/workflows/publish.yml` — triggers on tag push (`v*`), builds with `python -m build`, publishes via OIDC trusted publishing (`pypa/gh-action-pypi-publish`)
 
 ### Documentation
-- **spec-project.md**: Complete rewrite — all 15 tools specified (was missing diff_impact, update, test_gaps, record_result, stats), all 12 languages in table with AST method details, all 18 CLI subcommands listed, new "Test Edge Weighting" section
+- **spec-project.md**: Complete rewrite — all 15 tools specified (was missing diff_impact, update, test_gaps, record_result, stats), all 12 languages in table with AST method details, all 17 CLI subcommands listed, new "Test Edge Weighting" section
 - Updated CLAUDE.md with edge weighting and AST improvement notes
 
 ### Tests

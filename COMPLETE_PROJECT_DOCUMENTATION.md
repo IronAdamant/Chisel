@@ -29,7 +29,7 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 | Path | Purpose | Dependencies | Wiki Link |
 |------|---------|--------------|-----------|
 | `chisel/__init__.py` | Package init, exports `__version__` | -- | -- |
-| `chisel/ast_utils.py` | Multi-language AST extraction (Python/JS/TS/Go/Rust), `CodeUnit` dataclass, `_SKIP_DIRS` constant, `compute_file_hash`, `detect_language` | `ast`, `hashlib`, `re`, `dataclasses`, `pathlib` | [glossary: code unit](wiki-local/glossary.md) |
+| `chisel/ast_utils.py` | Multi-language AST extraction (12 languages), pluggable extractor registry, `CodeUnit` dataclass, `_SKIP_DIRS` constant, `compute_file_hash`, `detect_language` | `ast`, `hashlib`, `re`, `dataclasses`, `functools`, `pathlib` | [glossary: code unit](wiki-local/glossary.md) |
 | `chisel/storage.py` | SQLite persistence layer (WAL mode, 10 tables, single persistent connection), all CRUD operations | `sqlite3`, `datetime`, `pathlib` | [glossary: blame cache](wiki-local/glossary.md) |
 | `chisel/git_analyzer.py` | Git log/blame parsing via subprocess, branch/diff queries, function-level log | `re`, `subprocess`, `datetime` | [glossary: churn score](wiki-local/glossary.md) |
 | `chisel/metrics.py` | Pure computation: churn scoring, ownership aggregation, co-change detection | `collections`, `datetime`, `itertools` | [glossary: churn score](wiki-local/glossary.md) |
@@ -38,7 +38,7 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 | `chisel/project.py` | Multi-agent safety: project root detection (worktree-aware), path normalization, storage dir resolution, cross-platform file lock (ProcessLock) | `os`, `subprocess`, `sys`, `contextlib`; Unix: `fcntl`; Windows: `ctypes`, `msvcrt` | -- |
 | `chisel/engine.py` | Orchestrator -- owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock, ProcessLock; exposes `tool_*()` methods for all 15 MCP tools | `os`, `chisel.ast_utils`, `chisel.git_analyzer`, `chisel.impact`, `chisel.project`, `chisel.rwlock`, `chisel.storage`, `chisel.test_mapper` | [spec-project](wiki-local/spec-project.md) |
 | `chisel/cli.py` | argparse CLI with 17 subcommands, dispatch table, output formatting | `argparse`, `json`, `os`, `chisel.engine` | [spec-project: CLI](wiki-local/spec-project.md) |
-| `chisel/mcp_server.py` | HTTP MCP server (GET /tools, /health; POST /call), ThreadedHTTPServer, tool schemas and dispatch table | `json`, `logging`, `threading`, `http.server`, `socketserver`, `chisel.engine` | [spec-project: MCP tools](wiki-local/spec-project.md) |
+| `chisel/mcp_server.py` | HTTP MCP server (GET /tools, /health; POST /call), ThreadedHTTPServer, shared `dispatch_tool()` | `json`, `logging`, `threading`, `http.server`, `socketserver`, `chisel.engine`, `chisel.schemas` | [spec-project: MCP tools](wiki-local/spec-project.md) |
 | `chisel/mcp_stdio.py` | stdio MCP server for Claude Desktop/Cursor integration, requires optional `mcp` package | `asyncio`, `json`, `logging`, `os`, `sys`, `chisel.engine`, `chisel.mcp_server` (imports `dispatch_tool`), `chisel.schemas` (imports `_TOOL_SCHEMAS`) | [spec-project: MCP tools](wiki-local/spec-project.md) |
 | `chisel/schemas.py` | JSON Schema definitions for all 15 tools + dispatch table, shared by HTTP and stdio servers | -- (pure data module) | -- |
 | `chisel/rwlock.py` | Read-write lock (multiple readers or one exclusive writer) for concurrent access | `threading`, `contextlib` | -- |
@@ -65,7 +65,7 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 ## Module Dependency Graph
 
 ```
-engine.py --> project.py, storage.py, ast_utils.py, git_analyzer.py, test_mapper.py, impact.py, rwlock.py
+engine.py --> project.py, storage.py, ast_utils.py, git_analyzer.py, metrics.py, test_mapper.py, impact.py, rwlock.py
 test_mapper.py --> ast_utils.py, project.py
 impact.py --> storage.py (injected), metrics.py
 metrics.py --> (no internal deps)

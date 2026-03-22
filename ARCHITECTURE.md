@@ -1,25 +1,19 @@
-# Chisel — Test Impact & Code Intelligence for LLM Agents
+# Chisel — Architecture
 
-Zero-dependency companion to [Stele](../Stele/). Maps tests to code, code to git history, and answers: "what to run, what's risky, who touched it."
+**Version:** 0.6.1 | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
 
-## Problem
-
-An LLM agent changes `engine.py:store_document()`. It then either:
-- Runs **all** 287 tests (slow, wasteful), or
-- Guesses with `-k "test_store"` (misses regressions)
-
-It also has no idea whether this function is stable (untouched for months) or a hotspot (changed 15 times this week).
+Test impact analysis and code intelligence for LLM agents. Maps tests to code, code to git history, and answers: "what to run, what's risky, who touched it."
 
 ## Core Data Model
 
-A single weighted graph with three edge types layered on Stele's symbol graph:
+A weighted graph with three edge types stored in SQLite:
 
 ```
 ┌─────────────┐       ┌──────────────┐       ┌──────────────┐
 │  Code Unit  │──────▶│  Test Unit   │──────▶│  Git History  │
 │ (function,  │ calls │ (test file,  │       │ (commits,     │
 │  class,     │◀──────│  test func)  │       │  blame lines, │
-│  module)    │imports│              │       │  churn stats) │
+│  struct...) │imports│              │       │  churn stats) │
 └─────────────┘       └──────────────┘       └──────────────┘
        │                                            │
        └────────────────────────────────────────────┘
@@ -30,8 +24,8 @@ A single weighted graph with three edge types layered on Stele's symbol graph:
 
 | Entity | Source | Key Fields |
 |--------|--------|------------|
-| `CodeUnit` | Stele symbol graph + AST | file, name, type (func/class/module), line range |
-| `TestUnit` | Test file AST parsing | file, name, framework (pytest/jest/go test), line range |
+| `CodeUnit` | AST extraction (12 languages) | file, name, type (function/class/struct/enum/impl), line range |
+| `TestUnit` | Test file parsing + framework detection | file, name, framework, line range |
 | `CommitRecord` | `git log --numstat` | hash, author, date, files changed, insertions, deletions |
 | `BlameBlock` | `git blame --porcelain` | file, line range, commit, author, date |
 
@@ -39,185 +33,120 @@ A single weighted graph with three edge types layered on Stele's symbol graph:
 
 | Edge | How Built | Weight |
 |------|-----------|--------|
-| `test → code_unit` | Parse test imports + function calls via AST | call count |
+| `test → code_unit` | Parse test imports + function calls | proximity-based (0.4-1.0): same dir=1.0, sibling=0.8, shared ancestor=0.6, distant=0.4 |
 | `code_unit → commit` | `git log -L :funcname:file` or blame | recency-weighted |
-| `file → file` (co-change) | Files that appear in same commits | co-occurrence count |
+| `file → file` (co-change) | Files in same commits (≥3 co-commits) | co-occurrence count |
 
-## Architecture
+## Module Architecture
 
 ```
-Chisel (engine.py) — main orchestrator
+ChiselEngine (engine.py) — main orchestrator
   ├── TestMapper (test_mapper.py)
-  │     ├── Parse test files, detect framework (pytest/jest/go/rust)
-  │     ├── Extract imports + call targets
-  │     └── Build test → code_unit edges
+  │     ├── Discover test files, detect framework
+  │     ├── Extract imports + call targets (per-language)
+  │     └── Build test → code_unit edges with proximity weights
   ├── GitAnalyzer (git_analyzer.py)
-  │     ├── Parse `git log` output (no gitpython dep)
+  │     ├── Parse `git log` output (no gitpython)
   │     ├── Parse `git blame` output
-  │     ├── Compute churn scores, ownership, co-change coupling
-  │     └── Build code_unit → commit edges
+  │     └── Function-level log via `git log -L`
+  ├── Metrics (metrics.py)
+  │     ├── Churn scoring: sum(1 / (1 + days_since))
+  │     ├── Ownership aggregation from blame blocks
+  │     └── Co-change coupling detection
   ├── ImpactAnalyzer (impact.py)
-  │     ├── Given changed files/functions → affected tests (via test edges)
-  │     ├── Risk score = f(churn, recency, coupling breadth)
-  │     ├── Ownership query ("who last touched this, how often")
-  │     └── Stale test detection (tests that cover dead/removed code)
-  ├── Storage (storage.py, SQLite)
-  │     ├── Cached graph edges
-  │     ├── Git history snapshots
-  │     └── Incremental update (only re-parse changed files)
+  │     ├── Impacted tests (direct + transitive via coupling)
+  │     ├── Risk scoring (5-component weighted formula)
+  │     ├── Stale test detection (orphaned edge refs)
+  │     └── Reviewer suggestions (commit-activity-based)
+  ├── AST Utils (ast_utils.py)
+  │     ├── Multi-language extraction (12 languages)
+  │     ├── Pluggable extractor registry (tree-sitter/LSP hooks)
+  │     └── Brace matching with multi-line block comment tracking
+  ├── Storage (storage.py, SQLite WAL)
+  │     ├── 10 tables, single persistent connection
+  │     ├── Batch query methods for N+1 elimination
+  │     └── Incremental update via content hashes
+  ├── Project (project.py)
+  │     ├── Project root detection (worktree-aware)
+  │     ├── Path normalization (cross-platform)
+  │     └── ProcessLock (fcntl on Unix, LockFileEx on Windows)
+  ├── RWLock (rwlock.py) — in-process read/write lock
+  ├── Schemas (schemas.py) — JSON Schema defs + dispatch table
   └── APIs
-        ├── CLI (cli.py)
-        ├── MCP stdio (mcp_stdio.py) — for Claude Desktop
-        └── HTTP (mcp_server.py) — for Claude Code
-
-Stele integration:
-  └── Reads Stele's symbol graph (optional, falls back to own AST parsing)
+        ├── CLI (cli.py) — 17 subcommands
+        ├── HTTP (mcp_server.py) — GET /tools, /health; POST /call
+        └── stdio MCP (mcp_stdio.py) — for Claude Desktop/Cursor
 ```
 
-## SQLite Tables
+## SQLite Tables (10)
 
 ```sql
--- Code units (functions, classes, modules)
-CREATE TABLE code_units (
-    id TEXT PRIMARY KEY,          -- file:name:type
-    file_path TEXT NOT NULL,
-    name TEXT NOT NULL,
-    unit_type TEXT NOT NULL,       -- func, class, module
-    line_start INTEGER,
-    line_end INTEGER,
-    content_hash TEXT,
-    updated_at TEXT
-);
-
--- Test units
-CREATE TABLE test_units (
-    id TEXT PRIMARY KEY,
-    file_path TEXT NOT NULL,
-    name TEXT NOT NULL,
-    framework TEXT,               -- pytest, jest, go, rust, playwright
-    line_start INTEGER,
-    line_end INTEGER,
-    content_hash TEXT,
-    updated_at TEXT
-);
-
--- Test → code_unit edges
-CREATE TABLE test_edges (
-    test_id TEXT REFERENCES test_units(id),
-    code_id TEXT REFERENCES code_units(id),
-    edge_type TEXT,               -- import, call, fixture
-    weight REAL DEFAULT 1.0,
-    PRIMARY KEY (test_id, code_id, edge_type)
-);
-
--- Git commit records
-CREATE TABLE commits (
-    hash TEXT PRIMARY KEY,
-    author TEXT,
-    author_email TEXT,
-    date TEXT,
-    message TEXT
-);
-
--- Commit → file changes
-CREATE TABLE commit_files (
-    commit_hash TEXT REFERENCES commits(hash),
-    file_path TEXT,
-    insertions INTEGER,
-    deletions INTEGER,
-    PRIMARY KEY (commit_hash, file_path)
-);
-
--- Blame cache (per file, invalidated by content hash)
-CREATE TABLE blame_cache (
-    file_path TEXT,
-    line_start INTEGER,
-    line_end INTEGER,
-    commit_hash TEXT,
-    author TEXT,
-    author_email TEXT,
-    date TEXT,
-    content_hash TEXT,            -- of the file when blame was run
-    PRIMARY KEY (file_path, line_start)
-);
-
--- Co-change coupling
-CREATE TABLE co_changes (
-    file_a TEXT,
-    file_b TEXT,
-    co_commit_count INTEGER,
-    last_co_commit TEXT,
-    PRIMARY KEY (file_a, file_b)
-);
-
--- Churn summary (materialized view, rebuilt on analyze)
-CREATE TABLE churn_stats (
-    file_path TEXT,
-    unit_name TEXT,               -- nullable (file-level if null)
-    commit_count INTEGER,
-    distinct_authors INTEGER,
-    total_insertions INTEGER,
-    total_deletions INTEGER,
-    last_changed TEXT,
-    churn_score REAL,             -- weighted: recent changes count more
-    PRIMARY KEY (file_path, unit_name)
-);
+code_units        — functions, classes, structs (id = file:name:type)
+test_units        — test functions (id = file:name)
+test_edges        — test → code links with edge_type and weight
+commits           — git commit metadata
+commit_files      — per-file stats per commit
+blame_cache       — cached git blame, keyed by content hash
+co_changes        — file pairs that change together
+churn_stats       — churn scores per file and per function
+file_hashes       — content hashes for incremental analysis
+test_results      — recorded pass/fail outcomes for prioritization
 ```
 
-## Key Queries (MCP Tools)
+## 15 MCP Tools
 
 | Tool | Input | Output |
 |------|-------|--------|
-| `impact` | changed files/functions | affected test list + risk score |
-| `suggest_tests` | file path or diff | ordered test list to run |
-| `churn` | file or function | churn score, commit count, last changed |
-| `ownership` | file or function | author breakdown (% of blame lines) |
-| `coupling` | file path | co-change partners + strength |
-| `risk_map` | directory | heatmap of risk scores |
-| `stale_tests` | — | tests covering removed/renamed code |
-| `history` | function name | commit timeline with diffs |
-| `who_reviews` | file or diff | suggested reviewers by ownership |
-| `analyze` | directory | full rebuild of git + test graph |
+| `analyze` | directory, force | full rebuild stats |
+| `update` | — | incremental update stats |
+| `impact` | files, functions | affected tests + scores |
+| `diff_impact` | ref (auto-detects branch) | affected tests from git diff |
+| `suggest_tests` | file_path | ranked tests by relevance + failure rate |
+| `churn` | file, unit_name | churn score, commits, authors |
+| `ownership` | file | author breakdown (blame-based, role=original_author) |
+| `who_reviews` | file | reviewer suggestions (activity-based, role=suggested_reviewer) |
+| `coupling` | file, min_count | co-change partners |
+| `risk_map` | directory | risk scores (batch-computed) |
+| `stale_tests` | — | tests pointing at removed code |
+| `test_gaps` | file, directory | untested code units by churn risk |
+| `history` | file | commit timeline |
+| `record_result` | test_id, passed, duration | store for future prioritization |
+| `stats` | — | database summary counts |
 
-## Design Decisions
+All list-returning tools accept a `limit` parameter to cap result size.
 
-- **Zero deps**: stdlib only. `ast` for Python, regex for JS/TS/Go/Rust. `subprocess.run(["git", ...])` for git.
-- **Git is the source of truth**: No gitpython. Parse `git log --format=...` and `git blame --porcelain` text output.
-- **Incremental**: Track file content hashes. Only re-parse test files and re-blame files that changed since last run.
-- **Stele optional**: Can read Stele's SQLite DB directly for symbol graph if available. Falls back to own lightweight AST extraction.
-- **Framework detection**: Auto-detect test framework from file patterns (`test_*.py`, `*.test.js`, `*_test.go`) and imports (`import pytest`, `describe(`).
-- **Churn score formula**: `sum(1 / (1 + days_since_commit))` — recent changes weigh heavily, old changes decay.
-- **Co-change threshold**: Only store pairs with >= 3 co-commits to avoid noise.
-- **Risk score**: `0.4 * churn_norm + 0.3 * coupling_breadth_norm + 0.2 * (1 - test_coverage) + 0.1 * author_concentration`. Higher = riskier to change.
-- **Blame caching**: Blame is expensive. Cache by file content hash, invalidate on change.
-- **Thread safety**: Same RWLock pattern as Stele for concurrent MCP access.
+## Key Design Decisions
 
-## CLI Examples
+- **Zero deps**: stdlib only. `ast` for Python, regex for 11 other languages. `subprocess.run(["git", ...])` for git. Requires Python >= 3.11.
+- **Pluggable extractors**: `register_extractor(lang, fn)` overrides built-in regex with tree-sitter/LSP. Zero-dep — just callable hooks.
+- **Proximity-based edge weights**: 0.4-1.0 based on directory distance. Python import-path matching (`from myapp.utils import foo` → `myapp/utils.py:foo`) takes priority.
+- **Risk formula**: `0.35*churn + 0.25*coupling + 0.2*coverage_gap + 0.1*author_concentration + 0.1*test_instability`
+- **Batch queries**: `get_risk_map()` fetches all data in ~5 queries. `_chunked()` helper stays under SQLite's 999-variable limit.
+- **Churn formula**: `sum(1 / (1 + days_since_commit))` — recent changes weigh heavily.
+- **Co-change threshold**: Adaptive `max(3, total_commits // 4)`. Commits touching >50 files skipped.
+- **Blame caching**: Cached by file content hash, invalidated on change.
+- **Incremental analysis**: File content hashes tracked in `file_hashes` table.
+- **FK enforcement disabled**: Stale test detection relies on orphaned edge refs.
+- **Cross-platform locking**: `ProcessLock` uses `fcntl.flock` (Unix) / `LockFileEx` via ctypes (Windows). Shared locks for reads, exclusive for writes.
+- **Thread safety**: RWLock (in-process) + ProcessLock (cross-process). Lock order: process lock outer, RWLock inner.
+- **Multi-line block comments**: `_strip_strings_and_comments` tracks `/* */` state across lines for correct brace matching.
 
-```bash
-# Analyze a project (builds all graphs)
-chisel analyze .
+## Supported Languages (12)
 
-# What tests should I run after editing engine.py?
-chisel impact engine.py
-# → test_engine.py (direct import, 23 calls)
-# → test_integration.py (transitive via storage.py)
-# → Risk: HIGH (churn=0.82, 15 commits in 7 days)
-
-# Who owns this code?
-chisel ownership stele/engine.py
-# → IronAdamant: 94% (blame lines)
-# → Last changed: 2026-03-16
-
-# What files always change together?
-chisel coupling stele/storage.py
-# → stele/engine.py (18 co-commits)
-# → stele/session_storage.py (12 co-commits)
-
-# Which tests are stale?
-chisel stale-tests
-# → test_old_feature.py:test_removed_api — calls `old_function` (removed in abc123)
-```
+| Language | AST Method | Test Frameworks |
+|----------|-----------|-----------------|
+| Python | `ast` module (regex fallback) | pytest |
+| JavaScript/TypeScript | Regex | Jest, Playwright |
+| Go | Regex | Go test |
+| Rust | Regex | `#[test]`, `#[cfg(test)]` |
+| C# | Regex (nested generics, attributes) | xUnit, NUnit, MSTest |
+| Java | Regex (annotations, nested generics) | JUnit |
+| Kotlin | Regex (extension functions) | JUnit |
+| C/C++ | Regex (templates, destructors) | gtest, Catch2 |
+| Swift | Regex (@attributes) | XCTest |
+| PHP | Regex | PHPUnit |
+| Ruby | Keyword-based block detection | RSpec, Minitest |
+| Dart | Regex (factory, getters/setters) | Dart test |
 
 ## File Structure
 
@@ -226,35 +155,39 @@ Chisel/
 ├── chisel/
 │   ├── __init__.py           # version
 │   ├── engine.py             # orchestrator
-│   ├── test_mapper.py        # test file parsing, edge building
-│   ├── git_analyzer.py       # git log/blame parsing, churn/ownership
-│   ├── impact.py             # impact analysis, risk scoring
 │   ├── storage.py            # SQLite persistence
-│   ├── ast_utils.py          # lightweight AST helpers (multi-lang)
-│   ├── cli.py                # CLI entry point
+│   ├── ast_utils.py          # multi-language AST extraction + plugin registry
+│   ├── git_analyzer.py       # git log/blame parsing
+│   ├── metrics.py            # churn, ownership, co-change computation
+│   ├── test_mapper.py        # test discovery, deps, edge building
+│   ├── impact.py             # impact analysis, risk scoring, reviewers
+│   ├── project.py            # project root, path normalization, ProcessLock
+│   ├── rwlock.py             # read-write lock
+│   ├── schemas.py            # JSON Schema defs + dispatch table
+│   ├── cli.py                # argparse CLI (17 subcommands)
 │   ├── mcp_server.py         # HTTP MCP server
 │   └── mcp_stdio.py          # stdio MCP server
 ├── tests/
-│   ├── test_test_mapper.py
-│   ├── test_git_analyzer.py
-│   ├── test_impact.py
-│   └── test_storage.py
+│   ├── conftest.py           # shared fixtures (temp git repos)
+│   ├── test_ast_utils.py     # AST extraction tests
+│   ├── test_storage.py       # storage CRUD + batch query tests
+│   ├── test_git_analyzer.py  # git parsing tests
+│   ├── test_metrics.py       # churn, co-change tests
+│   ├── test_test_mapper.py   # framework detection, edge building tests
+│   ├── test_impact.py        # impact, risk, ownership tests
+│   ├── test_engine.py        # integration tests
+│   ├── test_cli.py           # CLI handler tests
+│   ├── test_mcp_server.py    # HTTP server tests
+│   ├── test_mcp_stdio.py     # stdio server tests
+│   ├── test_rwlock.py        # concurrency tests
+│   └── test_project.py       # project root, path, lock tests
+├── wiki-local/               # detailed docs (spec, glossary, index)
 ├── pyproject.toml
-├── CLAUDE.md
-├── ARCHITECTURE.md
+├── CLAUDE.md                 # agent instructions
+├── ARCHITECTURE.md           # this file
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── COMPLETE_PROJECT_DOCUMENTATION.md
+├── LLM_Development.md
 └── README.md
 ```
-
-## Integration with Stele
-
-Chisel can optionally connect to a Stele instance for richer analysis:
-
-```python
-# If Stele DB exists, read symbol graph directly
-stele_db = Path(".stele/index.db")
-if stele_db.exists():
-    symbols = read_stele_symbols(stele_db)  # direct SQLite read
-    # Enriches test→code edges with Stele's cross-file symbol resolution
-```
-
-This avoids duplicating Stele's symbol extraction while adding the test/git layer on top.
