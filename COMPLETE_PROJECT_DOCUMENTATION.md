@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence for LLM agents. Zero external dependencies.
 
-**Version:** 0.5.4
+**Version:** 0.6.0
 **PyPI:** `chisel-test-impact`
 **License:** MIT
 **Python:** >= 3.9
@@ -35,7 +35,7 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 | `chisel/metrics.py` | Pure computation: churn scoring, ownership aggregation, co-change detection | `collections`, `datetime`, `itertools` | [glossary: churn score](wiki-local/glossary.md) |
 | `chisel/test_mapper.py` | Test file discovery, framework detection (pytest/Jest/Go/Rust/Playwright), dependency extraction, test edge building | `ast`, `os`, `re`, `pathlib`, `chisel.ast_utils`, `chisel.project` | [glossary: test edge](wiki-local/glossary.md) |
 | `chisel/impact.py` | Impact analysis, risk scoring, stale test detection, ownership queries, reviewer suggestions | `collections`, `datetime`, `chisel.metrics`, `chisel.storage` (via constructor injection) | [glossary: risk score](wiki-local/glossary.md) |
-| `chisel/project.py` | Multi-agent safety: project root detection (worktree-aware), path normalization, storage dir resolution, cross-process file lock (ProcessLock) | `fcntl`, `os`, `subprocess`, `contextlib` | -- |
+| `chisel/project.py` | Multi-agent safety: project root detection (worktree-aware), path normalization, storage dir resolution, cross-platform file lock (ProcessLock) | `os`, `subprocess`, `sys`, `contextlib`; Unix: `fcntl`; Windows: `ctypes`, `msvcrt` | -- |
 | `chisel/engine.py` | Orchestrator -- owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock, ProcessLock; exposes `tool_*()` methods for all 15 MCP tools | `os`, `chisel.ast_utils`, `chisel.git_analyzer`, `chisel.impact`, `chisel.project`, `chisel.rwlock`, `chisel.storage`, `chisel.test_mapper` | [spec-project](wiki-local/spec-project.md) |
 | `chisel/cli.py` | argparse CLI with 17 subcommands, dispatch table, output formatting | `argparse`, `json`, `os`, `chisel.engine` | [spec-project: CLI](wiki-local/spec-project.md) |
 | `chisel/mcp_server.py` | HTTP MCP server (GET /tools, /health; POST /call), ThreadedHTTPServer, tool schemas and dispatch table | `json`, `logging`, `threading`, `http.server`, `socketserver`, `chisel.engine` | [spec-project: MCP tools](wiki-local/spec-project.md) |

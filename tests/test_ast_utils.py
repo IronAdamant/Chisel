@@ -1561,3 +1561,114 @@ class TestCodeUnit:
         a = CodeUnit("f.py", "foo", "function", 1, 5)
         b = CodeUnit("f.py", "foo", "function", 1, 5)
         assert a == b
+
+
+# =========================================================================
+# Extractor plugin registry
+# =========================================================================
+
+
+class TestExtractorRegistry:
+    """Tests for register_extractor / unregister_extractor / get_registered_extractors."""
+
+    def test_register_and_use_custom_extractor(self):
+        """Register a custom extractor for 'python' and verify it is invoked."""
+        from chisel.ast_utils import register_extractor, unregister_extractor
+
+        sentinel = CodeUnit("custom.py", "custom_fn", "function", 1, 1)
+        calls = []
+
+        def fake_extractor(file_path, content):
+            calls.append((file_path, content))
+            return [sentinel]
+
+        try:
+            register_extractor("python", fake_extractor)
+            result = extract_code_units("test.py", "def real(): pass")
+            assert result == [sentinel]
+            assert len(calls) == 1
+            assert calls[0] == ("test.py", "def real(): pass")
+        finally:
+            unregister_extractor("python")
+
+    def test_custom_overrides_builtin(self):
+        """A custom extractor must take priority over the built-in one."""
+        from chisel.ast_utils import register_extractor, unregister_extractor
+
+        def override_extractor(file_path, content):
+            return [CodeUnit(file_path, "overridden", "function", 1, 1)]
+
+        try:
+            register_extractor("python", override_extractor)
+            units = extract_code_units("mod.py", "def real_func():\n    pass\n")
+            # Built-in would produce "real_func"; custom produces "overridden"
+            assert len(units) == 1
+            assert units[0].name == "overridden"
+        finally:
+            unregister_extractor("python")
+
+    def test_unregister_restores_builtin(self):
+        """After unregistering, the built-in extractor should be used again."""
+        from chisel.ast_utils import register_extractor, unregister_extractor
+
+        def dummy_extractor(file_path, content):
+            return [CodeUnit(file_path, "dummy", "function", 1, 1)]
+
+        try:
+            register_extractor("python", dummy_extractor)
+            # Confirm custom is active
+            assert extract_code_units("m.py", "def foo(): pass")[0].name == "dummy"
+        finally:
+            unregister_extractor("python")
+
+        # After unregister, built-in should handle it
+        units = extract_code_units("m.py", "def foo():\n    pass\n")
+        names = [u.name for u in units]
+        assert "foo" in names
+
+    def test_unregister_nonexistent_raises(self):
+        """Unregistering a language with no custom extractor must raise KeyError."""
+        from chisel.ast_utils import unregister_extractor
+
+        with pytest.raises(KeyError):
+            unregister_extractor("nonexistent_language_xyz")
+
+    def test_register_non_callable_raises(self):
+        """Registering a non-callable must raise TypeError."""
+        from chisel.ast_utils import register_extractor
+
+        with pytest.raises(TypeError):
+            register_extractor("python", "not_a_callable")
+
+        with pytest.raises(TypeError):
+            register_extractor("python", 42)
+
+        with pytest.raises(TypeError):
+            register_extractor("python", None)
+
+    def test_get_registered_extractors_returns_copy(self):
+        """Mutating the returned dict must not affect the internal registry."""
+        from chisel.ast_utils import (
+            get_registered_extractors,
+            register_extractor,
+            unregister_extractor,
+        )
+
+        def fake(file_path, content):
+            return []
+
+        try:
+            register_extractor("python", fake)
+            snapshot = get_registered_extractors()
+            assert "python" in snapshot
+
+            # Mutate the returned copy
+            snapshot["python"] = None
+            snapshot["bogus"] = lambda fp, c: []
+
+            # Internal state must be unchanged
+            actual = get_registered_extractors()
+            assert actual["python"] is fake
+            assert "bogus" not in actual
+        finally:
+            unregister_extractor("python")

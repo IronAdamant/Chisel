@@ -4,6 +4,43 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## v0.6.0 -- 2026-03-22 -- Pluggable Extractors, Batch Queries, Cross-Platform Locks
+
+### Summary
+Four architectural improvements: pluggable AST extraction for tree-sitter/LSP integration, batch SQL to eliminate N+1 in risk_map, process-level shared locks for concurrent reads, cross-platform ProcessLock (Windows support via LockFileEx).
+
+### Pluggable AST Extraction (ast_utils.py)
+- `register_extractor(language, fn)` stores custom extractors in `_custom_extractors` dict
+- `extract_code_units()` checks custom extractors first, falls back to built-in regex
+- `unregister_extractor(language)` reverts to built-in (raises KeyError if not registered)
+- `get_registered_extractors()` returns shallow copy for introspection
+- Zero new dependencies — registry is just callable hooks
+
+### Batch SQL Queries (storage.py, impact.py)
+- 5 new batch methods: `get_edges_for_code_batch`, `get_code_units_by_files_batch`, `get_co_changes_batch`, `get_churn_stats_batch`, `get_blame_batch`
+- `_chunked()` helper splits lists into chunks of 900 to stay under SQLite's 999-variable limit
+- `impact.get_risk_map()` rewritten to use batch queries — ~5 total queries instead of N*5
+- `compute_risk_score()` unchanged for single-file use
+
+### Process-Level Read Locks (engine.py)
+- All 12 read tool methods now acquire `_process_lock.shared()` (outer) + `lock.read_lock()` (inner)
+- `tool_record_result` now acquires `_process_lock.exclusive()` + `lock.write_lock()`
+- `analyze()` and `update()` already used exclusive locks — no change
+- Lock nesting order: process lock (outer) → RWLock (inner) — always consistent
+
+### Cross-Platform ProcessLock (project.py)
+- Module-level `_IS_WINDOWS = sys.platform == "win32"` for platform detection
+- Unix: `fcntl.flock` (unchanged behavior)
+- Windows: `ctypes` calls to `kernel32.LockFileEx`/`UnlockFileEx` — supports both shared and exclusive locks
+- `_flock(fd, exclusive)` and `_funlock(fd)` are platform-neutral module functions
+- `ProcessLock._acquire(exclusive: bool)` replaces platform-specific lock type constants
+
+### Tests
+- 18 new tests: extractor registry (6), batch queries (7), cross-platform lock (3), engine lock wiring (2)
+- 540 tests total, all passing
+
+---
+
 ## v0.5.4 -- 2026-03-22 -- Codebase Audit: Simplify, Modernize, Harden
 
 ### Summary

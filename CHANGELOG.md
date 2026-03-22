@@ -5,6 +5,22 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-03-22
+
+### Added
+
+- **Pluggable AST extractors**: `register_extractor(language, fn)` lets users override built-in regex extractors with tree-sitter, LSP, or other backends. `unregister_extractor()` reverts to built-in. `get_registered_extractors()` for introspection. Custom extractors checked before built-ins in `extract_code_units()`. Zero new dependencies.
+- **Batch SQL queries**: 5 new `get_*_batch()` methods in `storage.py` for edges, code units, co-changes, churn stats, and blame. `_chunked()` helper splits large batches to stay under SQLite's variable limit.
+- **Process-level read locks**: All read tool methods in `engine.py` now acquire `_process_lock.shared()` + `lock.read_lock()`. Write tools (`record_result`, `analyze`, `update`) acquire `_process_lock.exclusive()` + `lock.write_lock()`. Concurrent reads from multiple processes are now safe.
+- **Cross-platform ProcessLock**: `project.py` uses `fcntl.flock` on Unix and `LockFileEx`/`UnlockFileEx` via ctypes on Windows. Both support shared and exclusive locks.
+- 18 new tests: extractor registry (6), batch queries (7), process lock (3), engine lock wiring (2)
+
+### Changed
+
+- `impact.get_risk_map()` rewritten to use batch queries — computes all risk scores in ~5 queries instead of N*5 (eliminates N+1 pattern)
+- `ProcessLock._acquire()` takes `exclusive: bool` instead of a platform-specific lock type constant
+- 540 tests pass (up from 522)
+
 ## [0.5.4] - 2026-03-22
 
 ### Fixed

@@ -544,6 +544,48 @@ _DART_PATTERNS = [
 
 
 # ---------------------------------------------------------------------------
+# Custom extractor registry (plugin system)
+# ---------------------------------------------------------------------------
+
+_custom_extractors: dict[str, object] = {}
+
+
+def register_extractor(language, extractor):
+    """Register a custom code unit extractor for a language.
+
+    Custom extractors override the built-in regex-based ones, allowing
+    tree-sitter, LSP, or other backends without adding dependencies to
+    Chisel itself.
+
+    Args:
+        language: Language string (e.g. "python", "rust"). Must match a
+                  key in ``_EXTENSION_MAP`` or a custom extension mapping.
+        extractor: Callable with signature
+                   ``(file_path: str, content: str) -> list[CodeUnit]``.
+
+    Raises:
+        TypeError: If *extractor* is not callable.
+    """
+    if not callable(extractor):
+        raise TypeError(f"extractor must be callable, got {type(extractor).__name__}")
+    _custom_extractors[language] = extractor
+
+
+def unregister_extractor(language):
+    """Remove a custom extractor, reverting to the built-in one.
+
+    Raises:
+        KeyError: If no custom extractor is registered for *language*.
+    """
+    del _custom_extractors[language]
+
+
+def get_registered_extractors():
+    """Return a shallow copy of the custom extractor registry."""
+    return dict(_custom_extractors)
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -568,10 +610,12 @@ _EXTRACTORS = {
 def extract_code_units(file_path: str, content: str) -> list[CodeUnit]:
     """Extract code units from *content* using the appropriate language parser.
 
-    Dispatches to a language-specific extractor based on the file extension.
+    Custom extractors registered via :func:`register_extractor` take
+    priority over built-in ones.  Dispatches based on the file extension.
     Returns an empty list for unsupported languages.
     """
     lang = detect_language(file_path)
-    if lang not in _EXTRACTORS:
+    extractor = _custom_extractors.get(lang) or _EXTRACTORS.get(lang)
+    if extractor is None:
         return []
-    return _EXTRACTORS[lang](file_path, content)
+    return extractor(file_path, content)

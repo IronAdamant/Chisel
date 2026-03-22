@@ -2,11 +2,16 @@
 
 import os
 import subprocess
+import sys
+import threading
 
 import pytest
 
 from chisel.project import (
     ProcessLock,
+    _IS_WINDOWS,
+    _flock,
+    _funlock,
     detect_project_root,
     normalize_path,
     resolve_storage_dir,
@@ -161,3 +166,39 @@ class TestProcessLock:
         # Should be able to acquire again
         with lock.exclusive():
             pass
+
+
+# ------------------------------------------------------------------ #
+# Cross-platform ProcessLock
+# ------------------------------------------------------------------ #
+
+class TestCrossPlatformLock:
+    def test_platform_detection(self):
+        """_IS_WINDOWS should match sys.platform."""
+        assert _IS_WINDOWS == (sys.platform == "win32")
+
+    def test_shared_lock_allows_concurrent_reads(self, tmp_path):
+        """Two shared locks acquired from separate threads should not block."""
+        lock = ProcessLock(str(tmp_path))
+        barrier = threading.Barrier(2, timeout=5)
+        results = []
+
+        def reader(idx):
+            with lock.shared():
+                barrier.wait()  # both threads must reach here while holding lock
+                results.append(idx)
+
+        t1 = threading.Thread(target=reader, args=(1,))
+        t2 = threading.Thread(target=reader, args=(2,))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+        assert not t1.is_alive(), "Thread 1 timed out — shared lock blocked"
+        assert not t2.is_alive(), "Thread 2 timed out — shared lock blocked"
+        assert sorted(results) == [1, 2]
+
+    def test_flock_funlock_importable(self):
+        """Module-level _flock and _funlock should be callable."""
+        assert callable(_flock)
+        assert callable(_funlock)

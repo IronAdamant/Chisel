@@ -31,13 +31,16 @@ chisel/
 - **Blame caching**: Cached by file content hash, invalidated on change.
 - **Incremental updates**: File content hashes tracked in `file_hashes` table.
 - **Persistent connection**: Storage uses a single SQLite connection (`check_same_thread=False`) with RWLock for thread safety.
-- **Multi-agent safety**: `project.py` provides: (1) `detect_project_root()` canonicalizes via git common dir so worktrees share identity, (2) `normalize_path()` ensures consistent relative paths, (3) `resolve_storage_dir()` defaults to project-local `.chisel/` (priority: explicit > env > project-local > ~/.chisel/), (4) `ProcessLock` uses `fcntl.flock` for cross-process write coordination.
+- **Multi-agent safety**: `project.py` provides: (1) `detect_project_root()` canonicalizes via git common dir so worktrees share identity, (2) `normalize_path()` ensures consistent relative paths, (3) `resolve_storage_dir()` defaults to project-local `.chisel/` (priority: explicit > env > project-local > ~/.chisel/), (4) `ProcessLock` for cross-process coordination — shared locks for reads, exclusive for writes. Cross-platform: `fcntl.flock` on Unix, `LockFileEx` on Windows.
 - **SQLite concurrency**: 30s `busy_timeout` + exponential-backoff retry on `_execute` for cross-process SQLITE_BUSY.
 - **Ownership vs Reviewers**: `ownership` = blame-based (who wrote the code, `role: "original_author"`). `who_reviews` = commit-activity-based (who maintains it, `role: "suggested_reviewer"`).
 - **Shared constants**: `_SKIP_DIRS` and `_EXTENSION_MAP` live in `ast_utils.py`. `_CODE_EXTENSIONS` in `engine.py` is derived from `_EXTENSION_MAP`.
 - **Shared dispatch**: `dispatch_tool()` in `mcp_server.py` is used by both HTTP and stdio servers. Tool schemas and dispatch tables live in `schemas.py`.
 - **Edge weighting**: Test edges carry a weight (0.4-1.0) based on file proximity. Python import-path matching (`from myapp.utils import foo` → `myapp/utils.py:foo`) takes priority over name-only matching. `_compute_proximity_weight()` and `_matches_import_path()` in `test_mapper.py`.
 - **AST regex improvements**: C#/Java support nested generics `<A<B>>` and annotations/attributes `@Override`/`[Test]`. Kotlin supports extension functions `fun String.foo()`. C++ supports template functions and destructors `~Foo()`. Swift supports `@objc`-style attributes. Dart supports factory constructors and getters/setters.
+- **Pluggable extractors**: `register_extractor(lang, fn)` in `ast_utils.py` lets users override built-in regex extractors with tree-sitter or LSP-backed ones. `_custom_extractors` checked before `_EXTRACTORS` in `extract_code_units()`. Zero-dep — the registry is just hooks.
+- **Batch SQL queries**: `storage.py` provides `get_*_batch()` methods for edges, code units, co-changes, churn, and blame. `impact.get_risk_map()` uses these to compute all risk scores in ~5 queries total instead of N*5. `_chunked()` helper splits large batches to stay under SQLite's variable limit.
+- **Process-level read locks**: All read tool methods in `engine.py` acquire `_process_lock.shared()` (outer) + `lock.read_lock()` (inner). Writes acquire `_process_lock.exclusive()` + `lock.write_lock()`. This allows concurrent reads from multiple processes while blocking during writes.
 
 ## Dev Commands
 

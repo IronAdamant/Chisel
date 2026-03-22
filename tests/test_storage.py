@@ -291,3 +291,80 @@ class TestFileHashes:
 
     def test_get_nonexistent(self, storage):
         assert storage.get_file_hash("nope.py") is None
+
+
+class TestBatchQueries:
+    def test_get_edges_for_code_batch(self, storage):
+        storage.upsert_code_unit("c1", "f.py", "foo", "func")
+        storage.upsert_code_unit("c2", "g.py", "bar", "func")
+        storage.upsert_test_unit("t1", "t.py", "test_foo")
+        storage.upsert_test_unit("t2", "t.py", "test_bar")
+        storage.upsert_test_unit("t3", "t.py", "test_both")
+        storage.upsert_test_edge("t1", "c1", "import", 1.0)
+        storage.upsert_test_edge("t3", "c1", "call", 0.5)
+        storage.upsert_test_edge("t2", "c2", "import", 0.8)
+
+        result = storage.get_edges_for_code_batch(["c1", "c2"])
+        assert set(result.keys()) == {"c1", "c2"}
+        assert len(result["c1"]) == 2
+        assert len(result["c2"]) == 1
+        assert result["c2"][0]["test_id"] == "t2"
+
+    def test_get_edges_for_code_batch_empty(self, storage):
+        assert storage.get_edges_for_code_batch([]) == {}
+
+    def test_get_edges_for_code_batch_missing_ids(self, storage):
+        result = storage.get_edges_for_code_batch(["no_such_id", "also_missing"])
+        assert result == {"no_such_id": [], "also_missing": []}
+
+    def test_get_code_units_by_files_batch(self, storage):
+        storage.upsert_code_unit("f.py:a:func", "f.py", "a", "func")
+        storage.upsert_code_unit("f.py:b:class", "f.py", "b", "class")
+        storage.upsert_code_unit("g.py:c:func", "g.py", "c", "func")
+
+        result = storage.get_code_units_by_files_batch(["f.py", "g.py"])
+        assert set(result.keys()) == {"f.py", "g.py"}
+        assert len(result["f.py"]) == 2
+        assert len(result["g.py"]) == 1
+        names = {u["name"] for u in result["f.py"]}
+        assert names == {"a", "b"}
+
+    def test_get_co_changes_batch(self, storage):
+        storage.upsert_co_change("a.py", "b.py", 5, "hash1")
+        storage.upsert_co_change("a.py", "c.py", 4, "hash2")
+        storage.upsert_co_change("b.py", "d.py", 3, "hash3")
+
+        result = storage.get_co_changes_batch(["a.py", "b.py"], min_count=3)
+        assert set(result.keys()) == {"a.py", "b.py"}
+        # a.py co-changes with b.py (5) and c.py (4)
+        assert len(result["a.py"]) == 2
+        # b.py co-changes with a.py (5) and d.py (3)
+        assert len(result["b.py"]) == 2
+        counts_a = sorted([r["co_commit_count"] for r in result["a.py"]], reverse=True)
+        assert counts_a == [5, 4]
+
+    def test_get_churn_stats_batch(self, storage):
+        storage.upsert_churn_stat("a.py", "", 10, 3, 50, 20, "2026-01-01", 0.82)
+        storage.upsert_churn_stat("b.py", "", 5, 2, 30, 10, "2026-01-01", 0.45)
+        # Function-level stat should be ignored (unit_name != "")
+        storage.upsert_churn_stat("a.py", "foo", 3, 1, 10, 5, "2026-01-01", 0.3)
+
+        result = storage.get_churn_stats_batch(["a.py", "b.py", "missing.py"])
+        assert set(result.keys()) == {"a.py", "b.py", "missing.py"}
+        assert result["a.py"]["churn_score"] == 0.82
+        assert result["a.py"]["commit_count"] == 10
+        assert result["b.py"]["churn_score"] == 0.45
+        assert result["missing.py"] is None
+
+    def test_get_blame_batch(self, storage):
+        storage.store_blame("f.py", 1, 10, "abc", "Alice", "a@b.com", "2026-01-01", "h1")
+        storage.store_blame("f.py", 11, 20, "def", "Bob", "b@b.com", "2026-02-01", "h1")
+        storage.store_blame("g.py", 1, 5, "ghi", "Carol", "c@b.com", "2026-01-15", "h2")
+
+        result = storage.get_blame_batch([("f.py", "h1"), ("g.py", "h2")])
+        assert set(result.keys()) == {"f.py", "g.py"}
+        assert len(result["f.py"]) == 2
+        assert result["f.py"][0]["author"] == "Alice"
+        assert result["f.py"][1]["author"] == "Bob"
+        assert len(result["g.py"]) == 1
+        assert result["g.py"][0]["author"] == "Carol"

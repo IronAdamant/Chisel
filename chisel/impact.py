@@ -226,23 +226,83 @@ class ImpactAnalyzer:
     def get_risk_map(self, directory=None):
         """Compute risk scores for all tracked files (optionally in a directory).
 
+        Uses batch queries to avoid the N+1 pattern: fetches churn, coupling,
+        code units, edges, and blame for all files in a small number of queries.
+
         Returns:
             List of dicts: {file_path, risk_score, breakdown}
         """
         all_churn = self.storage.get_all_churn_stats()
         dir_prefix = directory.rstrip("/") + "/" if directory else ""
-        files = {
+        files = sorted({
             stat["file_path"] for stat in all_churn
             if not directory or stat["file_path"].startswith(dir_prefix)
-        }
+        })
+        if not files:
+            return []
 
-        # Fetch failure rates once for all files instead of per-file
+        # Batch-fetch all data upfront (5 queries total, not N*5)
         failure_rates = _fetch_failure_rates(self.storage)
+        churn_batch = self.storage.get_churn_stats_batch(files)
+        co_changes_batch = self.storage.get_co_changes_batch(files)
+        code_units_batch = self.storage.get_code_units_by_files_batch(files)
 
+        all_code_ids = [
+            cu["id"] for cus in code_units_batch.values() for cu in cus
+        ]
+        edges_batch = self.storage.get_edges_for_code_batch(all_code_ids)
+
+        file_hash_pairs = [
+            (fp, _latest_hash(self.storage, fp)) for fp in files
+        ]
+        blame_batch = self.storage.get_blame_batch(file_hash_pairs)
+
+        # Compute risk scores from pre-fetched data
         risk_map = []
-        for fp in sorted(files):
-            risk = self.compute_risk_score(fp, failure_rates=failure_rates)
-            risk_map.append(risk)
+        for fp in files:
+            churn_stat = churn_batch.get(fp)
+            churn_raw = churn_stat["churn_score"] if churn_stat else 0.0
+            churn_norm = min(churn_raw / 5.0, 1.0)
+
+            co_changes = co_changes_batch.get(fp, [])
+            coupling_norm = min(len(co_changes) / 10.0, 1.0)
+
+            code_units = code_units_batch.get(fp, [])
+            tested_count = 0
+            covering_test_ids = set()
+            for cu in code_units:
+                edges = edges_batch.get(cu["id"], [])
+                if edges:
+                    tested_count += 1
+                    for e in edges:
+                        covering_test_ids.add(e["test_id"])
+            coverage = tested_count / max(len(code_units), 1)
+            coverage_gap = 1.0 - coverage
+
+            blame_data = blame_batch.get(fp, [])
+            author_conc = _author_concentration(blame_data)
+
+            instability = _test_instability(covering_test_ids, failure_rates)
+
+            risk = (
+                0.35 * churn_norm
+                + 0.25 * coupling_norm
+                + 0.2 * coverage_gap
+                + 0.1 * author_conc
+                + 0.1 * instability
+            )
+            risk_map.append({
+                "file_path": fp,
+                "unit_name": None,
+                "risk_score": round(risk, 4),
+                "breakdown": {
+                    "churn": round(churn_norm, 4),
+                    "coupling": round(coupling_norm, 4),
+                    "coverage_gap": round(coverage_gap, 4),
+                    "author_concentration": round(author_conc, 4),
+                    "test_instability": round(instability, 4),
+                },
+            })
 
         risk_map.sort(key=lambda x: x["risk_score"], reverse=True)
         return risk_map

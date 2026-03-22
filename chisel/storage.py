@@ -521,6 +521,117 @@ class Storage:
         )
         return {r["tbl"]: r["cnt"] for r in rows}
 
+    # --- batch queries ---
+
+    @staticmethod
+    def _chunked(items, size=900):
+        """Yield successive chunks of *items*, each at most *size* long."""
+        for i in range(0, len(items), size):
+            yield items[i:i + size]
+
+    def get_edges_for_code_batch(self, code_ids):
+        """Batch-fetch test edges for multiple code unit IDs.
+
+        Returns a dict mapping each code_id to its list of edge dicts.
+        IDs with no edges map to empty lists.
+        """
+        if not code_ids:
+            return {}
+        result = {cid: [] for cid in code_ids}
+        for chunk in self._chunked(list(code_ids)):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._fetchall(
+                f"SELECT * FROM test_edges WHERE code_id IN ({placeholders})",
+                tuple(chunk),
+            )
+            for row in rows:
+                result[row["code_id"]].append(row)
+        return result
+
+    def get_code_units_by_files_batch(self, file_paths):
+        """Batch-fetch code units for multiple file paths.
+
+        Returns a dict mapping file_path to its list of code unit dicts.
+        """
+        if not file_paths:
+            return {}
+        result = {fp: [] for fp in file_paths}
+        for chunk in self._chunked(list(file_paths)):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._fetchall(
+                f"SELECT * FROM code_units WHERE file_path IN ({placeholders})",
+                tuple(chunk),
+            )
+            for row in rows:
+                result[row["file_path"]].append(row)
+        return result
+
+    def get_co_changes_batch(self, file_paths, min_count=3):
+        """Batch-fetch co-changes for multiple file paths.
+
+        Returns a dict mapping file_path to its list of co-change dicts.
+        """
+        if not file_paths:
+            return {}
+        result = {fp: [] for fp in file_paths}
+        for chunk in self._chunked(list(file_paths)):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._fetchall(
+                f"""SELECT * FROM co_changes
+                    WHERE (file_a IN ({placeholders}) OR file_b IN ({placeholders}))
+                    AND co_commit_count >= ?
+                    ORDER BY co_commit_count DESC""",
+                (*chunk, *chunk, min_count),
+            )
+            for row in rows:
+                if row["file_a"] in result:
+                    result[row["file_a"]].append(row)
+                if row["file_b"] in result and row["file_b"] != row["file_a"]:
+                    result[row["file_b"]].append(row)
+        return result
+
+    def get_churn_stats_batch(self, file_paths):
+        """Batch-fetch file-level churn stats (unit_name='') for multiple files.
+
+        Returns a dict mapping file_path to its churn stat dict (or None).
+        """
+        if not file_paths:
+            return {}
+        result = {fp: None for fp in file_paths}
+        for chunk in self._chunked(list(file_paths)):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._fetchall(
+                f"""SELECT * FROM churn_stats
+                    WHERE file_path IN ({placeholders}) AND unit_name = ''""",
+                tuple(chunk),
+            )
+            for row in rows:
+                result[row["file_path"]] = row
+        return result
+
+    def get_blame_batch(self, file_hash_pairs):
+        """Batch-fetch blame data for multiple (file_path, content_hash) pairs.
+
+        Returns a dict mapping file_path to its list of blame block dicts.
+        """
+        if not file_hash_pairs:
+            return {}
+        result = {fp: [] for fp, _ in file_hash_pairs}
+        for chunk in self._chunked(list(file_hash_pairs)):
+            conditions = " OR ".join(
+                "(file_path = ? AND content_hash = ?)" for _ in chunk
+            )
+            params = []
+            for fp, ch in chunk:
+                params.extend([fp, ch])
+            rows = self._fetchall(
+                f"SELECT * FROM blame_cache WHERE {conditions} ORDER BY line_start",
+                tuple(params),
+            )
+            for row in rows:
+                result[row["file_path"]].append(row)
+        return result
+
     # --- file_hashes ---
 
     def set_file_hash(self, file_path, content_hash):

@@ -16,10 +16,69 @@ Key design decisions:
       calls from interleaving destructive writes.
 """
 
-import fcntl
 import os
 import subprocess
+import sys
 from contextlib import contextmanager
+
+_IS_WINDOWS = sys.platform == "win32"
+
+if _IS_WINDOWS:
+    import ctypes
+    import ctypes.wintypes
+    import msvcrt as _msvcrt
+
+    _LOCKFILE_EXCLUSIVE_LOCK = 0x0002
+
+    class _OVERLAPPED(ctypes.Structure):
+        _fields_ = [
+            ("Internal", ctypes.wintypes.LPARAM),
+            ("InternalHigh", ctypes.wintypes.LPARAM),
+            ("Offset", ctypes.wintypes.DWORD),
+            ("OffsetHigh", ctypes.wintypes.DWORD),
+            ("hEvent", ctypes.wintypes.HANDLE),
+        ]
+
+    _lock_file_ex = ctypes.windll.kernel32.LockFileEx
+    _unlock_file_ex = ctypes.windll.kernel32.UnlockFileEx
+
+    def _flock(fd, exclusive):
+        """Acquire a file lock using Windows LockFileEx (supports shared + exclusive)."""
+        handle = _msvcrt.get_osfhandle(fd.fileno())
+        overlapped = _OVERLAPPED()
+        flags = _LOCKFILE_EXCLUSIVE_LOCK if exclusive else 0
+        ok = _lock_file_ex(
+            ctypes.wintypes.HANDLE(handle),
+            ctypes.wintypes.DWORD(flags),
+            ctypes.wintypes.DWORD(0),
+            ctypes.wintypes.DWORD(0xFFFFFFFF),
+            ctypes.wintypes.DWORD(0xFFFFFFFF),
+            ctypes.byref(overlapped),
+        )
+        if not ok:
+            raise OSError(f"LockFileEx failed (error {ctypes.GetLastError()})")
+
+    def _funlock(fd):
+        """Release a file lock using Windows UnlockFileEx."""
+        handle = _msvcrt.get_osfhandle(fd.fileno())
+        overlapped = _OVERLAPPED()
+        _unlock_file_ex(
+            ctypes.wintypes.HANDLE(handle),
+            ctypes.wintypes.DWORD(0),
+            ctypes.wintypes.DWORD(0xFFFFFFFF),
+            ctypes.wintypes.DWORD(0xFFFFFFFF),
+            ctypes.byref(overlapped),
+        )
+else:
+    import fcntl
+
+    def _flock(fd, exclusive):
+        """Acquire a file lock using Unix fcntl.flock."""
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+
+    def _funlock(fd):
+        """Release a file lock using Unix fcntl.flock."""
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def detect_project_root(start_dir=None):
@@ -132,13 +191,16 @@ def resolve_storage_dir(project_dir=None, explicit_dir=None):
 
 
 class ProcessLock:
-    """Cross-process exclusive file lock for write coordination.
+    """Cross-process file lock for read/write coordination.
 
     Prevents multiple processes (e.g., two CLI invocations or two MCP
     servers) from running destructive operations (analyze, update)
-    simultaneously on the same database.
+    simultaneously on the same database.  Read operations acquire a
+    shared lock so they can proceed concurrently with other readers.
 
-    Uses fcntl.flock (Unix) — blocks until the lock is available.
+    Cross-platform: uses fcntl.flock on Unix, LockFileEx on Windows.
+    Both support shared and exclusive locks. Blocks until the lock is
+    available.
     """
 
     def __init__(self, lock_dir):
@@ -146,28 +208,28 @@ class ProcessLock:
         os.makedirs(lock_dir, exist_ok=True)
 
     @contextmanager
-    def _acquire(self, lock_type):
-        """Acquire a file lock of the given type, yielding control."""
+    def _acquire(self, exclusive):
+        """Acquire a file lock, yielding control."""
         fd = open(self._lock_path, "w")
         try:
-            fcntl.flock(fd, lock_type)
+            _flock(fd, exclusive)
             try:
                 yield
             finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                _funlock(fd)
         finally:
             fd.close()
 
     @contextmanager
     def exclusive(self):
         """Acquire an exclusive file lock, yielding control to the caller."""
-        with self._acquire(fcntl.LOCK_EX):
+        with self._acquire(exclusive=True):
             yield
 
     @contextmanager
     def shared(self):
         """Acquire a shared file lock (allows concurrent readers)."""
-        with self._acquire(fcntl.LOCK_SH):
+        with self._acquire(exclusive=False):
             yield
 
 

@@ -151,54 +151,62 @@ class ChiselEngine:
 
     def tool_impact(self, files, functions=None):
         """MCP tool: get impacted tests for changed files."""
-        with self.lock.read_lock():
-            return self.impact.get_impacted_tests(files, functions)
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                return self.impact.get_impacted_tests(files, functions)
 
     def tool_suggest_tests(self, file_path):
         """MCP tool: suggest tests for a file."""
-        with self.lock.read_lock():
-            return self.impact.suggest_tests(file_path)
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                return self.impact.suggest_tests(file_path)
 
     def tool_churn(self, file_path, unit_name=None):
         """MCP tool: get churn stats. Always returns a list."""
-        with self.lock.read_lock():
-            stat = self.storage.get_churn_stat(file_path, unit_name)
-            if stat:
-                return [stat]
-            # Only fall back to all stats when no specific unit was requested
-            if unit_name is None:
-                return self.storage.get_all_churn_stats(file_path)
-            return []
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                stat = self.storage.get_churn_stat(file_path, unit_name)
+                if stat:
+                    return [stat]
+                if unit_name is None:
+                    return self.storage.get_all_churn_stats(file_path)
+                return []
 
     def tool_ownership(self, file_path):
         """MCP tool: get blame-based code ownership."""
-        with self.lock.read_lock():
-            return self.impact.get_ownership(file_path)
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                return self.impact.get_ownership(file_path)
 
     def tool_coupling(self, file_path, min_count=3):
         """MCP tool: get co-change coupling partners."""
-        with self.lock.read_lock():
-            return self.storage.get_co_changes(file_path, min_count)
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                return self.storage.get_co_changes(file_path, min_count)
 
     def tool_risk_map(self, directory=None):
         """MCP tool: risk scores for all files."""
-        with self.lock.read_lock():
-            return self.impact.get_risk_map(directory)
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                return self.impact.get_risk_map(directory)
 
     def tool_stale_tests(self):
         """MCP tool: detect stale tests."""
-        with self.lock.read_lock():
-            return self.impact.detect_stale_tests()
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                return self.impact.detect_stale_tests()
 
     def tool_history(self, file_path):
         """MCP tool: commit history for a file."""
-        with self.lock.read_lock():
-            return self.storage.get_commits_for_file(file_path)
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                return self.storage.get_commits_for_file(file_path)
 
     def tool_who_reviews(self, file_path):
         """MCP tool: suggest reviewers based on recent commit activity."""
-        with self.lock.read_lock():
-            return self.impact.suggest_reviewers(file_path)
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                return self.impact.suggest_reviewers(file_path)
 
     def tool_diff_impact(self, ref=None):
         """MCP tool: auto-detect changes from git diff and return impacted tests.
@@ -217,10 +225,11 @@ class ChiselEngine:
                 functions.extend(self.git.get_changed_functions(fp, ref))
             except RuntimeError:
                 pass
-        with self.lock.read_lock():
-            return self.impact.get_impacted_tests(
-                changed_files, functions or None,
-            )
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                return self.impact.get_impacted_tests(
+                    changed_files, functions or None,
+                )
 
     def tool_update(self):
         """MCP tool: incremental re-analysis of changed files."""
@@ -228,19 +237,22 @@ class ChiselEngine:
 
     def tool_test_gaps(self, file_path=None, directory=None, exclude_tests=True):
         """MCP tool: find code units with no test coverage."""
-        with self.lock.read_lock():
-            return self.impact.get_test_gaps(file_path, directory, exclude_tests)
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                return self.impact.get_test_gaps(file_path, directory, exclude_tests)
 
     def tool_record_result(self, test_id, passed, duration_ms=None):
         """MCP tool: record a test result (pass/fail) for future prioritization."""
-        with self.lock.write_lock():
-            self.storage.record_test_result(test_id, passed, duration_ms)
-            return {"test_id": test_id, "passed": passed, "recorded": True}
+        with self._process_lock.exclusive():
+            with self.lock.write_lock():
+                self.storage.record_test_result(test_id, passed, duration_ms)
+                return {"test_id": test_id, "passed": passed, "recorded": True}
 
     def tool_stats(self):
         """MCP tool: get summary counts for the Chisel database."""
-        with self.lock.read_lock():
-            return self.storage.get_stats()
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                return self.storage.get_stats()
 
     # ------------------------------------------------------------------ #
     # Shared internal helpers

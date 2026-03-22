@@ -1,6 +1,7 @@
 """Tests for chisel.engine — integration + unit tests for private methods."""
 
 import os
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -462,3 +463,36 @@ class TestDiscoverAndBuildEdges:
         assert "test_replacement" in new_names
         # Old test units for test_app.py were deleted and replaced
         assert "test_process_data" not in new_names
+
+
+# ------------------------------------------------------------------ #
+# Process lock wiring on tool methods
+# ------------------------------------------------------------------ #
+
+class TestProcessLockUsage:
+    def test_read_tool_acquires_shared_lock(self, engine):
+        """Read-only tool methods should acquire the shared process lock."""
+        engine.analyze()
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__ = MagicMock(return_value=None)
+        mock_ctx.__exit__ = MagicMock(return_value=False)
+        with patch.object(engine._process_lock, "shared", return_value=mock_ctx) as mock_shared:
+            engine.tool_stats()
+            mock_shared.assert_called_once()
+            mock_ctx.__enter__.assert_called_once()
+
+    def test_record_result_acquires_exclusive_lock(self, engine):
+        """tool_record_result should acquire the exclusive process lock."""
+        engine.analyze()
+        # Insert a test unit so record_result has a valid target
+        all_tests = engine.storage.get_all_test_units()
+        assert len(all_tests) > 0
+        test_id = all_tests[0]["id"]
+
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__ = MagicMock(return_value=None)
+        mock_ctx.__exit__ = MagicMock(return_value=False)
+        with patch.object(engine._process_lock, "exclusive", return_value=mock_ctx) as mock_excl:
+            engine.tool_record_result(test_id, passed=True, duration_ms=100)
+            mock_excl.assert_called_once()
+            mock_ctx.__enter__.assert_called_once()
