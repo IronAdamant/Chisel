@@ -125,7 +125,7 @@ def _find_block_end(lines: list[str], start_idx: int) -> int:
 
 def _strip_strings_and_comments(line: str) -> str:
     """Remove string literals, ``//`` comments, and ``/* */`` blocks from a line."""
-    result: list = []
+    result: list[str] = []
     i = 0
     length = len(line)
     while i < length:
@@ -206,7 +206,7 @@ def _extract_python_ast(file_path: str, content: str) -> list[CodeUnit]:
 
     units: list[CodeUnit] = []
 
-    parent_map: dict = {}
+    parent_map: dict[int, str] = {}
     for cls_node in ast.walk(tree):
         if isinstance(cls_node, ast.ClassDef):
             for child in ast.iter_child_nodes(cls_node):

@@ -5,6 +5,15 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-03-22
+
+### Fixed
+
+- `storage.py`: Added missing index `idx_test_edges_test` on `test_edges(test_id)` — `get_edges_for_test()` and `delete_test_edges_by_test()` were doing full table scans
+- `cli.py`: Unused `result` parameter in `cmd_record_result` formatter renamed to `_result`
+- `cli.py`: Removed misleading "(default)" from `--passed` help text
+- `ast_utils.py`: Bare `list` and `dict` type hints replaced with generic forms (`list[str]`, `dict[int, str]`)
+
 ## [0.5.0] - 2026-03-22
 
 ### Added

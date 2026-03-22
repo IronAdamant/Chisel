@@ -123,7 +123,7 @@ def create_parser():
     p_record.add_argument("test_id", help="Test ID")
     result_group = p_record.add_mutually_exclusive_group()
     result_group.add_argument("--passed", action="store_true", default=False,
-                              help="Mark test as passed (default)")
+                              help="Mark test as passed")
     result_group.add_argument("--failed", action="store_true", default=False,
                               help="Mark test as failed")
     p_record.add_argument("--duration", type=int, default=None,
@@ -316,7 +316,7 @@ def cmd_test_gaps(args):
 
 
 def cmd_record_result(args):
-    def fmt(result, args):
+    def fmt(_result, args):
         status = "PASSED" if not args.failed else "FAILED"
         print(f"Recorded: {args.test_id} — {status}")
     return _run_tool(args, "tool_record_result",

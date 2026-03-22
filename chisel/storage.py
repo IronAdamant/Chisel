@@ -142,6 +142,7 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_code_units_file ON code_units(file_path);
                 CREATE INDEX IF NOT EXISTS idx_test_units_file ON test_units(file_path);
                 CREATE INDEX IF NOT EXISTS idx_test_edges_code ON test_edges(code_id);
+                CREATE INDEX IF NOT EXISTS idx_test_edges_test ON test_edges(test_id);
                 CREATE INDEX IF NOT EXISTS idx_commit_files_file ON commit_files(file_path);
                 CREATE INDEX IF NOT EXISTS idx_blame_cache_hash ON blame_cache(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_churn_stats_file ON churn_stats(file_path);
