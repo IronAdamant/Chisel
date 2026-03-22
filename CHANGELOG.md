@@ -5,6 +5,14 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-03-22
+
+### Fixed
+
+- `metrics.py`: Fragile tuple default `(None,)` in `compute_co_changes()` changed to `(None, None)` for consistency with the 2-element tuple structure
+- `wiki-local/glossary.md`: Stale 4-component risk formula updated to current 5-component formula (0.35/0.25/0.2/0.1/0.1 with test_instability)
+- `CLAUDE.md`: Corrected CLI subcommand count from 18 to 17
+
 ## [0.5.1] - 2026-03-22
 
 ### Fixed

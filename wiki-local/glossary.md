@@ -47,7 +47,7 @@ The role assigned to entries returned by the `ownership` tool. Determined by `gi
 A test edge whose `code_id` points to a code unit that no longer exists in the `code_units` table. This is possible because SQLite foreign key enforcement is intentionally disabled. Orphaned references are the mechanism by which stale test detection works.
 
 **Risk score**
-A composite metric indicating how risky it is to change a file. Formula: `0.4 * churn + 0.3 * coupling_breadth + 0.2 * (1 - test_coverage) + 0.1 * author_concentration`. Each component is normalized to the 0-1 range. Higher values indicate higher risk. Computed by `ImpactAnalyzer.compute_risk_score()`.
+A composite metric indicating how risky it is to change a file. Formula: `0.35 * churn + 0.25 * coupling + 0.2 * coverage_gap + 0.1 * author_concentration + 0.1 * test_instability`. Each component is normalized to the 0-1 range. Higher values indicate higher risk. Computed by `ImpactAnalyzer.compute_risk_score()`.
 
 **RWLock (read-write lock)**
 A concurrency primitive in `rwlock.py` that allows multiple concurrent readers or one exclusive writer. Used by `ChiselEngine` to protect storage access: `tool_*()` read methods acquire a read lock, while `analyze()` and `update()` acquire a write lock.

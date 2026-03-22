@@ -196,7 +196,7 @@ def compute_co_changes(commits, min_count=3):
                 "file_a": a,
                 "file_b": b,
                 "co_commit_count": count,
-                "last_co_commit": pair_last.get((a, b), (None,))[0],
+                "last_co_commit": pair_last.get((a, b), (None, None))[0],
             })
 
     result.sort(key=lambda x: x["co_commit_count"], reverse=True)
