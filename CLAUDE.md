@@ -43,6 +43,7 @@ chisel/
 - **Process-level read locks**: All read tool methods in `engine.py` acquire `_process_lock.shared()` (outer) + `lock.read_lock()` (inner). Writes acquire `_process_lock.exclusive()` + `lock.write_lock()`. This allows concurrent reads from multiple processes while blocking during writes.
 - **Unit-churn scaling**: `_UNIT_CHURN_FILE_LIMIT = 2000` in `engine.py`. Repos with more than 2000 code files skip per-function `git log -L` churn (each function spawns a subprocess). File-level churn is always computed. Validated on Grafana (21k files, 62k units in ~3 min).
 - **Numstat validation**: `_parse_log_output` in `git_analyzer.py` validates tab-separated fields are digits or `-` before treating them as numstat. Diff lines with tabs were being misidentified as numstat entries in `git log -L` output.
+- **Empty-state detection**: All 11 query tools return `{"status": "no_data", "message": "...", "hint": "chisel analyze"}` when the DB has no analysis data, instead of `[]`. `_check_analysis_data()` in `engine.py` calls `storage.has_analysis_data()` (`SELECT 1 FROM code_units LIMIT 1`). Write tools (`analyze`, `update`, `record_result`) and `stats` are unaffected. `stats` adds a `hint` key when all counts are zero. CLI detects this via `_is_no_data()` in `cli.py`.
 
 ## Dev Commands
 

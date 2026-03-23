@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chisel.engine import ChiselEngine
+from chisel.engine import ChiselEngine, _NO_DATA_RESPONSE
 
 
 @pytest.fixture
@@ -216,6 +216,65 @@ class TestToolMethods:
             assert isinstance(result[key], int)
             assert result[key] >= 0
         assert result["code_units"] > 0
+
+
+# ------------------------------------------------------------------ #
+# Empty-state detection (no analyze run)
+# ------------------------------------------------------------------ #
+
+
+class TestEmptyStateDetection:
+    """Query tools should return a structured warning when DB has no analysis data."""
+
+    def test_query_tools_return_no_data_on_empty_db(self, engine):
+        """All read-only query tools return the no-data dict before analyze."""
+        tools_with_args = [
+            ("tool_impact", {"files": ["app.py"]}),
+            ("tool_suggest_tests", {"file_path": "app.py"}),
+            ("tool_churn", {"file_path": "app.py"}),
+            ("tool_ownership", {"file_path": "app.py"}),
+            ("tool_coupling", {"file_path": "app.py"}),
+            ("tool_risk_map", {}),
+            ("tool_stale_tests", {}),
+            ("tool_history", {"file_path": "app.py"}),
+            ("tool_who_reviews", {"file_path": "app.py"}),
+            ("tool_test_gaps", {}),
+            ("tool_diff_impact", {}),
+        ]
+        for method_name, kwargs in tools_with_args:
+            result = getattr(engine, method_name)(**kwargs)
+            assert result["status"] == "no_data", f"{method_name} did not return no_data"
+            assert "hint" in result, f"{method_name} missing hint"
+
+    def test_no_data_response_after_analyze(self, engine):
+        """After analyze, query tools should NOT return the no-data dict."""
+        engine.analyze()
+        result = engine.tool_risk_map()
+        assert isinstance(result, list)
+
+    def test_stats_hint_on_empty_db(self, engine):
+        """tool_stats should include a hint when all counts are zero."""
+        result = engine.tool_stats()
+        assert "hint" in result
+        assert "analyze" in result["hint"]
+
+    def test_stats_no_hint_after_analyze(self, engine):
+        """tool_stats should NOT include a hint after analyze populates data."""
+        engine.analyze()
+        result = engine.tool_stats()
+        assert "hint" not in result
+
+    def test_write_tools_unaffected(self, engine):
+        """Write tools (analyze, update, record_result) are not gated."""
+        result = engine.tool_analyze()
+        assert isinstance(result, dict)
+        assert "code_files_scanned" in result
+
+    def test_no_data_response_shape(self, engine):
+        """The no-data response has the expected keys."""
+        result = engine.tool_risk_map()
+        assert set(result.keys()) == {"status", "message", "hint"}
+        assert result == _NO_DATA_RESPONSE
 
 
 # ------------------------------------------------------------------ #

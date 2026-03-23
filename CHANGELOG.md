@@ -5,6 +5,17 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-03-24
+
+### Added
+
+- **Empty-state detection**: All 11 query tools (`risk_map`, `test_gaps`, `stale_tests`, `churn`, `coupling`, `impact`, `suggest_tests`, `ownership`, `who_reviews`, `history`, `diff_impact`) now return a structured `{"status": "no_data", "message": "...", "hint": "chisel analyze"}` response when no analysis data exists, instead of silently returning `[]`. `tool_stats` includes a `hint` key when all counts are zero.
+- `storage.py`: `has_analysis_data()` — cheap `SELECT 1 FROM code_units LIMIT 1` check.
+- `engine.py`: `_NO_DATA_RESPONSE` constant and `_check_analysis_data()` helper. Write tools (`analyze`, `update`, `record_result`) are unaffected.
+- `cli.py`: `_is_no_data()` helper — CLI prints the warning message instead of passing the dict to list formatters.
+- 18 new tests: empty-state detection across engine (6), storage (2), CLI (7), limit pass-through (1), plus 2 updated existing tests.
+- 567 tests pass (up from 553)
+
 ## [0.6.2] - 2026-03-22
 
 ### Fixed

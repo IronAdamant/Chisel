@@ -279,6 +279,15 @@ class TestStats:
         assert stats["test_units"] == 1
 
 
+class TestHasAnalysisData:
+    def test_empty_db(self, storage):
+        assert storage.has_analysis_data() is False
+
+    def test_with_code_units(self, storage):
+        storage.upsert_code_unit("f.py:foo:func", "f.py", "foo", "func")
+        assert storage.has_analysis_data() is True
+
+
 class TestFileHashes:
     def test_set_and_get(self, storage):
         storage.set_file_hash("f.py", "abc123")

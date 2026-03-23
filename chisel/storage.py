@@ -499,6 +499,15 @@ class Storage:
         )
         return cursor.rowcount
 
+    def has_analysis_data(self):
+        """Check whether the database contains any analysis data.
+
+        Returns True if at least one code unit exists (i.e. ``analyze``
+        has been run).  Uses ``LIMIT 1`` for minimal cost.
+        """
+        row = self._fetchone("SELECT 1 FROM code_units LIMIT 1")
+        return row is not None
+
     def get_stats(self):
         """Get summary counts for all tables in a single query.
 

@@ -18,7 +18,7 @@ This installs Chisel in editable mode along with dev dependencies (pytest, pytes
 ## Running Tests
 
 ```bash
-pytest tests/ -v --tb=short     # full suite (553 tests)
+pytest tests/ -v --tb=short     # full suite (567 tests)
 pytest tests/test_engine.py     # single module
 pytest -k "test_risk"           # by name pattern
 ```

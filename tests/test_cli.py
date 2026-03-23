@@ -3,7 +3,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from chisel.cli import _limit
+from chisel.cli import _is_no_data, _limit
 from chisel.cli import cmd_analyze, cmd_churn, cmd_coupling, cmd_diff_impact
 from chisel.cli import cmd_history, cmd_impact, cmd_ownership, cmd_record_result
 from chisel.cli import cmd_risk_map, cmd_serve, cmd_serve_mcp, cmd_stale_tests
@@ -794,6 +794,13 @@ class TestLimitParameter:
         result = _limit(data, args)
         assert result == {"key": "value", "count": 42}
 
+    def test_limit_no_data_dict_unchanged(self):
+        """The no-data dict should pass through _limit unchanged."""
+        args = _make_args(limit=5)
+        no_data = {"status": "no_data", "message": "msg", "hint": "hint"}
+        result = _limit(no_data, args)
+        assert result == no_data
+
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_with_limit(self, mock_cls, capsys):
         engine = _make_engine_mock()
@@ -809,3 +816,51 @@ class TestLimitParameter:
         output = capsys.readouterr().out
         assert "test_0" in output
         assert "test_2" in output
+
+
+# ------------------------------------------------------------------ #
+# No-data response tests
+# ------------------------------------------------------------------ #
+
+_NO_DATA = {"status": "no_data", "message": "No analysis data. Run 'chisel analyze' on this project first.", "hint": "chisel analyze"}
+
+
+class TestIsNoData:
+    def test_detects_no_data_dict(self):
+        assert _is_no_data(_NO_DATA) is True
+
+    def test_rejects_empty_list(self):
+        assert _is_no_data([]) is False
+
+    def test_rejects_normal_dict(self):
+        assert _is_no_data({"code_units": 5}) is False
+
+
+class TestNoDataCliOutput:
+    """CLI should print the message (not crash) when engine returns no-data."""
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_no_data_human_output(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_risk_map.return_value = dict(_NO_DATA)
+        mock_cls.return_value = engine
+
+        args = _make_args(directory=None)
+        cmd_risk_map(args)
+
+        output = capsys.readouterr().out
+        assert "No analysis data" in output
+        assert "chisel analyze" in output
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_no_data_json_output(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_impact.return_value = dict(_NO_DATA)
+        mock_cls.return_value = engine
+
+        args = _make_args(files=["a.py"], json_output=True)
+        cmd_impact(args)
+
+        output = capsys.readouterr().out
+        parsed = json.loads(output)
+        assert parsed["status"] == "no_data"

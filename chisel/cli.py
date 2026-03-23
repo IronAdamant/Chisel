@@ -164,6 +164,11 @@ def _limit(result, args):
     return result
 
 
+def _is_no_data(result):
+    """Check if *result* is a no-analysis-data warning from the engine."""
+    return isinstance(result, dict) and result.get("status") == "no_data"
+
+
 def _run_tool(args, method, kwargs, formatter, use_limit=True):
     """Execute an engine tool method with standard lifecycle and output handling."""
     with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
@@ -172,6 +177,8 @@ def _run_tool(args, method, kwargs, formatter, use_limit=True):
             result = _limit(result, args)
         if args.json_output:
             _print_json(result)
+        elif _is_no_data(result):
+            print(result["message"])
         else:
             formatter(result, args)
         return result

@@ -15,6 +15,13 @@ from chisel.test_mapper import TestMapper
 # Derived from ast_utils._EXTENSION_MAP to avoid duplication.
 _CODE_EXTENSIONS = frozenset(_EXTENSION_MAP)
 
+_NO_DATA_RESPONSE = {
+    "status": "no_data",
+    "message": "No analysis data. Run 'chisel analyze' on this project first.",
+    "hint": "chisel analyze",
+}
+
+
 class ChiselEngine:
     """High-level orchestrator for Chisel operations.
 
@@ -145,6 +152,12 @@ class ChiselEngine:
     # Tool methods (one per MCP tool)
     # ------------------------------------------------------------------ #
 
+    def _check_analysis_data(self):
+        """Return a no-data warning dict if the DB is empty, else ``None``."""
+        if not self.storage.has_analysis_data():
+            return dict(_NO_DATA_RESPONSE)
+        return None
+
     def tool_analyze(self, directory=None, force=False):
         """MCP tool: full analysis."""
         return self.analyze(directory=directory, force=force)
@@ -153,18 +166,27 @@ class ChiselEngine:
         """MCP tool: get impacted tests for changed files."""
         with self._process_lock.shared():
             with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
                 return self.impact.get_impacted_tests(files, functions)
 
     def tool_suggest_tests(self, file_path):
         """MCP tool: suggest tests for a file."""
         with self._process_lock.shared():
             with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
                 return self.impact.suggest_tests(file_path)
 
     def tool_churn(self, file_path, unit_name=None):
         """MCP tool: get churn stats. Always returns a list."""
         with self._process_lock.shared():
             with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
                 stat = self.storage.get_churn_stat(file_path, unit_name)
                 if stat:
                     return [stat]
@@ -176,36 +198,54 @@ class ChiselEngine:
         """MCP tool: get blame-based code ownership."""
         with self._process_lock.shared():
             with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
                 return self.impact.get_ownership(file_path)
 
     def tool_coupling(self, file_path, min_count=3):
         """MCP tool: get co-change coupling partners."""
         with self._process_lock.shared():
             with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
                 return self.storage.get_co_changes(file_path, min_count)
 
     def tool_risk_map(self, directory=None):
         """MCP tool: risk scores for all files."""
         with self._process_lock.shared():
             with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
                 return self.impact.get_risk_map(directory)
 
     def tool_stale_tests(self):
         """MCP tool: detect stale tests."""
         with self._process_lock.shared():
             with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
                 return self.impact.detect_stale_tests()
 
     def tool_history(self, file_path):
         """MCP tool: commit history for a file."""
         with self._process_lock.shared():
             with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
                 return self.storage.get_commits_for_file(file_path)
 
     def tool_who_reviews(self, file_path):
         """MCP tool: suggest reviewers based on recent commit activity."""
         with self._process_lock.shared():
             with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
                 return self.impact.suggest_reviewers(file_path)
 
     def tool_diff_impact(self, ref=None):
@@ -214,6 +254,11 @@ class ChiselEngine:
         If ref is not provided, auto-detects: on a feature branch diffs against
         main/master; on main diffs against HEAD (unstaged changes).
         """
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
         if ref is None:
             ref = self._detect_diff_base()
         changed_files = self.git.get_changed_files(ref)
@@ -239,6 +284,9 @@ class ChiselEngine:
         """MCP tool: find code units with no test coverage."""
         with self._process_lock.shared():
             with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
                 return self.impact.get_test_gaps(file_path, directory, exclude_tests)
 
     def tool_record_result(self, test_id, passed, duration_ms=None):
@@ -252,7 +300,10 @@ class ChiselEngine:
         """MCP tool: get summary counts for the Chisel database."""
         with self._process_lock.shared():
             with self.lock.read_lock():
-                return self.storage.get_stats()
+                stats = self.storage.get_stats()
+                if all(v == 0 for v in stats.values()):
+                    stats["hint"] = "All counts are zero. Run 'chisel analyze' to populate."
+                return stats
 
     # ------------------------------------------------------------------ #
     # Shared internal helpers

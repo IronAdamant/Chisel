@@ -195,7 +195,8 @@ class TestConfigureServerHandlers:
             assert len(content) == 1
             assert content[0].type == "text"
             parsed = json.loads(content[0].text)
-            assert isinstance(parsed, list)
+            # Empty DB returns a no-data warning dict instead of []
+            assert isinstance(parsed, (list, dict))
         finally:
             engine.close()
 
