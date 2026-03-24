@@ -136,6 +136,11 @@ def _hints_test_gaps(result):
 
 
 def _hints_stale_tests(result):
+    if isinstance(result, dict) and result.get("status") == "no_edges":
+        return [
+            {"tool": "analyze", "args": {}, "reason": "Re-analyze to build test edges"},
+            {"tool": "stats", "args": {}, "reason": "Check test_edges count"},
+        ]
     if isinstance(result, list) and result:
         return [
             {"action": "fix_tests", "reason": "Update or remove stale tests listed above"},

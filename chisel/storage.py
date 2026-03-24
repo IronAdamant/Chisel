@@ -220,6 +220,19 @@ class Storage:
             "SELECT * FROM code_units WHERE file_path = ?", (file_path,),
         )
 
+    def get_code_units_by_file_stem(self, stem):
+        """Find code units in source files whose basename matches *stem*.
+
+        Matches ``src/services/searchService.js`` for stem ``searchService``.
+        Excludes files containing ``.test.`` or ``.spec.`` in their path.
+        """
+        return self._fetchall(
+            """SELECT * FROM code_units
+               WHERE (file_path LIKE ? OR file_path LIKE ?)
+               AND file_path NOT LIKE ? AND file_path NOT LIKE ?""",
+            (f"%/{stem}.%", f"{stem}.%", "%.test.%", "%.spec.%"),
+        )
+
     def delete_code_units_by_file(self, file_path):
         self._execute("DELETE FROM code_units WHERE file_path = ?", (file_path,))
 

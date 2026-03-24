@@ -66,6 +66,27 @@ def _diagnose_uniform(comp, value, stats):
     return ""
 
 
+def _test_to_source_stem(test_file_path):
+    """Extract the source filename stem from a test file path.
+
+    ``tests/services/nutritionService.test.js`` → ``nutritionService``
+    ``test_utils.py`` → ``utils``
+    """
+    base = os.path.basename(test_file_path)
+    # Strip all extensions: foo.test.js -> foo, foo.spec.ts -> foo
+    stem = base.split(".")[0]
+    # Remove test prefixes/suffixes
+    for affix in ("_test", "Test", "_spec", "Spec"):
+        if stem.endswith(affix):
+            stem = stem[: -len(affix)]
+            break
+    for affix in ("test_", "Test"):
+        if stem.startswith(affix):
+            stem = stem[len(affix):]
+            break
+    return stem or None
+
+
 _NO_DATA_RESPONSE = {
     "status": "no_data",
     "message": "No analysis data. Run 'chisel analyze' on this project first.",
@@ -279,13 +300,32 @@ class ChiselEngine:
                 return {"files": files, "_meta": meta}
 
     def tool_stale_tests(self):
-        """MCP tool: detect stale tests."""
+        """MCP tool: detect stale tests.
+
+        Returns a diagnostic dict (status="no_edges") when no test edges
+        exist, so agents can distinguish "no stale tests" from "nothing
+        to evaluate".
+        """
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                return self.impact.detect_stale_tests()
+                result = self.impact.detect_stale_tests()
+                if not result:
+                    stats = self.storage.get_stats()
+                    if stats.get("test_edges", 0) == 0:
+                        return {
+                            "status": "no_edges",
+                            "message": (
+                                "No test edges exist — cannot evaluate "
+                                "test staleness. Edge builder may not match "
+                                "this project's import/require patterns."
+                            ),
+                            "hint": "chisel analyze",
+                            "stale_tests": [],
+                        }
+                return result
 
     def tool_history(self, file_path):
         """MCP tool: commit history for a file."""
@@ -359,11 +399,20 @@ class ChiselEngine:
                 return self.impact.get_test_gaps(file_path, directory, exclude_tests)
 
     def tool_record_result(self, test_id, passed, duration_ms=None):
-        """MCP tool: record a test result (pass/fail) for future prioritization."""
+        """MCP tool: record a test result (pass/fail) for future prioritization.
+
+        Also attempts heuristic edge creation when no edges exist for
+        the test file — matches the test filename to a source file and
+        links all code units in the match.
+        """
         with self._process_lock.exclusive():
             with self.lock.write_lock():
                 self.storage.record_test_result(test_id, passed, duration_ms)
-                return {"test_id": test_id, "passed": passed, "recorded": True}
+                edges_created = self._create_heuristic_edges(test_id)
+                result = {"test_id": test_id, "passed": passed, "recorded": True}
+                if edges_created:
+                    result["heuristic_edges_created"] = edges_created
+                return result
 
     def tool_triage(self, directory=None, top_n=10):
         """MCP tool: combined risk_map + test_gaps + stale_tests triage."""
@@ -627,6 +676,40 @@ class ChiselEngine:
     def close(self):
         """Close the underlying storage connection."""
         self.storage.close()
+
+    def _create_heuristic_edges(self, test_id):
+        """Attempt filename-based edge creation for a recorded test.
+
+        When ``test_id`` is ``tests/services/nutritionService.test.js``,
+        finds test units in that file, extracts the source stem
+        (``nutritionService``), locates matching source-file code units,
+        and creates heuristic edges if none already exist.
+
+        Returns the number of edges created.
+        """
+        test_file = test_id.split(":")[0]
+        test_units = self.storage.get_test_units_by_file(test_file)
+        if not test_units:
+            return 0
+        # Skip if any test unit already has edges (analyzer already ran)
+        for tu in test_units:
+            if self.storage.get_edges_for_test(tu["id"]):
+                return 0
+        stem = _test_to_source_stem(test_file)
+        if not stem:
+            return 0
+        source_units = self.storage.get_code_units_by_file_stem(stem)
+        if not source_units:
+            return 0
+        count = 0
+        for tu in test_units:
+            for cu in source_units:
+                if cu["file_path"] != test_file:
+                    self.storage.upsert_test_edge(
+                        tu["id"], cu["id"], "heuristic", 0.5,
+                    )
+                    count += 1
+        return count
 
     def _scan_code_files(self, directory=None):
         """Walk project tree and return all code file paths.

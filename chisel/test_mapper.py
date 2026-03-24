@@ -201,15 +201,25 @@ class TestMapper:
             seen = set()
             for dep in deps:
                 module_path = dep.get("module_path")
-                # Try import-path matching for Python deps with module_path
                 matched_ids = []
                 if module_path:
+                    # 1. Python import-path matching (module.path + name)
                     for cid, cfile in id_to_file.items():
                         if _matches_import_path(cfile, module_path):
                             # Only match if the code unit name also matches
                             if cid in name_to_ids.get(dep["name"], []):
                                 matched_ids.append(cid)
-                # Fall back to name-based matching
+                    # 2. JS/TS path-based matching (resolve relative path,
+                    #    match ALL code units in the resolved file)
+                    if not matched_ids and module_path.startswith("."):
+                        resolved = _resolve_js_module_path(
+                            file_path, module_path,
+                        )
+                        if resolved:
+                            for cid, cfile in id_to_file.items():
+                                if _matches_js_import_path(cfile, resolved):
+                                    matched_ids.append(cid)
+                # 3. Fall back to name-based matching
                 if not matched_ids:
                     matched_ids = name_to_ids.get(dep["name"], [])
 
@@ -387,16 +397,56 @@ _JS_IMPORT_RE = re.compile(
 _JS_CALL_RE = re.compile(r"(\w+)\s*\(")
 _JS_NAMED_IMPORT_RE = re.compile(r"import\s+\{([^}]+)\}")
 
+# ESM default import binding: import SearchService from '...'
+_JS_ESM_DEFAULT_RE = re.compile(
+    r"import\s+(\w+)\s+from\s+['\"]([^'\"]+)['\"]",
+)
+
+# CJS default binding: const SearchService = require('...')
+_JS_CJS_DEFAULT_RE = re.compile(
+    r"(?:const|let|var)\s+(\w+)\s*=\s*require\s*\(\s*['\"]([^'\"]+)['\"]\s*\)",
+)
+
+# CJS destructured: const { X, Y } = require('...')
+_JS_CJS_DESTRUCTURED_RE = re.compile(
+    r"(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*['\"]([^'\"]+)['\"]\s*\)",
+)
+
+# JS/TS file extensions for path matching.
+_JS_EXTENSIONS = frozenset({".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"})
+
 
 def _extract_js_deps(content):
     """Extract imports and calls from JS/TS content."""
     deps = []
+
+    # Module path imports (file-stem name + module_path for path-based matching)
     for m in _JS_IMPORT_RE.finditer(content):
         mod = m.group(1) or m.group(2)
         name = mod.rsplit("/", 1)[-1].split(".")[0]
-        deps.append({"name": name, "dep_type": "import"})
+        deps.append({"name": name, "dep_type": "import", "module_path": mod})
 
-    # Named imports: import { foo, bar } from ...
+    # ESM default import binding: import SearchService from '...'
+    for m in _JS_ESM_DEFAULT_RE.finditer(content):
+        deps.append({
+            "name": m.group(1), "dep_type": "import", "module_path": m.group(2),
+        })
+
+    # CJS default binding: const SearchService = require('...')
+    for m in _JS_CJS_DEFAULT_RE.finditer(content):
+        deps.append({
+            "name": m.group(1), "dep_type": "import", "module_path": m.group(2),
+        })
+
+    # CJS destructured: const { X, Y } = require('...')
+    for m in _JS_CJS_DESTRUCTURED_RE.finditer(content):
+        mod = m.group(2)
+        for name in m.group(1).split(","):
+            name = name.strip().split(":")[0].strip()  # handle { X: alias }
+            if name:
+                deps.append({"name": name, "dep_type": "import", "module_path": mod})
+
+    # Named ESM imports: import { foo, bar } from ...
     for m in _JS_NAMED_IMPORT_RE.finditer(content):
         for name in m.group(1).split(","):
             name = name.strip().split(" as ")[0].strip()
@@ -646,6 +696,53 @@ def _matches_import_path(code_file_path, module_path):
     module_as_path = module_path.replace(".", "/") + ".py"
     normalized = code_file_path.replace("\\", "/")
     return normalized == module_as_path or normalized.endswith("/" + module_as_path)
+
+
+def _strip_js_ext(path):
+    """Strip a JS/TS extension from *path* if present."""
+    for ext in _JS_EXTENSIONS:
+        if path.endswith(ext):
+            return path[: -len(ext)]
+    return path
+
+
+def _resolve_js_module_path(test_file_path, module_path):
+    """Resolve a JS/TS relative import path against the test file's directory.
+
+    Returns the resolved path (without extension) relative to the project
+    root, or ``None`` for non-relative imports (npm packages).
+
+    Example::
+
+        _resolve_js_module_path(
+            "tests/services/search.test.js",
+            "../../src/services/searchService",
+        )
+        # -> "src/services/searchService"
+    """
+    if not module_path or not module_path.startswith("."):
+        return None  # npm package — not a local file
+    test_dir = os.path.dirname(test_file_path.replace("\\", "/"))
+    joined = os.path.join(test_dir, module_path)
+    resolved = os.path.normpath(joined).replace("\\", "/")
+    return _strip_js_ext(resolved)
+
+
+def _matches_js_import_path(code_file_path, resolved_import):
+    """Check if *code_file_path* corresponds to a resolved JS/TS import.
+
+    ``resolved_import`` is an extension-free path from
+    :func:`_resolve_js_module_path`.  Matches::
+
+        "src/services/searchService" against
+        - "src/services/searchService.js"
+        - "src/services/searchService.ts"
+        - "src/services/searchService/index.js"
+    """
+    if not resolved_import:
+        return False
+    code = _strip_js_ext(code_file_path.replace("\\", "/"))
+    return code == resolved_import or code == resolved_import + "/index"
 
 
 def _dedupe_deps(deps):

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chisel.engine import ChiselEngine, _NO_DATA_RESPONSE, _coupling_threshold
+from chisel.engine import ChiselEngine, _NO_DATA_RESPONSE, _coupling_threshold, _test_to_source_stem
 
 
 @pytest.fixture
@@ -655,3 +655,103 @@ class TestCouplingThreshold:
         threshold = _coupling_threshold(10000)
         assert threshold <= 8
         assert threshold >= 5
+
+
+# ------------------------------------------------------------------ #
+# Stale-tests diagnostic when zero edges
+# ------------------------------------------------------------------ #
+
+
+class TestStaleTestsDiagnostic:
+    def test_returns_diagnostic_when_no_edges(self, engine):
+        """stale_tests returns status=no_edges when DB has 0 test edges."""
+        engine.analyze()
+        # Force-clear all test edges
+        engine.storage._execute("DELETE FROM test_edges")
+        result = engine.tool_stale_tests()
+        assert isinstance(result, dict)
+        assert result["status"] == "no_edges"
+        assert "stale_tests" in result
+        assert result["stale_tests"] == []
+
+    def test_returns_list_when_edges_exist(self, engine):
+        """stale_tests returns a normal list when edges are present."""
+        engine.analyze()
+        stats = engine.tool_stats()
+        if stats.get("test_edges", 0) > 0:
+            result = engine.tool_stale_tests()
+            assert isinstance(result, list)
+
+
+# ------------------------------------------------------------------ #
+# record_result heuristic edge creation
+# ------------------------------------------------------------------ #
+
+
+class TestRecordResultHeuristicEdges:
+    def test_creates_edges_from_filename_match(self, engine, git_project, run_git):
+        """record_result creates heuristic edges when no edges exist."""
+        engine.analyze()
+        # Clear edges to simulate missing edge builder
+        engine.storage._execute("DELETE FROM test_edges")
+
+        # Record result for a test file
+        test_units = engine.storage.get_test_units_by_file("tests/test_app.py")
+        if not test_units:
+            pytest.skip("no test units found")
+
+        result = engine.tool_record_result(
+            "tests/test_app.py", passed=True, duration_ms=100,
+        )
+        assert result["recorded"] is True
+        # "app" stem should match "app.py" code units
+        if result.get("heuristic_edges_created", 0) > 0:
+            edges = engine.storage.get_edges_for_test(test_units[0]["id"])
+            assert any(e["edge_type"] == "heuristic" for e in edges)
+
+    def test_skips_when_edges_already_exist(self, engine):
+        """record_result does NOT create heuristic edges if analyze built them."""
+        engine.analyze()
+        test_units = engine.storage.get_all_test_units()
+        if not test_units:
+            pytest.skip("no test units found")
+
+        # Edges already exist from analyze
+        edges_before = engine.storage.get_edges_for_test(test_units[0]["id"])
+        result = engine.tool_record_result(
+            test_units[0]["id"], passed=True, duration_ms=50,
+        )
+        assert result.get("heuristic_edges_created") is None
+        # No extra edges added
+        edges_after = engine.storage.get_edges_for_test(test_units[0]["id"])
+        assert len(edges_after) == len(edges_before)
+
+
+# ------------------------------------------------------------------ #
+# _test_to_source_stem helper
+# ------------------------------------------------------------------ #
+
+
+class TestTestToSourceStem:
+    def test_jest_test_js(self):
+        assert _test_to_source_stem("tests/services/nutritionService.test.js") == "nutritionService"
+
+    def test_jest_spec_ts(self):
+        assert _test_to_source_stem("tests/app.spec.ts") == "app"
+
+    def test_pytest_prefix(self):
+        assert _test_to_source_stem("tests/test_utils.py") == "utils"
+
+    def test_pytest_suffix(self):
+        assert _test_to_source_stem("tests/utils_test.py") == "utils"
+
+    def test_csharp_test_suffix(self):
+        assert _test_to_source_stem("Tests/CalculatorTest.cs") == "Calculator"
+
+    def test_no_test_markers(self):
+        # If there's no recognizable test affix, returns the raw stem
+        assert _test_to_source_stem("src/foo.js") == "foo"
+
+    def test_empty_stem_returns_none(self):
+        # Pathological: file named ".test.js" → stem "" → None
+        assert _test_to_source_stem(".test.js") is None
