@@ -1,21 +1,28 @@
 """Contextual next-step suggestions for MCP tool responses.
 
 Computes follow-up tool suggestions based on what a tool returned,
-so LLM agents know what to invoke next. Only used by MCP servers
-(HTTP and stdio), not the CLI.
+so LLM agents can directly invoke the suggested next tool. Only used
+by MCP servers (HTTP and stdio), not the CLI.
+
+Each suggestion is a dict with:
+    - tool: Chisel tool name to invoke (omitted for non-tool actions)
+    - args: Arguments dict for the tool call (may be partial — LLM
+            fills remaining required args from context)
+    - action: Descriptive action label (only for non-tool suggestions)
+    - reason: Why this step is recommended
 """
 
 
 def compute_next_steps(tool_name, result):
-    """Return a list of next-step suggestion strings for a tool result.
+    """Return a list of structured next-step suggestions for a tool result.
 
     Args:
         tool_name: Name of the tool that produced the result.
         result: The tool's return value (dict or list).
 
     Returns:
-        List of strings, each a brief actionable suggestion. Empty list
-        if no suggestions apply.
+        List of dicts, each a structured suggestion with ``tool``/``args``
+        or ``action`` plus ``reason``. Empty list if no suggestions apply.
     """
     fn = _TOOL_HINTS.get(tool_name)
     if fn is None:
@@ -30,9 +37,9 @@ def compute_next_steps(tool_name, result):
 def _hints_analyze(result):
     if isinstance(result, dict) and "code_files_scanned" in result:
         return [
-            "Run 'risk_map' to identify high-risk files.",
-            "Run 'test_gaps' to find untested code.",
-            "Run 'triage' for a combined risk + gap + stale overview.",
+            {"tool": "risk_map", "args": {}, "reason": "Identify high-risk files"},
+            {"tool": "test_gaps", "args": {}, "reason": "Find untested code"},
+            {"tool": "triage", "args": {}, "reason": "Combined risk + gap + stale overview"},
         ]
     return []
 
@@ -40,8 +47,8 @@ def _hints_analyze(result):
 def _hints_update(result):
     if isinstance(result, dict) and result.get("files_updated", 0) > 0:
         return [
-            "Run 'diff_impact' to see which tests are affected by the changes.",
-            "Run 'risk_map' to check updated risk scores.",
+            {"tool": "diff_impact", "args": {}, "reason": "See which tests are affected by changes"},
+            {"tool": "risk_map", "args": {}, "reason": "Check updated risk scores"},
         ]
     return []
 
@@ -51,46 +58,50 @@ def _hints_risk_map(result):
         top = result[:3]
         files = [r["file_path"] for r in top]
         steps = [
-            "Run 'test_gaps' to find missing test coverage for high-risk files.",
+            {"tool": "test_gaps", "args": {}, "reason": "Find missing coverage for high-risk files"},
         ]
-        # Suggest coupling drilldown for files with high coupling scores
         high_coupling = [
             r["file_path"] for r in top
             if r.get("breakdown", {}).get("coupling", 0) > 0.3
         ]
         if high_coupling:
             steps.append(
-                f"Run 'coupling {high_coupling[0]}' to see co-change partners."
+                {"tool": "coupling", "args": {"file_path": high_coupling[0]}, "reason": "Investigate co-change partners"}
             )
-        # Suggest churn drilldown for high-churn files
         high_churn = [
             r["file_path"] for r in top
             if r.get("breakdown", {}).get("churn", 0) > 0.5
         ]
         if high_churn:
             steps.append(
-                f"Run 'churn {high_churn[0]}' for detailed change history."
+                {"tool": "churn", "args": {"file_path": high_churn[0]}, "reason": "Detailed change history"}
             )
         steps.append(
-            f"Run 'suggest_tests {files[0]}' for test recommendations on the riskiest file."
+            {"tool": "suggest_tests", "args": {"file_path": files[0]}, "reason": "Test recommendations for riskiest file"}
         )
         return steps
     if isinstance(result, list):
-        return ["Run 'analyze' to populate risk data."]
+        return [{"tool": "analyze", "args": {}, "reason": "Populate risk data"}]
     return []
 
 
 def _hints_diff_impact(result):
+    # Diagnostic dict when no changes detected
+    if isinstance(result, dict) and result.get("status") == "no_changes":
+        return [
+            {"tool": "diff_impact", "args": {"ref": "HEAD~1"}, "reason": "Try diffing against previous commit"},
+            {"tool": "update", "args": {}, "reason": "Re-analyze if working tree has new files"},
+        ]
     if isinstance(result, list) and result:
         return [
-            "Run the listed tests to verify your changes.",
-            "Use 'record_result' to log outcomes for future prioritization.",
-            "Run 'coupling' on changed files to check for hidden dependents.",
+            {"action": "run_tests", "reason": "Execute impacted tests to verify changes"},
+            {"tool": "record_result", "args": {}, "reason": "Log outcomes for future prioritization"},
+            {"tool": "coupling", "args": {}, "reason": "Check changed files for hidden dependents"},
         ]
     if isinstance(result, list):
         return [
-            "Run 'test_gaps' to check if new code needs tests.",
-            "Run 'update' if you've made changes since last analysis.",
+            {"tool": "test_gaps", "args": {}, "reason": "Check if new code needs tests"},
+            {"tool": "update", "args": {}, "reason": "Re-analyze if changes were made since last analysis"},
         ]
     return []
 
@@ -99,31 +110,31 @@ def _hints_test_gaps(result):
     if isinstance(result, list) and result:
         top_file = result[0]["file_path"]
         return [
-            "Write tests for the highest-churn untested units first.",
-            f"Run 'churn {top_file}' to see change frequency.",
-            f"Run 'ownership {top_file}' to find who can help write tests.",
+            {"action": "write_tests", "reason": "Prioritize highest-churn untested units"},
+            {"tool": "churn", "args": {"file_path": top_file}, "reason": "Check change frequency"},
+            {"tool": "ownership", "args": {"file_path": top_file}, "reason": "Find who can help write tests"},
         ]
     if isinstance(result, list):
-        return ["All code units have test coverage."]
+        return [{"action": "complete", "reason": "All code units have test coverage"}]
     return []
 
 
 def _hints_stale_tests(result):
     if isinstance(result, list) and result:
         return [
-            "Update or remove the stale tests listed above.",
-            "Run 'update' to re-analyze after fixing test files.",
+            {"action": "fix_tests", "reason": "Update or remove stale tests listed above"},
+            {"tool": "update", "args": {}, "reason": "Re-analyze after fixing test files"},
         ]
     if isinstance(result, list):
-        return ["All tests reference current code."]
+        return [{"action": "complete", "reason": "All tests reference current code"}]
     return []
 
 
 def _hints_impact(result):
     if isinstance(result, list) and result:
         return [
-            "Run the impacted tests to verify correctness.",
-            "Use 'record_result' to log outcomes for future prioritization.",
+            {"action": "run_tests", "reason": "Execute impacted tests to verify correctness"},
+            {"tool": "record_result", "args": {}, "reason": "Log outcomes for future prioritization"},
         ]
     return []
 
@@ -131,8 +142,8 @@ def _hints_impact(result):
 def _hints_suggest_tests(result):
     if isinstance(result, list) and result:
         return [
-            "Run the suggested tests in order of relevance.",
-            "Use 'record_result' to log outcomes for future prioritization.",
+            {"action": "run_tests", "reason": "Execute suggested tests in order of relevance"},
+            {"tool": "record_result", "args": {}, "reason": "Log outcomes for future prioritization"},
         ]
     return []
 
@@ -142,12 +153,12 @@ def _hints_triage(result):
         steps = []
         if result["summary"].get("total_test_gaps", 0) > 0:
             steps.append(
-                "Focus on files appearing in both risk and gap sections."
+                {"action": "prioritize", "reason": "Focus on files appearing in both risk and gap sections"}
             )
         if result["top_risk_files"]:
             top = result["top_risk_files"][0]["file_path"]
-            steps.append(f"Run 'suggest_tests {top}' on the highest-risk file.")
-            steps.append(f"Run 'ownership {top}' to find who owns the riskiest code.")
+            steps.append({"tool": "suggest_tests", "args": {"file_path": top}, "reason": "Test recommendations for riskiest file"})
+            steps.append({"tool": "ownership", "args": {"file_path": top}, "reason": "Identify who owns the riskiest code"})
         return steps
     return []
 

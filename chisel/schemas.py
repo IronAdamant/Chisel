@@ -1,19 +1,21 @@
 """Tool schemas and dispatch tables for Chisel MCP servers.
 
-Contains the JSON Schema definitions for all 15 engine tools and the
+Contains the JSON Schema definitions for all 16 engine tools and the
 dispatch mapping used by both the HTTP and stdio MCP servers.
 """
 
 # ------------------------------------------------------------------ #
-# Tool schemas — JSON Schema definitions for all 15 engine tools
+# Tool schemas — JSON Schema definitions for all 16 engine tools
 # ------------------------------------------------------------------ #
 
 _TOOL_SCHEMAS = {
     "analyze": {
         "name": "analyze",
         "description": (
-            "Run full code analysis on the project. Scans files, parses code "
-            "units, discovers tests, parses git history, and builds test edges."
+            "Full project analysis. Use on first run or after major structural "
+            "changes (new files, renames, deleted code). Scans source files, "
+            "extracts code units, discovers tests, parses git history, builds "
+            "test-to-code edges. For incremental changes, use 'update' instead."
         ),
         "parameters": {
             "type": "object",
@@ -33,7 +35,9 @@ _TOOL_SCHEMAS = {
     "impact": {
         "name": "impact",
         "description": (
-            "Get impacted tests for the given changed files and optional functions."
+            "Get impacted tests for specific changed files/functions. Use when "
+            "you know exactly which files changed. For auto-detection from git "
+            "diff, use 'diff_impact' instead."
         ),
         "parameters": {
             "type": "object",
@@ -54,7 +58,7 @@ _TOOL_SCHEMAS = {
     },
     "suggest_tests": {
         "name": "suggest_tests",
-        "description": "Suggest tests to run for a given file.",
+        "description": "Suggest tests to run for a file, ranked by relevance. Use to find existing test coverage for a specific file.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -68,7 +72,7 @@ _TOOL_SCHEMAS = {
     },
     "churn": {
         "name": "churn",
-        "description": "Get churn statistics for a file or a specific unit within it.",
+        "description": "Get change frequency for a file or specific function. High churn = frequently modified = higher risk. Use to understand why a file has a high risk score.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -86,7 +90,7 @@ _TOOL_SCHEMAS = {
     },
     "ownership": {
         "name": "ownership",
-        "description": "Get code ownership breakdown showing original authors (blame-based). Each entry has role='original_author'.",
+        "description": "Get original authors of a file via git blame. Returns role='original_author'. For active maintainers/reviewers, use 'who_reviews' instead.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -100,7 +104,7 @@ _TOOL_SCHEMAS = {
     },
     "coupling": {
         "name": "coupling",
-        "description": "Get co-change coupling partners for a file.",
+        "description": "Get files that frequently change together (co-change coupling). Use when risk_map shows coupling > 0, or before refactoring to find hidden dependencies. Threshold scales with project maturity (see 'stats' for current value).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -118,7 +122,7 @@ _TOOL_SCHEMAS = {
     },
     "risk_map": {
         "name": "risk_map",
-        "description": "Compute risk scores for all files in the project.",
+        "description": "Risk scores for all files combining churn, coupling, coverage gaps, author concentration, and test instability. Use to prioritize which files need attention. Coupling=0.0 may indicate threshold too high — check 'stats' for coupling_threshold.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -132,7 +136,7 @@ _TOOL_SCHEMAS = {
     },
     "stale_tests": {
         "name": "stale_tests",
-        "description": "Detect stale tests whose source code has changed since last run.",
+        "description": "Find tests whose source targets have changed since last analysis. Use to identify tests that may need updating.",
         "parameters": {
             "type": "object",
             "properties": {},
@@ -141,7 +145,7 @@ _TOOL_SCHEMAS = {
     },
     "history": {
         "name": "history",
-        "description": "Get commit history for a specific file.",
+        "description": "Commit history for a specific file. Use for understanding change patterns or finding when a bug was introduced.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -155,7 +159,7 @@ _TOOL_SCHEMAS = {
     },
     "who_reviews": {
         "name": "who_reviews",
-        "description": "Suggest reviewers for a file based on recent commit activity. Each entry has role='suggested_reviewer' — these are not original authors but active maintainers best suited to review changes.",
+        "description": "Suggest reviewers based on recent commit activity. Returns role='suggested_reviewer' — active maintainers, not original authors. For original authors, use 'ownership' instead.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -169,7 +173,7 @@ _TOOL_SCHEMAS = {
     },
     "record_result": {
         "name": "record_result",
-        "description": "Record a test result (pass/fail) for future prioritization.",
+        "description": "Record a test pass/fail outcome. Feeds into suggest_tests (failure rate) and risk_map (test instability). Use after running tests.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -192,8 +196,10 @@ _TOOL_SCHEMAS = {
     "diff_impact": {
         "name": "diff_impact",
         "description": (
-            "Auto-detect changed files and functions from git diff, "
-            "then return impacted tests. No need to specify files manually."
+            "Use after editing code to find which tests to run. Auto-detects "
+            "changed files/functions from git diff. On feature branches diffs "
+            "against main; on main diffs HEAD. Returns diagnostic with "
+            "suggestions when no changes detected."
         ),
         "parameters": {
             "type": "object",
@@ -208,7 +214,7 @@ _TOOL_SCHEMAS = {
     },
     "update": {
         "name": "update",
-        "description": "Incremental re-analysis — only re-process changed files and new commits since last analysis.",
+        "description": "Incremental re-analysis — only changed files and new commits. Use instead of full 'analyze' after small edits.",
         "parameters": {
             "type": "object",
             "properties": {},
@@ -217,7 +223,7 @@ _TOOL_SCHEMAS = {
     },
     "stats": {
         "name": "stats",
-        "description": "Get summary counts for the Chisel database (code units, tests, edges, commits, etc.).",
+        "description": "Database summary counts plus coupling threshold. Use to verify analysis state or diagnose empty results from other tools.",
         "parameters": {
             "type": "object",
             "properties": {},
@@ -227,8 +233,8 @@ _TOOL_SCHEMAS = {
     "test_gaps": {
         "name": "test_gaps",
         "description": (
-            "Find code units (functions, classes) with no test coverage, "
-            "prioritized by churn risk. Use after analyze to see what new tests need to be written."
+            "Find code units with no test coverage, sorted by churn risk. "
+            "Use to decide which tests to write first. Excludes test files by default."
         ),
         "parameters": {
             "type": "object",
@@ -252,9 +258,9 @@ _TOOL_SCHEMAS = {
     "triage": {
         "name": "triage",
         "description": (
-            "Combined triage: risk map, test gaps, and stale tests for "
-            "top-N riskiest files. Single command for prioritizing work "
-            "before audits, refactors, or large changes."
+            "Combined risk + test gaps + stale tests for top-N files. "
+            "Use as the first reconnaissance step before audits or "
+            "refactors. Single call replaces risk_map + test_gaps + stale_tests."
         ),
         "parameters": {
             "type": "object",

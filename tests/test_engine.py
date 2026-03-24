@@ -175,9 +175,12 @@ class TestToolMethods:
 
     def test_tool_diff_impact_no_changes(self, engine):
         engine.analyze()
-        # After analyze with clean working tree, no diff changes
+        # After analyze with clean working tree, returns diagnostic dict
         result = engine.tool_diff_impact()
-        assert isinstance(result, list)
+        assert isinstance(result, dict)
+        assert result["status"] == "no_changes"
+        assert "ref" in result
+        assert "message" in result
 
     def test_tool_diff_impact_with_changes(self, engine, git_project):
         engine.analyze()
@@ -221,16 +224,20 @@ class TestToolMethods:
         engine.analyze()
         result = engine.tool_stats()
         assert isinstance(result, dict)
-        expected_keys = {
+        base_keys = {
             "code_units", "test_units", "test_edges", "commits",
             "commit_files", "blame_cache", "co_changes", "churn_stats",
             "file_hashes", "test_results",
         }
-        assert set(result.keys()) == expected_keys
-        for key in expected_keys:
+        assert base_keys.issubset(set(result.keys()))
+        for key in base_keys:
             assert isinstance(result[key], int)
             assert result[key] >= 0
         assert result["code_units"] > 0
+        # coupling_threshold present when commits > 0
+        if result["commits"] > 0:
+            assert "coupling_threshold" in result
+            assert result["coupling_threshold"] == max(3, result["commits"] // 4)
 
 
 # ------------------------------------------------------------------ #

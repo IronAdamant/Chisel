@@ -253,6 +253,9 @@ class ChiselEngine:
 
         If ref is not provided, auto-detects: on a feature branch diffs against
         main/master; on main diffs against HEAD (unstaged changes).
+
+        Returns a diagnostic dict (status="no_changes") instead of bare []
+        when no diff is found, so LLM agents can reason about why.
         """
         with self._process_lock.shared():
             with self.lock.read_lock():
@@ -263,7 +266,16 @@ class ChiselEngine:
             ref = self._detect_diff_base()
         changed_files = self.git.get_changed_files(ref)
         if not changed_files:
-            return []
+            try:
+                branch = self.git.get_current_branch()
+            except RuntimeError:
+                branch = None
+            return {
+                "status": "no_changes",
+                "ref": ref,
+                "branch": branch,
+                "message": f"No files differ against '{ref}'",
+            }
         functions = []
         for fp in changed_files:
             try:
@@ -328,6 +340,10 @@ class ChiselEngine:
                 stats = self.storage.get_stats()
                 if all(v == 0 for v in stats.values()):
                     stats["hint"] = "All counts are zero. Run 'chisel analyze' to populate."
+                else:
+                    commit_count = stats.get("commits", 0)
+                    if commit_count > 0:
+                        stats["coupling_threshold"] = max(3, commit_count // 4)
                 return stats
 
     # ------------------------------------------------------------------ #

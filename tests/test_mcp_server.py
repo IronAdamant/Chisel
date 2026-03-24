@@ -310,7 +310,7 @@ class TestNextSteps:
         assert status == 200
         assert "next_steps" in body
         assert isinstance(body["next_steps"], list)
-        assert any("risk_map" in s for s in body["next_steps"])
+        assert any(s.get("tool") == "risk_map" for s in body["next_steps"])
 
     def test_risk_map_returns_next_steps(self, base_url):
         """Risk map should include next_steps when results exist."""
