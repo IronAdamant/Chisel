@@ -20,6 +20,7 @@ _SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".tox", ".venv", "venv",
     "env", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist",
     "build", ".eggs", "target", "vendor", "Pods",
+    "coverage", ".next", ".nuxt",
 }
 
 
@@ -319,6 +320,10 @@ _JS_ARROW_RE = re.compile(
     r"^\s*(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$]\w*)"
     r"\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$]\w*)\s*=>",
 )
+# Jest / Mocha / Vitest test block calls: describe('name', ...), it('name', ...), test('name', ...)
+_JS_JEST_BLOCK_RE = re.compile(
+    r"""^\s*(?P<keyword>describe|it|test)(?:\.(?:only|skip|todo))?\s*\(\s*(?P<q>['"`])(?P<name>.*?)(?P=q)""",
+)
 
 # ---------------------------------------------------------------------------
 # Go
@@ -512,10 +517,19 @@ def _name_kind(m):
     return m.group("name"), m.group("kind")
 
 
+def _jest_block_type(m):
+    """Extract (name, type) from a Jest/Mocha/Vitest test block match."""
+    name = m.group("name")
+    if m.group("keyword") == "describe":
+        return name, "test_suite"
+    return name, "test_case"
+
+
 _JS_TS_PATTERNS = [
     (_JS_NAMED_FUNC_RE, "function"),
     (_JS_CLASS_RE, "class"),
     (_JS_ARROW_RE, "function"),
+    (_JS_JEST_BLOCK_RE, _jest_block_type),
 ]
 
 _GO_PATTERNS = [

@@ -39,6 +39,10 @@ _FRAMEWORK_PATTERNS = [
 ]
 
 
+# Unit types that are inherently test constructs (from Jest/Mocha/Vitest block extraction).
+_TEST_UNIT_TYPES = frozenset({"test_suite", "test_case"})
+
+
 class TestMapper:
     """Discovers test files, parses them, extracts dependencies, builds edges."""
 
@@ -119,7 +123,7 @@ class TestMapper:
 
         test_units = []
         for unit in units:
-            if _is_test_name(unit.name, framework):
+            if unit.unit_type in _TEST_UNIT_TYPES or _is_test_name(unit.name, framework):
                 tid = f"{rel_path}:{unit.name}"
                 test_units.append({
                     "id": tid,

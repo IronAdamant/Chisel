@@ -17,16 +17,17 @@ from chisel.test_mapper import TestMapper
 _CODE_EXTENSIONS = frozenset(_EXTENSION_MAP)
 
 def _coupling_threshold(commit_count):
-    """Adaptive co-change threshold with logarithmic scaling.
+    """Adaptive co-change threshold with half-log scaling.
 
-    Previous formula ``max(3, commits // 4)`` was too aggressive — a project
-    with 400 commits required 100 co-commits, filtering out all signal.
-    Logarithmic scaling keeps the noise floor reasonable at any size:
-      10 → 4, 50 → 6, 200 → 8, 1000 → 11, 10000 → 14.
+    Previous ``max(3, int(log2(N)) + 1)`` was too aggressive for small/medium
+    projects — 10 commits → threshold 4, killing all signal when max co-change
+    is typically 2-3.  Half-log with a floor of 2 surfaces early coupling
+    signal while still scaling to filter noise in large repos:
+      10 → 2, 50 → 3, 100 → 4, 200 → 4, 1000 → 5, 10000 → 7.
     """
     if commit_count <= 0:
-        return 3
-    return max(3, int(math.log2(commit_count)) + 1)
+        return 2
+    return max(2, int(math.log2(commit_count) / 2) + 1)
 
 
 def _diagnose_uniform(comp, value, stats):

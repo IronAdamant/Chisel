@@ -262,7 +262,7 @@ class TestToolMethods:
         if result["commits"] > 0:
             assert "coupling_threshold" in result
             import math
-            expected = max(3, int(math.log2(result["commits"])) + 1)
+            expected = max(2, int(math.log2(result["commits"]) / 2) + 1)
             assert result["coupling_threshold"] == expected
 
 
@@ -639,18 +639,19 @@ class TestProcessLockUsage:
 
 class TestCouplingThreshold:
     def test_minimum_floor(self):
-        assert _coupling_threshold(0) == 3
-        assert _coupling_threshold(1) == 3
-        assert _coupling_threshold(4) == 3
+        assert _coupling_threshold(0) == 2
+        assert _coupling_threshold(1) == 2
+        assert _coupling_threshold(4) == 2
 
-    def test_logarithmic_scaling(self):
-        assert _coupling_threshold(10) == 4   # log2(10)=3.3 → 3+1=4
-        assert _coupling_threshold(50) == 6   # log2(50)=5.6 → 5+1=6
-        assert _coupling_threshold(200) == 8  # log2(200)=7.6 → 7+1=8
-        assert _coupling_threshold(1000) == 10  # log2(1000)=9.9 → 9+1=10
+    def test_half_log_scaling(self):
+        # Half-log: int(log2(N)/2) + 1, floor 2
+        assert _coupling_threshold(10) == 2   # log2(10)/2=1.66 → 1+1=2
+        assert _coupling_threshold(50) == 3   # log2(50)/2=2.82 → 2+1=3
+        assert _coupling_threshold(200) == 4  # log2(200)/2=3.82 → 3+1=4
+        assert _coupling_threshold(1000) == 5  # log2(1000)/2=4.98 → 4+1=5
 
     def test_large_repos_reasonable(self):
-        # At 10k commits, threshold should be ~14, not 2500
+        # At 10k commits, threshold should be ~7, not 2500
         threshold = _coupling_threshold(10000)
-        assert threshold <= 15
-        assert threshold >= 10
+        assert threshold <= 8
+        assert threshold >= 5
