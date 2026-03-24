@@ -223,20 +223,29 @@ class ImpactAnalyzer:
     # Risk map
     # ------------------------------------------------------------------ #
 
-    def get_risk_map(self, directory=None):
+    def get_risk_map(self, directory=None, exclude_tests=True):
         """Compute risk scores for all tracked files (optionally in a directory).
 
         Uses batch queries to avoid the N+1 pattern: fetches churn, coupling,
         code units, edges, and blame for all files in a small number of queries.
+
+        Args:
+            directory: Optional subdirectory to scope the risk map.
+            exclude_tests: If True (default), exclude test files from the
+                risk map.  Test files always score coverage_gap=1.0 (edges
+                go *from* tests, never *to* test-file code units), which
+                adds noise and masks real coverage differences.
 
         Returns:
             List of dicts: {file_path, risk_score, breakdown}
         """
         all_churn = self.storage.get_all_churn_stats()
         dir_prefix = directory.rstrip("/") + "/" if directory else ""
+        test_files = self.storage.get_test_file_paths() if exclude_tests else set()
         files = sorted({
             stat["file_path"] for stat in all_churn
-            if not directory or stat["file_path"].startswith(dir_prefix)
+            if (not directory or stat["file_path"].startswith(dir_prefix))
+            and stat["file_path"] not in test_files
         })
         if not files:
             return []

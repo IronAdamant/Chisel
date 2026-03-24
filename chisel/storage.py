@@ -264,6 +264,13 @@ class Storage:
     def get_all_test_units(self):
         return self._fetchall("SELECT * FROM test_units ORDER BY file_path, name")
 
+    def get_test_file_paths(self):
+        """Return the set of file paths that contain test units."""
+        rows = self._fetchall(
+            "SELECT DISTINCT file_path FROM test_units",
+        )
+        return {r["file_path"] for r in rows}
+
     # --- test_edges ---
 
     def upsert_test_edge(self, test_id, code_id, edge_type, weight=1.0):

@@ -725,7 +725,7 @@ class TestMain:
 
         main(["risk-map", "--project-dir", "/tmp/p"])
 
-        engine.tool_risk_map.assert_called_once_with(directory=None)
+        engine.tool_risk_map.assert_called_once_with(directory=None, exclude_tests=True)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_stale_tests(self, mock_cls):
@@ -831,7 +831,7 @@ class TestMain:
 
         main(["triage", "--project-dir", "/tmp/p"])
 
-        engine.tool_triage.assert_called_once_with(directory=None, top_n=10)
+        engine.tool_triage.assert_called_once_with(directory=None, top_n=10, exclude_tests=True)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_triage_with_args(self, mock_cls):
@@ -844,7 +844,7 @@ class TestMain:
 
         main(["triage", "--project-dir", "/tmp/p", "src/", "--top-n", "5"])
 
-        engine.tool_triage.assert_called_once_with(directory="src/", top_n=5)
+        engine.tool_triage.assert_called_once_with(directory="src/", top_n=5, exclude_tests=True)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_stats(self, mock_cls):

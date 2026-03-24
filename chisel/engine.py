@@ -284,18 +284,25 @@ class ChiselEngine:
                     return empty
                 return self.storage.get_co_changes(file_path, min_count)
 
-    def tool_risk_map(self, directory=None):
+    def tool_risk_map(self, directory=None, exclude_tests=True):
         """MCP tool: risk scores for all files.
 
         Returns ``{"files": [...], "_meta": {...}}`` so LLM agents can
         inspect which risk components are differentiating vs uniform noise.
+
+        Args:
+            directory: Optional subdirectory to scope the risk map.
+            exclude_tests: If True (default), exclude test files.  Test
+                files always score coverage_gap=1.0 (no edges point *to*
+                test-file code units), which adds noise and masks real
+                coverage signal.
         """
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                files = self.impact.get_risk_map(directory)
+                files = self.impact.get_risk_map(directory, exclude_tests)
                 meta = self._build_risk_meta(files)
                 return {"files": files, "_meta": meta}
 
@@ -414,14 +421,16 @@ class ChiselEngine:
                     result["heuristic_edges_created"] = edges_created
                 return result
 
-    def tool_triage(self, directory=None, top_n=10):
+    def tool_triage(self, directory=None, top_n=10, exclude_tests=True):
         """MCP tool: combined risk_map + test_gaps + stale_tests triage."""
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                risk_map = self.impact.get_risk_map(directory)[:top_n]
+                risk_map = self.impact.get_risk_map(
+                    directory, exclude_tests,
+                )[:top_n]
                 test_gaps = self.impact.get_test_gaps(directory=directory)
                 stale = self.impact.detect_stale_tests()
                 stats = self.storage.get_stats()

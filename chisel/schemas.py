@@ -137,6 +137,13 @@ _TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Optional subdirectory to scope the risk map.",
                 },
+                "exclude_tests": {
+                    "type": "boolean",
+                    "description": (
+                        "Exclude test files (default: true). Test files always "
+                        "score coverage_gap=1.0, adding noise."
+                    ),
+                },
             },
             "required": [],
         },
@@ -280,6 +287,12 @@ _TOOL_SCHEMAS = {
                     "type": "integer",
                     "description": "Number of top-risk files to include (default: 10).",
                 },
+                "exclude_tests": {
+                    "type": "boolean",
+                    "description": (
+                        "Exclude test files from risk ranking (default: true)."
+                    ),
+                },
             },
             "required": [],
         },
@@ -297,7 +310,7 @@ _TOOL_DISPATCH = {
     "churn": ("tool_churn", ["file_path", "unit_name"]),
     "ownership": ("tool_ownership", ["file_path"]),
     "coupling": ("tool_coupling", ["file_path", "min_count"]),
-    "risk_map": ("tool_risk_map", ["directory"]),
+    "risk_map": ("tool_risk_map", ["directory", "exclude_tests"]),
     "stale_tests": ("tool_stale_tests", []),
     "history": ("tool_history", ["file_path"]),
     "who_reviews": ("tool_who_reviews", ["file_path"]),
@@ -305,7 +318,7 @@ _TOOL_DISPATCH = {
     "update": ("tool_update", []),
     "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests"]),
     "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
-    "triage": ("tool_triage", ["directory", "top_n"]),
+    "triage": ("tool_triage", ["directory", "top_n", "exclude_tests"]),
     "stats": ("tool_stats", []),
 }
 

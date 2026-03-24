@@ -138,6 +138,31 @@ class TestToolMethods:
         assert isinstance(result["files"], list)
         assert len(result["files"]) > 0
 
+    def test_tool_risk_map_excludes_test_files(self, engine):
+        engine.analyze()
+        result = engine.tool_risk_map()
+        files = [r["file_path"] for r in result["files"]]
+        # test_app.py should be excluded by default
+        assert not any("test_" in f for f in files)
+        # Source file should be present
+        assert "app.py" in files
+
+    def test_tool_risk_map_include_tests(self, engine):
+        engine.analyze()
+        result = engine.tool_risk_map(exclude_tests=False)
+        files = [r["file_path"] for r in result["files"]]
+        assert any("test_" in f for f in files)
+
+    def test_tool_risk_map_coverage_gap_with_edges(self, engine):
+        """coverage_gap should be < 1.0 for files with test edges."""
+        engine.analyze()
+        result = engine.tool_risk_map()
+        app = next(r for r in result["files"] if r["file_path"] == "app.py")
+        # app.py has 3 functions, 2 are tested (process_data, validate_input)
+        # format_output is untested → coverage_gap = 1/3 ≈ 0.33
+        assert app["breakdown"]["coverage_gap"] < 1.0
+        assert abs(app["breakdown"]["coverage_gap"] - 0.3333) < 0.01
+
     def test_tool_stale_tests(self, engine):
         engine.analyze()
         result = engine.tool_stale_tests()

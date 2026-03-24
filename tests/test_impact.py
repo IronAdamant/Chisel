@@ -209,6 +209,48 @@ class TestRiskMap:
         solo = next(r for r in risk_map if r["file_path"] == "solo.py")
         assert solo["coupling_partners"] == []
 
+    def test_coverage_gap_reflects_test_edges(self, storage, analyzer):
+        """Files with test edges should have coverage_gap < 1.0."""
+        _seed_basic_data(storage)
+        risk_map = analyzer.get_risk_map()
+        app = next(r for r in risk_map if r["file_path"] == "app.py")
+        lib = next(r for r in risk_map if r["file_path"] == "lib.py")
+        # app.py: foo and bar both have edges → 0/2 gap → 0.0
+        assert app["breakdown"]["coverage_gap"] == 0.0
+        # lib.py: helper has edge → 0/1 gap → 0.0
+        assert lib["breakdown"]["coverage_gap"] == 0.0
+
+    def test_coverage_gap_partial_coverage(self, storage, analyzer):
+        """File with some tested and some untested units."""
+        storage.upsert_code_unit("m.py:a:func", "m.py", "a", "func", 1, 5)
+        storage.upsert_code_unit("m.py:b:func", "m.py", "b", "func", 6, 10)
+        storage.upsert_code_unit("m.py:c:func", "m.py", "c", "func", 11, 15)
+        storage.upsert_test_unit("test_m.py:t1", "test_m.py", "t1", "pytest")
+        storage.upsert_test_edge("test_m.py:t1", "m.py:a:func", "import")
+        storage.upsert_churn_stat("m.py", "", churn_score=1.0)
+        risk_map = analyzer.get_risk_map()
+        entry = next(r for r in risk_map if r["file_path"] == "m.py")
+        # 1 of 3 tested → coverage 0.333, gap 0.667
+        assert abs(entry["breakdown"]["coverage_gap"] - 0.6667) < 0.01
+
+    def test_exclude_tests_filters_test_files(self, storage, analyzer):
+        """Test files should be excluded from risk_map by default."""
+        _seed_basic_data(storage)
+        # test_app.py has churn (from seed) — would appear without filtering
+        storage.upsert_churn_stat("test_app.py", "", churn_score=1.0)
+        risk_map = analyzer.get_risk_map()
+        files = [r["file_path"] for r in risk_map]
+        assert "test_app.py" not in files
+        assert "app.py" in files
+
+    def test_exclude_tests_false_includes_test_files(self, storage, analyzer):
+        """exclude_tests=False includes test files."""
+        _seed_basic_data(storage)
+        storage.upsert_churn_stat("test_app.py", "", churn_score=1.0)
+        risk_map = analyzer.get_risk_map(exclude_tests=False)
+        files = [r["file_path"] for r in risk_map]
+        assert "test_app.py" in files
+
 
 class TestGetOwnership:
     def test_returns_authors(self, storage, analyzer):

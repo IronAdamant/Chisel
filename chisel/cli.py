@@ -83,6 +83,8 @@ def create_parser():
                             help="Show risk scores for all files")
     p_risk.add_argument("directory", nargs="?", default=None,
                         help="Directory to scope (default: all)")
+    p_risk.add_argument("--no-exclude-tests", action="store_true", default=False,
+                        help="Include test files in risk map")
 
     # stale-tests
     sub.add_parser("stale-tests", parents=[shared], help="Detect stale tests")
@@ -140,6 +142,8 @@ def create_parser():
                            help="Directory to scope (default: all)")
     p_triage.add_argument("--top-n", type=int, default=10,
                            help="Number of top-risk files (default: 10)")
+    p_triage.add_argument("--no-exclude-tests", action="store_true", default=False,
+                           help="Include test files in risk ranking")
 
     # serve
     p_serve = sub.add_parser("serve", parents=[shared],
@@ -297,7 +301,9 @@ def cmd_risk_map(args):
             print("\nDiagnostics (uniform components — not differentiating):")
             for comp, info in uniform.items():
                 print(f"  {comp}: {info['reason']}")
-    return _run_tool(args, "tool_risk_map", {"directory": args.directory}, fmt)
+    return _run_tool(args, "tool_risk_map",
+                     {"directory": args.directory,
+                      "exclude_tests": not args.no_exclude_tests}, fmt)
 
 
 def cmd_stale_tests(args):
@@ -386,7 +392,8 @@ def cmd_triage(args):
         else:
             print("\nNo stale tests found.")
     return _run_tool(args, "tool_triage",
-                     {"directory": args.directory, "top_n": args.top_n},
+                     {"directory": args.directory, "top_n": args.top_n,
+                      "exclude_tests": not args.no_exclude_tests},
                      fmt, use_limit=False)
 
 
