@@ -364,15 +364,17 @@ class TestHandlerOutputFormats:
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_risk_map_human(self, mock_cls, capsys):
         engine = _make_engine_mock()
-        engine.tool_risk_map.return_value = [
-            {"file_path": "core.py", "risk_score": 8.2},
-        ]
+        engine.tool_risk_map.return_value = {
+            "files": [{"file_path": "core.py", "risk_score": 8.2}],
+            "_meta": {"total_files": 1, "effective_components": ["churn"],
+                      "uniform_components": {}},
+        }
         mock_cls.return_value = engine
 
         args = _make_args(directory=None)
         result = cmd_risk_map(args)
 
-        assert len(result) == 1
+        assert "files" in result
         output = capsys.readouterr().out
         assert "core.py" in output
         assert "8.2" in output
@@ -716,7 +718,9 @@ class TestMain:
     @patch("chisel.cli.ChiselEngine")
     def test_main_risk_map(self, mock_cls):
         engine = _make_engine_mock()
-        engine.tool_risk_map.return_value = []
+        engine.tool_risk_map.return_value = {
+            "files": [], "_meta": {"total_files": 0},
+        }
         mock_cls.return_value = engine
 
         main(["risk-map", "--project-dir", "/tmp/p"])
@@ -882,6 +886,14 @@ class TestLimitParameter:
         no_data = {"status": "no_data", "message": "msg", "hint": "hint"}
         result = _limit(no_data, args)
         assert result == no_data
+
+    def test_limit_dict_with_files_key(self):
+        """Dicts with a 'files' list (risk_map envelope) should be truncated."""
+        args = _make_args(limit=2)
+        data = {"files": [1, 2, 3, 4], "_meta": {"total_files": 4}}
+        result = _limit(data, args)
+        assert result["files"] == [1, 2]
+        assert result["_meta"]["total_files"] == 4  # meta unchanged
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_with_limit(self, mock_cls, capsys):

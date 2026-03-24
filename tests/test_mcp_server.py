@@ -178,7 +178,11 @@ class TestToolExecution:
             "arguments": {},
         })
         assert status == 200
-        assert isinstance(body["result"], list)
+        result = body["result"]
+        assert isinstance(result, dict)
+        assert "files" in result
+        assert "_meta" in result
+        assert isinstance(result["files"], list)
 
     def test_triage_after_analyze(self, base_url):
         """Run analyze first, then request triage."""
@@ -326,8 +330,8 @@ class TestNextSteps:
         assert "next_steps" in body
         assert len(body["next_steps"]) >= 1
 
-    def test_no_next_steps_for_churn(self, base_url):
-        """Tools without hints should not include next_steps."""
+    def test_churn_returns_next_steps(self, base_url):
+        """Churn should include next_steps when results exist."""
         _request(base_url, "POST", "/call", {
             "tool": "analyze",
             "arguments": {},
@@ -337,7 +341,8 @@ class TestNextSteps:
             "arguments": {"file_path": "app.py"},
         })
         assert status == 200
-        assert "next_steps" not in body
+        assert "next_steps" in body
+        assert any(s.get("tool") == "risk_map" for s in body["next_steps"])
 
 
 class TestToolCall:

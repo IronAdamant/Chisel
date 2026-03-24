@@ -166,9 +166,12 @@ def _print_json(data):
 
 
 def _limit(result, args):
-    """Apply --limit to list results."""
-    if args.limit is not None and isinstance(result, list):
-        return result[:args.limit]
+    """Apply --limit to list results or dict-wrapped file lists."""
+    if args.limit is not None:
+        if isinstance(result, list):
+            return result[:args.limit]
+        if isinstance(result, dict) and isinstance(result.get("files"), list):
+            return {**result, "files": result["files"][:args.limit]}
     return result
 
 
@@ -274,9 +277,25 @@ def cmd_coupling(args):
 
 
 def cmd_risk_map(args):
-    return _run_tool(args, "tool_risk_map", {"directory": args.directory},
-                     _fmt_list("No risk data.", "Risk map:",
-                               lambda i: f"{i['file_path']}: {i['risk_score']}"))
+    def fmt(result, _args):
+        if isinstance(result, dict) and "files" in result:
+            files = result["files"]
+            meta = result.get("_meta", {})
+        else:
+            files = result if isinstance(result, list) else []
+            meta = {}
+        if not files:
+            print("No risk data.")
+            return
+        print("Risk map:")
+        for item in files:
+            print(f"  {item['file_path']}: {item['risk_score']}")
+        uniform = meta.get("uniform_components", {})
+        if uniform:
+            print("\nDiagnostics (uniform components — not differentiating):")
+            for comp, info in uniform.items():
+                print(f"  {comp}: {info['reason']}")
+    return _run_tool(args, "tool_risk_map", {"directory": args.directory}, fmt)
 
 
 def cmd_stale_tests(args):

@@ -1,5 +1,6 @@
 """ChiselEngine — main orchestrator tying together all subsystems."""
 
+import math
 import os
 
 from chisel.ast_utils import _EXTENSION_MAP, _SKIP_DIRS, compute_file_hash, extract_code_units
@@ -14,6 +15,55 @@ from chisel.test_mapper import TestMapper
 
 # Derived from ast_utils._EXTENSION_MAP to avoid duplication.
 _CODE_EXTENSIONS = frozenset(_EXTENSION_MAP)
+
+def _coupling_threshold(commit_count):
+    """Adaptive co-change threshold with logarithmic scaling.
+
+    Previous formula ``max(3, commits // 4)`` was too aggressive — a project
+    with 400 commits required 100 co-commits, filtering out all signal.
+    Logarithmic scaling keeps the noise floor reasonable at any size:
+      10 → 4, 50 → 6, 200 → 8, 1000 → 11, 10000 → 14.
+    """
+    if commit_count <= 0:
+        return 3
+    return max(3, int(math.log2(commit_count)) + 1)
+
+
+def _diagnose_uniform(comp, value, stats):
+    """Return a diagnostic reason for a uniform risk component."""
+    if comp == "coupling":
+        if value == 0.0:
+            threshold = _coupling_threshold(stats.get("commits", 0))
+            return (f"no co-changes above threshold ({threshold}); "
+                    "may need more git history or lower threshold")
+        return "all files equally coupled"
+    if comp == "coverage_gap":
+        edges = stats.get("test_edges", 0)
+        if value == 1.0 and edges == 0:
+            return ("no test edges found; edge builder may not match "
+                    "this project's import/require patterns")
+        if value == 1.0:
+            return "no code units have test edges despite edges existing"
+        if value == 0.0:
+            return "all code units have test coverage"
+        return f"all files have identical coverage ({value})"
+    if comp == "test_instability":
+        results = stats.get("test_results", 0)
+        if value == 0.0 and results == 0:
+            return "no test results recorded; use record_result after running tests"
+        if value == 0.0:
+            return "all covering tests passing"
+        return f"all files have identical instability ({value})"
+    if comp == "author_concentration":
+        if value == 1.0:
+            return "single author per file (common in small teams)"
+        return f"all files have identical concentration ({value})"
+    if comp == "churn":
+        if value == 0.0:
+            return "no churn data; run analyze with git history"
+        return f"all files have identical churn ({value})"
+    return ""
+
 
 _NO_DATA_RESPONSE = {
     "status": "no_data",
@@ -213,13 +263,19 @@ class ChiselEngine:
                 return self.storage.get_co_changes(file_path, min_count)
 
     def tool_risk_map(self, directory=None):
-        """MCP tool: risk scores for all files."""
+        """MCP tool: risk scores for all files.
+
+        Returns ``{"files": [...], "_meta": {...}}`` so LLM agents can
+        inspect which risk components are differentiating vs uniform noise.
+        """
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                return self.impact.get_risk_map(directory)
+                files = self.impact.get_risk_map(directory)
+                meta = self._build_risk_meta(files)
+                return {"files": files, "_meta": meta}
 
     def tool_stale_tests(self):
         """MCP tool: detect stale tests."""
@@ -318,10 +374,12 @@ class ChiselEngine:
                 risk_map = self.impact.get_risk_map(directory)[:top_n]
                 test_gaps = self.impact.get_test_gaps(directory=directory)
                 stale = self.impact.detect_stale_tests()
+                stats = self.storage.get_stats()
 
                 top_files = {r["file_path"] for r in risk_map}
                 relevant_gaps = [g for g in test_gaps if g["file_path"] in top_files]
 
+                commit_count = stats.get("commits", 0)
                 return {
                     "top_risk_files": risk_map,
                     "test_gaps": relevant_gaps,
@@ -330,6 +388,9 @@ class ChiselEngine:
                         "files_triaged": len(risk_map),
                         "total_test_gaps": len(relevant_gaps),
                         "total_stale_tests": len(stale),
+                        "test_edge_count": stats.get("test_edges", 0),
+                        "test_result_count": stats.get("test_results", 0),
+                        "coupling_threshold": _coupling_threshold(commit_count),
                     },
                 }
 
@@ -343,8 +404,51 @@ class ChiselEngine:
                 else:
                     commit_count = stats.get("commits", 0)
                     if commit_count > 0:
-                        stats["coupling_threshold"] = max(3, commit_count // 4)
+                        stats["coupling_threshold"] = _coupling_threshold(commit_count)
                 return stats
+
+    # ------------------------------------------------------------------ #
+    # Risk-map diagnostics
+    # ------------------------------------------------------------------ #
+
+    def _build_risk_meta(self, files):
+        """Build diagnostic metadata about risk score data quality.
+
+        Tells LLM agents which risk components are actually differentiating
+        across files vs uniform (providing zero signal).
+        """
+        if not files:
+            return {"total_files": 0}
+
+        stats = self.storage.get_stats()
+        commit_count = stats.get("commits", 0)
+
+        components = [
+            "churn", "coupling", "coverage_gap",
+            "author_concentration", "test_instability",
+        ]
+        uniform = {}
+        effective = []
+
+        for comp in components:
+            values = {f["breakdown"][comp] for f in files}
+            if len(values) <= 1:
+                val = next(iter(values)) if values else 0.0
+                uniform[comp] = {
+                    "value": val,
+                    "reason": _diagnose_uniform(comp, val, stats),
+                }
+            else:
+                effective.append(comp)
+
+        return {
+            "total_files": len(files),
+            "coupling_threshold": _coupling_threshold(commit_count) if commit_count > 0 else None,
+            "total_test_edges": stats.get("test_edges", 0),
+            "total_test_results": stats.get("test_results", 0),
+            "effective_components": effective,
+            "uniform_components": uniform,
+        }
 
     # ------------------------------------------------------------------ #
     # Shared internal helpers
@@ -467,7 +571,7 @@ class ChiselEngine:
                                 fc["churn_score"],
                             )
 
-        adaptive_min = max(3, len(commits) // 4)
+        adaptive_min = _coupling_threshold(len(commits))
         co_changes = compute_co_changes(commits, min_count=adaptive_min)
         for cc in co_changes:
             self.storage.upsert_co_change(

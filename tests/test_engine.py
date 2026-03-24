@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chisel.engine import ChiselEngine, _NO_DATA_RESPONSE
+from chisel.engine import ChiselEngine, _NO_DATA_RESPONSE, _coupling_threshold
 
 
 @pytest.fixture
@@ -132,7 +132,11 @@ class TestToolMethods:
     def test_tool_risk_map(self, engine):
         engine.analyze()
         result = engine.tool_risk_map()
-        assert isinstance(result, list)
+        assert isinstance(result, dict)
+        assert "files" in result
+        assert "_meta" in result
+        assert isinstance(result["files"], list)
+        assert len(result["files"]) > 0
 
     def test_tool_stale_tests(self, engine):
         engine.analyze()
@@ -220,6 +224,26 @@ class TestToolMethods:
         result = engine.tool_triage(top_n=1)
         assert len(result["top_risk_files"]) <= 1
 
+    def test_tool_triage_summary_has_data_quality(self, engine):
+        engine.analyze()
+        result = engine.tool_triage()
+        summary = result["summary"]
+        assert "test_edge_count" in summary
+        assert "test_result_count" in summary
+        assert "coupling_threshold" in summary
+
+    def test_tool_risk_map_meta_structure(self, engine):
+        engine.analyze()
+        result = engine.tool_risk_map()
+        meta = result["_meta"]
+        assert "total_files" in meta
+        assert "effective_components" in meta
+        assert "uniform_components" in meta
+        assert isinstance(meta["effective_components"], list)
+        assert isinstance(meta["uniform_components"], dict)
+        # With the test fixture, some components should be effective
+        assert meta["total_files"] > 0
+
     def test_tool_stats(self, engine):
         engine.analyze()
         result = engine.tool_stats()
@@ -237,7 +261,9 @@ class TestToolMethods:
         # coupling_threshold present when commits > 0
         if result["commits"] > 0:
             assert "coupling_threshold" in result
-            assert result["coupling_threshold"] == max(3, result["commits"] // 4)
+            import math
+            expected = max(3, int(math.log2(result["commits"])) + 1)
+            assert result["coupling_threshold"] == expected
 
 
 # ------------------------------------------------------------------ #
@@ -273,7 +299,8 @@ class TestEmptyStateDetection:
         """After analyze, query tools should NOT return the no-data dict."""
         engine.analyze()
         result = engine.tool_risk_map()
-        assert isinstance(result, list)
+        assert isinstance(result, dict)
+        assert "files" in result  # dict envelope, not no-data
 
     def test_stats_hint_on_empty_db(self, engine):
         """tool_stats should include a hint when all counts are zero."""
@@ -604,3 +631,26 @@ class TestProcessLockUsage:
             engine.tool_record_result(test_id, passed=True, duration_ms=100)
             mock_excl.assert_called_once()
             mock_ctx.__enter__.assert_called_once()
+
+
+# ------------------------------------------------------------------ #
+# Coupling threshold unit tests
+# ------------------------------------------------------------------ #
+
+class TestCouplingThreshold:
+    def test_minimum_floor(self):
+        assert _coupling_threshold(0) == 3
+        assert _coupling_threshold(1) == 3
+        assert _coupling_threshold(4) == 3
+
+    def test_logarithmic_scaling(self):
+        assert _coupling_threshold(10) == 4   # log2(10)=3.3 → 3+1=4
+        assert _coupling_threshold(50) == 6   # log2(50)=5.6 → 5+1=6
+        assert _coupling_threshold(200) == 8  # log2(200)=7.6 → 7+1=8
+        assert _coupling_threshold(1000) == 10  # log2(1000)=9.9 → 9+1=10
+
+    def test_large_repos_reasonable(self):
+        # At 10k commits, threshold should be ~14, not 2500
+        threshold = _coupling_threshold(10000)
+        assert threshold <= 15
+        assert threshold >= 10

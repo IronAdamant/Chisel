@@ -122,7 +122,14 @@ _TOOL_SCHEMAS = {
     },
     "risk_map": {
         "name": "risk_map",
-        "description": "Risk scores for all files combining churn, coupling, coverage gaps, author concentration, and test instability. Use to prioritize which files need attention. Coupling=0.0 may indicate threshold too high — check 'stats' for coupling_threshold.",
+        "description": (
+            "Risk scores for all files combining churn, coupling, coverage gaps, "
+            "author concentration, and test instability. Returns {files: [...], "
+            "_meta: {effective_components, uniform_components, coupling_threshold, "
+            "total_test_edges, total_test_results}}. Check _meta.uniform_components "
+            "to identify metrics providing no signal (all files score identically). "
+            "Use as first step to prioritize which files need attention."
+        ),
         "parameters": {
             "type": "object",
             "properties": {

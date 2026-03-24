@@ -35,8 +35,11 @@ def dispatch_tool(engine, tool_name, arguments):
     limit = arguments.get("limit")
     kwargs = {k: v for k, v in arguments.items() if k in allowed_args and v is not None}
     result = getattr(engine, method_name)(**kwargs)
-    if limit is not None and isinstance(result, list):
-        result = result[:int(limit)]
+    if limit is not None:
+        if isinstance(result, list):
+            result = result[:int(limit)]
+        elif isinstance(result, dict) and isinstance(result.get("files"), list):
+            result = {**result, "files": result["files"][:int(limit)]}
     next_steps = compute_next_steps(tool_name, result)
     return result, next_steps
 

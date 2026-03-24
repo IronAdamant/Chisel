@@ -54,35 +54,51 @@ def _hints_update(result):
 
 
 def _hints_risk_map(result):
-    if isinstance(result, list) and result:
-        top = result[:3]
-        files = [r["file_path"] for r in top]
-        steps = [
-            {"tool": "test_gaps", "args": {}, "reason": "Find missing coverage for high-risk files"},
-        ]
-        high_coupling = [
-            r["file_path"] for r in top
-            if r.get("breakdown", {}).get("coupling", 0) > 0.3
-        ]
-        if high_coupling:
-            steps.append(
-                {"tool": "coupling", "args": {"file_path": high_coupling[0]}, "reason": "Investigate co-change partners"}
-            )
-        high_churn = [
-            r["file_path"] for r in top
-            if r.get("breakdown", {}).get("churn", 0) > 0.5
-        ]
-        if high_churn:
-            steps.append(
-                {"tool": "churn", "args": {"file_path": high_churn[0]}, "reason": "Detailed change history"}
-            )
-        steps.append(
-            {"tool": "suggest_tests", "args": {"file_path": files[0]}, "reason": "Test recommendations for riskiest file"}
-        )
-        return steps
-    if isinstance(result, list):
+    # Handle dict envelope from tool_risk_map (v0.7+)
+    if isinstance(result, dict) and "files" in result:
+        files = result["files"]
+        meta = result.get("_meta", {})
+    elif isinstance(result, list):
+        files = result
+        meta = {}
+    else:
+        return []
+
+    if not files:
         return [{"tool": "analyze", "args": {}, "reason": "Populate risk data"}]
-    return []
+
+    top = files[:3]
+    steps = [
+        {"tool": "test_gaps", "args": {}, "reason": "Find missing coverage for high-risk files"},
+    ]
+    high_coupling = [
+        r["file_path"] for r in top
+        if r.get("breakdown", {}).get("coupling", 0) > 0.3
+    ]
+    if high_coupling:
+        steps.append(
+            {"tool": "coupling", "args": {"file_path": high_coupling[0]}, "reason": "Investigate co-change partners"}
+        )
+    high_churn = [
+        r["file_path"] for r in top
+        if r.get("breakdown", {}).get("churn", 0) > 0.5
+    ]
+    if high_churn:
+        steps.append(
+            {"tool": "churn", "args": {"file_path": high_churn[0]}, "reason": "Detailed change history"}
+        )
+    steps.append(
+        {"tool": "suggest_tests", "args": {"file_path": top[0]["file_path"]}, "reason": "Test recommendations for riskiest file"}
+    )
+
+    # Surface data quality issues from _meta
+    uniform = meta.get("uniform_components", {})
+    if "coupling" in uniform and uniform["coupling"]["value"] == 0.0:
+        steps.append(
+            {"tool": "stats", "args": {}, "reason": "coupling=0.0 for all files — check threshold vs project history"}
+        )
+
+    return steps
 
 
 def _hints_diff_impact(result):
@@ -164,7 +180,101 @@ def _hints_triage(result):
 
 
 # ------------------------------------------------------------------ #
-# Dispatch table
+# Hints for tools that previously had none
+# ------------------------------------------------------------------ #
+
+def _hints_churn(result):
+    if isinstance(result, list) and result:
+        top = result[0]
+        file_path = top.get("file_path", "")
+        steps = [
+            {"tool": "risk_map", "args": {}, "reason": "See overall risk context"},
+        ]
+        if file_path:
+            steps.append(
+                {"tool": "ownership", "args": {"file_path": file_path},
+                 "reason": "Find who authored the high-churn code"}
+            )
+        return steps
+    return []
+
+
+def _hints_ownership(result):
+    if isinstance(result, list) and result:
+        return [
+            {"tool": "who_reviews", "args": {},
+             "reason": "Find active maintainers (ownership shows original authors)"},
+        ]
+    return []
+
+
+def _hints_coupling(result):
+    if isinstance(result, list) and result:
+        top = result[0]
+        partner = top.get("file_b") or top.get("file_a", "")
+        steps = [
+            {"tool": "risk_map", "args": {},
+             "reason": "Check risk scores for coupled files"},
+        ]
+        if partner:
+            steps.append(
+                {"tool": "impact", "args": {"files": [partner]},
+                 "reason": f"Check test coverage for coupled file {partner}"}
+            )
+        return steps
+    return []
+
+
+def _hints_who_reviews(result):
+    if isinstance(result, list) and result:
+        return [
+            {"tool": "ownership", "args": {},
+             "reason": "Compare with original authors (who_reviews shows active maintainers)"},
+        ]
+    return []
+
+
+def _hints_history(result):
+    if isinstance(result, list) and result:
+        return [
+            {"tool": "churn", "args": {},
+             "reason": "Get quantified change frequency and risk score"},
+        ]
+    return []
+
+
+def _hints_stats(result):
+    if isinstance(result, dict):
+        if result.get("hint"):
+            return [
+                {"tool": "analyze", "args": {}, "reason": "Populate the database with project analysis"},
+            ]
+        steps = []
+        if result.get("code_units", 0) > 0:
+            steps.append(
+                {"tool": "triage", "args": {}, "reason": "Get prioritized overview of risk and gaps"}
+            )
+        if result.get("co_changes", 0) == 0 and result.get("commits", 0) > 0:
+            threshold = result.get("coupling_threshold", 3)
+            steps.append(
+                {"action": "review_threshold",
+                 "reason": f"No co-changes stored; coupling threshold is {threshold}"}
+            )
+        return steps
+    return []
+
+
+def _hints_record_result(result):
+    if isinstance(result, dict) and result.get("recorded"):
+        return [
+            {"tool": "suggest_tests", "args": {},
+             "reason": "Re-rank test suggestions with new result data"},
+        ]
+    return []
+
+
+# ------------------------------------------------------------------ #
+# Dispatch table — all 16 tools now have hints
 # ------------------------------------------------------------------ #
 
 _TOOL_HINTS = {
@@ -177,4 +287,11 @@ _TOOL_HINTS = {
     "impact": _hints_impact,
     "suggest_tests": _hints_suggest_tests,
     "triage": _hints_triage,
+    "churn": _hints_churn,
+    "ownership": _hints_ownership,
+    "coupling": _hints_coupling,
+    "who_reviews": _hints_who_reviews,
+    "history": _hints_history,
+    "stats": _hints_stats,
+    "record_result": _hints_record_result,
 }
