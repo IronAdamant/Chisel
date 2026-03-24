@@ -112,7 +112,8 @@ def detect_project_root(start_dir=None):
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            cwd=start_dir, capture_output=True, text=True, timeout=10,
+            cwd=start_dir, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10,
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -246,7 +247,8 @@ def _git_common_dir(start_dir):
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
-            cwd=start_dir, capture_output=True, text=True, timeout=10,
+            cwd=start_dir, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10,
         )
         if result.returncode == 0:
             common = result.stdout.strip()

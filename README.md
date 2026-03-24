@@ -132,6 +132,7 @@ chisel stats
 ## Features
 
 - **Zero dependencies** — stdlib only, works everywhere Python 3.11+ runs
+- **Encoding-safe** — handles non-UTF-8 content in git history (Latin-1 commits, binary diffs) without crashing
 - **Multi-language** — Python, JavaScript/TypeScript, Go, Rust, C#, Java, Kotlin, C/C++, Swift, PHP, Ruby, Dart
 - **Framework detection** — pytest, Jest, Go test, Rust #[test], Playwright, xUnit/NUnit/MSTest, JUnit, XCTest, PHPUnit, RSpec, Minitest, gtest, Dart test
 - **Incremental** — only re-processes changed files via content hashing
