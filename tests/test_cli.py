@@ -8,7 +8,7 @@ from chisel.cli import cmd_analyze, cmd_churn, cmd_coupling, cmd_diff_impact
 from chisel.cli import cmd_history, cmd_impact, cmd_ownership, cmd_record_result
 from chisel.cli import cmd_risk_map, cmd_serve, cmd_serve_mcp, cmd_stale_tests
 from chisel.cli import cmd_stats, cmd_suggest_tests, cmd_test_gaps
-from chisel.cli import cmd_update, cmd_who_reviews
+from chisel.cli import cmd_triage, cmd_update, cmd_who_reviews
 from chisel.cli import create_parser, main
 
 
@@ -106,6 +106,19 @@ class TestCreateParser:
         args = parser.parse_args(["who-reviews", "app.py"])
         assert args.command == "who-reviews"
         assert args.file == "app.py"
+
+    def test_triage_defaults(self):
+        parser = create_parser()
+        args = parser.parse_args(["triage"])
+        assert args.command == "triage"
+        assert args.directory is None
+        assert args.top_n == 10
+
+    def test_triage_with_args(self):
+        parser = create_parser()
+        args = parser.parse_args(["triage", "src/", "--top-n", "5"])
+        assert args.directory == "src/"
+        assert args.top_n == 5
 
     def test_serve_defaults(self):
         parser = create_parser()
@@ -554,6 +567,49 @@ class TestHandlerOutputFormats:
         assert "FAILED" in output
         assert "test_bar" in output
 
+    @patch("chisel.cli.ChiselEngine")
+    def test_cmd_triage_human(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_triage.return_value = {
+            "top_risk_files": [
+                {"file_path": "core.py", "risk_score": 0.8,
+                 "coupling_partners": [{"file": "utils.py", "co_commits": 5}]},
+            ],
+            "test_gaps": [
+                {"file_path": "core.py", "name": "process", "unit_type": "function"},
+            ],
+            "stale_tests": [],
+            "summary": {"files_triaged": 1, "total_test_gaps": 1, "total_stale_tests": 0},
+        }
+        mock_cls.return_value = engine
+
+        args = _make_args(directory=None, top_n=10)
+        result = cmd_triage(args)
+
+        assert result["summary"]["files_triaged"] == 1
+        output = capsys.readouterr().out
+        assert "core.py" in output
+        assert "utils.py" in output
+        assert "No stale tests" in output
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_cmd_triage_json(self, mock_cls, capsys):
+        engine = _make_engine_mock()
+        engine.tool_triage.return_value = {
+            "top_risk_files": [],
+            "test_gaps": [],
+            "stale_tests": [],
+            "summary": {"files_triaged": 0, "total_test_gaps": 0, "total_stale_tests": 0},
+        }
+        mock_cls.return_value = engine
+
+        args = _make_args(directory=None, top_n=10, json_output=True)
+        cmd_triage(args)
+
+        output = capsys.readouterr().out
+        parsed = json.loads(output)
+        assert "summary" in parsed
+
     @patch("chisel.mcp_server.ChiselMCPServer")
     def test_cmd_serve_human(self, mock_server_cls, capsys):
         server = MagicMock()
@@ -759,6 +815,32 @@ class TestMain:
         main(["analyze", "--project-dir", "/tmp/p", "src/"])
 
         engine.tool_analyze.assert_called_once_with(directory="src/", force=False)
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_main_triage(self, mock_cls):
+        engine = _make_engine_mock()
+        engine.tool_triage.return_value = {
+            "top_risk_files": [], "test_gaps": [], "stale_tests": [],
+            "summary": {"files_triaged": 0, "total_test_gaps": 0, "total_stale_tests": 0},
+        }
+        mock_cls.return_value = engine
+
+        main(["triage", "--project-dir", "/tmp/p"])
+
+        engine.tool_triage.assert_called_once_with(directory=None, top_n=10)
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_main_triage_with_args(self, mock_cls):
+        engine = _make_engine_mock()
+        engine.tool_triage.return_value = {
+            "top_risk_files": [], "test_gaps": [], "stale_tests": [],
+            "summary": {"files_triaged": 0, "total_test_gaps": 0, "total_stale_tests": 0},
+        }
+        mock_cls.return_value = engine
+
+        main(["triage", "--project-dir", "/tmp/p", "src/", "--top-n", "5"])
+
+        engine.tool_triage.assert_called_once_with(directory="src/", top_n=5)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_stats(self, mock_cls):

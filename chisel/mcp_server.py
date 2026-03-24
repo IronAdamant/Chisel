@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
 from chisel.engine import ChiselEngine
+from chisel.next_steps import compute_next_steps
 from chisel.schemas import _TOOL_DISPATCH, _TOOL_SCHEMAS
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,8 @@ def dispatch_tool(engine, tool_name, arguments):
     result = getattr(engine, method_name)(**kwargs)
     if limit is not None and isinstance(result, list):
         result = result[:int(limit)]
-    return result
+    next_steps = compute_next_steps(tool_name, result)
+    return result, next_steps
 
 
 # ------------------------------------------------------------------ #
@@ -127,8 +129,11 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            result = dispatch_tool(self.server.engine, tool_name, arguments)
-            self._send_json({"result": result})
+            result, next_steps = dispatch_tool(self.server.engine, tool_name, arguments)
+            response = {"result": result}
+            if next_steps:
+                response["next_steps"] = next_steps
+            self._send_json(response)
         except ValueError as exc:
             self._send_error_json(404, str(exc))
         except TypeError as exc:

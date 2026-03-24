@@ -202,6 +202,21 @@ class TestToolMethods:
         assert result["passed"] is True
         assert result["test_id"] == test_id
 
+    def test_tool_triage(self, engine):
+        engine.analyze()
+        result = engine.tool_triage()
+        assert isinstance(result, dict)
+        assert "top_risk_files" in result
+        assert "test_gaps" in result
+        assert "stale_tests" in result
+        assert "summary" in result
+        assert result["summary"]["files_triaged"] > 0
+
+    def test_tool_triage_with_top_n(self, engine):
+        engine.analyze()
+        result = engine.tool_triage(top_n=1)
+        assert len(result["top_risk_files"]) <= 1
+
     def test_tool_stats(self, engine):
         engine.analyze()
         result = engine.tool_stats()
@@ -240,6 +255,7 @@ class TestEmptyStateDetection:
             ("tool_who_reviews", {"file_path": "app.py"}),
             ("tool_test_gaps", {}),
             ("tool_diff_impact", {}),
+            ("tool_triage", {}),
         ]
         for method_name, kwargs in tools_with_args:
             result = getattr(engine, method_name)(**kwargs)

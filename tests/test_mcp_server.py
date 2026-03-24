@@ -92,7 +92,7 @@ class TestToolDiscovery:
 
     def test_tool_count(self, base_url):
         status, body = _request(base_url, "GET", "/tools")
-        assert len(body["tools"]) == 15
+        assert len(body["tools"]) == 16
 
 
 # ------------------------------------------------------------------ #
@@ -179,6 +179,22 @@ class TestToolExecution:
         })
         assert status == 200
         assert isinstance(body["result"], list)
+
+    def test_triage_after_analyze(self, base_url):
+        """Run analyze first, then request triage."""
+        _request(base_url, "POST", "/call", {
+            "tool": "analyze",
+            "arguments": {},
+        })
+        status, body = _request(base_url, "POST", "/call", {
+            "tool": "triage",
+            "arguments": {},
+        })
+        assert status == 200
+        result = body["result"]
+        assert "top_risk_files" in result
+        assert "test_gaps" in result
+        assert "summary" in result
 
     def test_suggest_tests_after_analyze(self, base_url):
         """Run analyze first, then request test suggestions."""
@@ -283,6 +299,46 @@ class TestErrorHandling:
 # ------------------------------------------------------------------ #
 # Tests: Limit parameter pass-through
 # ------------------------------------------------------------------ #
+
+class TestNextSteps:
+    def test_analyze_returns_next_steps(self, base_url):
+        """Analyze should include next_steps in the response."""
+        status, body = _request(base_url, "POST", "/call", {
+            "tool": "analyze",
+            "arguments": {},
+        })
+        assert status == 200
+        assert "next_steps" in body
+        assert isinstance(body["next_steps"], list)
+        assert any("risk_map" in s for s in body["next_steps"])
+
+    def test_risk_map_returns_next_steps(self, base_url):
+        """Risk map should include next_steps when results exist."""
+        _request(base_url, "POST", "/call", {
+            "tool": "analyze",
+            "arguments": {},
+        })
+        status, body = _request(base_url, "POST", "/call", {
+            "tool": "risk_map",
+            "arguments": {},
+        })
+        assert status == 200
+        assert "next_steps" in body
+        assert len(body["next_steps"]) >= 1
+
+    def test_no_next_steps_for_churn(self, base_url):
+        """Tools without hints should not include next_steps."""
+        _request(base_url, "POST", "/call", {
+            "tool": "analyze",
+            "arguments": {},
+        })
+        status, body = _request(base_url, "POST", "/call", {
+            "tool": "churn",
+            "arguments": {"file_path": "app.py"},
+        })
+        assert status == 200
+        assert "next_steps" not in body
+
 
 class TestToolCall:
     def test_call_with_limit(self, base_url):

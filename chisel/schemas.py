@@ -249,6 +249,28 @@ _TOOL_SCHEMAS = {
             "required": [],
         },
     },
+    "triage": {
+        "name": "triage",
+        "description": (
+            "Combined triage: risk map, test gaps, and stale tests for "
+            "top-N riskiest files. Single command for prioritizing work "
+            "before audits, refactors, or large changes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "directory": {
+                    "type": "string",
+                    "description": "Optional subdirectory to scope the triage.",
+                },
+                "top_n": {
+                    "type": "integer",
+                    "description": "Number of top-risk files to include (default: 10).",
+                },
+            },
+            "required": [],
+        },
+    },
 }
 
 # ------------------------------------------------------------------ #
@@ -270,6 +292,7 @@ _TOOL_DISPATCH = {
     "update": ("tool_update", []),
     "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests"]),
     "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
+    "triage": ("tool_triage", ["directory", "top_n"]),
     "stats": ("tool_stats", []),
 }
 
@@ -279,6 +302,6 @@ _LIMIT_PROP = {
     "description": "Maximum number of results to return.",
 }
 for _name, _schema in _TOOL_SCHEMAS.items():
-    if _name not in ("analyze", "update", "record_result", "stats"):
+    if _name not in ("analyze", "update", "record_result", "stats", "triage"):
         _schema["parameters"]["properties"]["limit"] = dict(_LIMIT_PROP)
 del _name, _schema

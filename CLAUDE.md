@@ -14,10 +14,11 @@ chisel/
   metrics.py        — Pure computation: churn scoring, ownership aggregation, co-change detection. _parse_iso_date shared utility.
   test_mapper.py    — Test file discovery, framework detection, dependency extraction, edge building.
   impact.py         — Impact analysis, risk scoring, stale test detection, reviewer suggestions. Caches failure rates.
-  cli.py            — argparse CLI (17 subcommands). _run_tool() shared handler. Entry point: chisel.cli:main
-  schemas.py        — JSON Schema definitions for all 15 tools + dispatch table. Shared by HTTP and stdio servers.
+  cli.py            — argparse CLI (18 subcommands). _run_tool() shared handler. Entry point: chisel.cli:main
+  schemas.py        — JSON Schema definitions for all 16 tools + dispatch table. Shared by HTTP and stdio servers.
   mcp_server.py     — HTTP MCP server (GET /tools, /health, POST /call). ThreadedHTTPServer. dispatch_tool() shared by both servers.
   mcp_stdio.py      — stdio MCP server (requires optional 'mcp' package). _configure_server() for engine lifecycle mgmt.
+  next_steps.py     — Contextual next-step suggestions for MCP tool responses. compute_next_steps() dispatched per tool.
   rwlock.py         — Read-write lock for in-process concurrent access.
 ```
 
@@ -44,7 +45,10 @@ chisel/
 - **Unit-churn scaling**: `_UNIT_CHURN_FILE_LIMIT = 2000` in `engine.py`. Repos with more than 2000 code files skip per-function `git log -L` churn (each function spawns a subprocess). File-level churn is always computed. Validated on Grafana (21k files, 62k units in ~3 min).
 - **Numstat validation**: `_parse_log_output` in `git_analyzer.py` validates tab-separated fields are digits or `-` before treating them as numstat. Diff lines with tabs were being misidentified as numstat entries in `git log -L` output.
 - **Encoding safety**: All `subprocess.run()` calls use `encoding="utf-8", errors="replace"`. Git history may contain non-UTF-8 bytes (Latin-1 commit messages, binary diff fragments); these are replaced with `�` instead of crashing. File reads in `engine.py` and `test_mapper.py` already used `errors="replace"`.
-- **Empty-state detection**: All 11 query tools return `{"status": "no_data", "message": "...", "hint": "chisel analyze"}` when the DB has no analysis data, instead of `[]`. `_check_analysis_data()` in `engine.py` calls `storage.has_analysis_data()` (`SELECT 1 FROM code_units LIMIT 1`). Write tools (`analyze`, `update`, `record_result`) and `stats` are unaffected. `stats` adds a `hint` key when all counts are zero. CLI detects this via `_is_no_data()` in `cli.py`.
+- **Empty-state detection**: All 12 query tools return `{"status": "no_data", "message": "...", "hint": "chisel analyze"}` when the DB has no analysis data, instead of `[]`. `_check_analysis_data()` in `engine.py` calls `storage.has_analysis_data()` (`SELECT 1 FROM code_units LIMIT 1`). Write tools (`analyze`, `update`, `record_result`) and `stats` are unaffected. `stats` adds a `hint` key when all counts are zero. CLI detects this via `_is_no_data()` in `cli.py`.
+- **Next-step suggestions**: `next_steps.py` provides `compute_next_steps(tool_name, result)` which returns contextual follow-up suggestions per tool. Integrated at the dispatch level in `mcp_server.py` — HTTP responses include `"next_steps": [...]` as a sibling to `"result"`, stdio wraps both in a `{"result": ..., "next_steps": [...]}` envelope. CLI is unaffected. Only tools with registered hint functions get suggestions; others return empty.
+- **Inline coupling partners**: `risk_map` includes `"coupling_partners"` (top 3 by co-commit count) in each file entry alongside the breakdown. Data is already fetched in the batch query — no extra DB calls.
+- **Triage tool**: Composite `triage` runs `risk_map` (top-N) + `test_gaps` (filtered to top-N files) + `stale_tests` in a single read lock. Returns a dict, not a list, so `limit` is not injected.
 
 ## Dev Commands
 
@@ -66,13 +70,14 @@ impact.py → metrics.py
 metrics.py → (no internal deps)
 cli.py → engine.py, mcp_server.py, mcp_stdio.py
 schemas.py → (no internal deps)
-mcp_server.py → engine.py, schemas.py
+mcp_server.py → engine.py, next_steps.py, schemas.py
 mcp_stdio.py → engine.py, mcp_server.py, schemas.py
+next_steps.py → (no internal deps)
 ```
 
-## 15 MCP Tools
+## 16 MCP Tools
 
-`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`, `diff_impact`, `update`, `test_gaps`, `record_result`, `stats`
+`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`, `diff_impact`, `update`, `test_gaps`, `record_result`, `stats`, `triage`
 
 Each wired through: engine.tool_*() → CLI subcommand, HTTP POST /call, stdio MCP.
 
@@ -81,5 +86,6 @@ Each wired through: engine.tool_*() → CLI subcommand, HTTP POST /call, stdio M
 - **`test_gaps`**: Finds code units with zero test coverage, prioritized by churn risk. Excludes test files by default.
 - **`record_result`**: Records test pass/fail outcomes. Feeds into `suggest_tests` (failure rate boost) and `risk_map` (test instability component).
 - **`stats`**: Returns summary counts for all database tables (code units, tests, edges, commits, etc.).
+- **`triage`**: Combined risk_map + test_gaps + stale_tests for top-N riskiest files. Single command for pre-audit/refactor prioritization. Returns `{top_risk_files, test_gaps, stale_tests, summary}`.
 - **`limit` parameter**: All list-returning tools accept `limit` to cap result size.
 - **Adaptive coupling threshold**: `max(3, total_commits // 4)` — scales with project maturity.

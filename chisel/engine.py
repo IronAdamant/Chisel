@@ -296,6 +296,31 @@ class ChiselEngine:
                 self.storage.record_test_result(test_id, passed, duration_ms)
                 return {"test_id": test_id, "passed": passed, "recorded": True}
 
+    def tool_triage(self, directory=None, top_n=10):
+        """MCP tool: combined risk_map + test_gaps + stale_tests triage."""
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
+                risk_map = self.impact.get_risk_map(directory)[:top_n]
+                test_gaps = self.impact.get_test_gaps(directory=directory)
+                stale = self.impact.detect_stale_tests()
+
+                top_files = {r["file_path"] for r in risk_map}
+                relevant_gaps = [g for g in test_gaps if g["file_path"] in top_files]
+
+                return {
+                    "top_risk_files": risk_map,
+                    "test_gaps": relevant_gaps,
+                    "stale_tests": stale,
+                    "summary": {
+                        "files_triaged": len(risk_map),
+                        "total_test_gaps": len(relevant_gaps),
+                        "total_stale_tests": len(stale),
+                    },
+                }
+
     def tool_stats(self):
         """MCP tool: get summary counts for the Chisel database."""
         with self._process_lock.shared():

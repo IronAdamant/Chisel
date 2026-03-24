@@ -59,14 +59,17 @@ def _configure_server(engine):
         """Dispatch an MCP tool call to the appropriate engine method."""
         try:
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
+            result, next_steps = await loop.run_in_executor(
                 None, lambda: dispatch_tool(engine, name, arguments),
             )
         except Exception as exc:
             logger.exception("Error executing tool %s", name)
             return [TextContent(type="text", text=f"Error: {exc}")]
 
-        text = json.dumps(result, indent=2, default=str)
+        payload = {"result": result}
+        if next_steps:
+            payload["next_steps"] = next_steps
+        text = json.dumps(payload, indent=2, default=str)
         return [TextContent(type="text", text=text)]
 
     return server

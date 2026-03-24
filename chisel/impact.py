@@ -267,6 +267,16 @@ class ImpactAnalyzer:
             co_changes = co_changes_batch.get(fp, [])
             coupling_norm = min(len(co_changes) / 10.0, 1.0)
 
+            # Top 3 coupling partners (by co-commit count, desc)
+            sorted_cc = sorted(co_changes, key=lambda c: c["co_commit_count"], reverse=True)[:3]
+            coupling_partners = [
+                {
+                    "file": cc["file_b"] if cc["file_a"] == fp else cc["file_a"],
+                    "co_commits": cc["co_commit_count"],
+                }
+                for cc in sorted_cc
+            ]
+
             code_units = code_units_batch.get(fp, [])
             tested_count = 0
             covering_test_ids = set()
@@ -295,6 +305,7 @@ class ImpactAnalyzer:
                 "file_path": fp,
                 "unit_name": None,
                 "risk_score": round(risk, 4),
+                "coupling_partners": coupling_partners,
                 "breakdown": {
                     "churn": round(churn_norm, 4),
                     "coupling": round(coupling_norm, 4),

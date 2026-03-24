@@ -133,6 +133,14 @@ def create_parser():
     sub.add_parser("stats", parents=[shared],
                    help="Show database summary counts")
 
+    # triage
+    p_triage = sub.add_parser("triage", parents=[shared],
+                               help="Combined risk + gap + stale triage")
+    p_triage.add_argument("directory", nargs="?", default=None,
+                           help="Directory to scope (default: all)")
+    p_triage.add_argument("--top-n", type=int, default=10,
+                           help="Number of top-risk files (default: 10)")
+
     # serve
     p_serve = sub.add_parser("serve", parents=[shared],
                              help="Start HTTP server")
@@ -332,6 +340,35 @@ def cmd_record_result(args):
                      fmt, use_limit=False)
 
 
+def cmd_triage(args):
+    def fmt(result, _args):
+        summary = result["summary"]
+        print(f"Triage ({summary['files_triaged']} files):")
+        print("\nTop risk files:")
+        for r in result["top_risk_files"]:
+            partners = ""
+            cp = r.get("coupling_partners", [])
+            if cp:
+                names = [p["file"] for p in cp[:2]]
+                partners = f"  coupled: {', '.join(names)}"
+            print(f"  {r['file_path']}: {r['risk_score']}{partners}")
+        if result["test_gaps"]:
+            print(f"\nTest gaps ({summary['total_test_gaps']}):")
+            for g in result["test_gaps"]:
+                print(f"  {g['file_path']}:{g['name']} ({g['unit_type']})")
+        else:
+            print("\nNo test gaps in triaged files.")
+        if result["stale_tests"]:
+            print(f"\nStale tests ({summary['total_stale_tests']}):")
+            for s in result["stale_tests"]:
+                print(f"  {s['test_id']}  ({s['edge_type']})")
+        else:
+            print("\nNo stale tests found.")
+    return _run_tool(args, "tool_triage",
+                     {"directory": args.directory, "top_n": args.top_n},
+                     fmt, use_limit=False)
+
+
 def cmd_stats(args):
     return _run_tool(args, "tool_stats", {},
                      _fmt_kv("Chisel database stats:"), use_limit=False)
@@ -381,6 +418,7 @@ _COMMANDS = {
     "update": cmd_update,
     "test-gaps": cmd_test_gaps,
     "record-result": cmd_record_result,
+    "triage": cmd_triage,
     "stats": cmd_stats,
     "serve": cmd_serve,
     "serve-mcp": cmd_serve_mcp,

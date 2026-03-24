@@ -191,6 +191,24 @@ class TestRiskMap:
         assert "src/app.py" in files
         assert "lib/helper.py" not in files
 
+    def test_risk_map_includes_coupling_partners(self, storage, analyzer):
+        _seed_basic_data(storage)
+        risk_map = analyzer.get_risk_map()
+        app_entry = next(r for r in risk_map if r["file_path"] == "app.py")
+        assert "coupling_partners" in app_entry
+        # app.py <-> lib.py has 5 co-commits in seed data
+        partners = app_entry["coupling_partners"]
+        assert len(partners) >= 1
+        assert partners[0]["file"] == "lib.py"
+        assert partners[0]["co_commits"] == 5
+
+    def test_risk_map_coupling_partners_empty_when_no_coupling(self, storage, analyzer):
+        # File with churn but no co-changes
+        storage.upsert_churn_stat("solo.py", "", churn_score=1.0)
+        risk_map = analyzer.get_risk_map()
+        solo = next(r for r in risk_map if r["file_path"] == "solo.py")
+        assert solo["coupling_partners"] == []
+
 
 class TestGetOwnership:
     def test_returns_authors(self, storage, analyzer):
