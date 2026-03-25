@@ -58,6 +58,8 @@ def create_parser():
     p_suggest = sub.add_parser("suggest-tests", parents=[shared],
                                help="Suggest tests for a file")
     p_suggest.add_argument("file", help="File path")
+    p_suggest.add_argument("--fallback", action="store_true",
+                           help="Also return all test files if no edges found")
 
     # churn
     p_churn = sub.add_parser("churn", parents=[shared],
@@ -85,6 +87,8 @@ def create_parser():
                         help="Directory to scope (default: all)")
     p_risk.add_argument("--no-exclude-tests", action="store_true", default=False,
                         help="Include test files in risk map")
+    p_risk.add_argument("--proximity", action="store_true", default=False,
+                        help="Adjust coverage_gap by import distance to tested code")
 
     # stale-tests
     sub.add_parser("stale-tests", parents=[shared], help="Detect stale tests")
@@ -248,7 +252,8 @@ def cmd_impact(args):
 
 
 def cmd_suggest_tests(args):
-    return _run_tool(args, "tool_suggest_tests", {"file_path": args.file},
+    return _run_tool(args, "tool_suggest_tests",
+                     {"file_path": args.file, "fallback_to_all": args.fallback},
                      _fmt_list("No test suggestions.", "Suggested tests:",
                                lambda i: f"{i['name']}  (score: {i['relevance']})"))
 
@@ -275,11 +280,25 @@ def cmd_ownership(args):
 
 
 def cmd_coupling(args):
+    def fmt(result, _args):
+        cc = result.get("co_change_partners", [])
+        imp = result.get("import_partners", [])
+        if not cc and not imp:
+            print("No coupling data.")
+            return
+        if cc:
+            print(f"Co-change partners for {args.file}:")
+            for p in cc:
+                print(f"  {p['file_b']}  ({p['co_commit_count']} co-commits)")
+        if imp:
+            if cc:
+                print()
+            print(f"Import partners for {args.file}:")
+            for p in imp:
+                print(f"  {p['file']}")
     return _run_tool(args, "tool_coupling",
                      {"file_path": args.file, "min_count": args.min_count},
-                     _fmt_list("No coupling data.",
-                               lambda r, a: f"Co-change coupling for {a.file}:",
-                               lambda i: f"{i['file_b']}  ({i['co_commit_count']} co-commits)"))
+                     fmt)
 
 
 def cmd_risk_map(args):
@@ -303,7 +322,8 @@ def cmd_risk_map(args):
                 print(f"  {comp}: {info['reason']}")
     return _run_tool(args, "tool_risk_map",
                      {"directory": args.directory,
-                      "exclude_tests": not args.no_exclude_tests}, fmt)
+                      "exclude_tests": not args.no_exclude_tests,
+                      "proximity_adjustment": args.proximity}, fmt)
 
 
 def cmd_stale_tests(args):

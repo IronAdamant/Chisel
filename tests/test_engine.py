@@ -127,7 +127,9 @@ class TestToolMethods:
     def test_tool_coupling(self, engine):
         engine.analyze()
         result = engine.tool_coupling("app.py")
-        assert isinstance(result, list)
+        assert isinstance(result, dict)
+        assert "co_change_partners" in result
+        assert "import_partners" in result
 
     def test_tool_risk_map(self, engine):
         engine.analyze()
@@ -159,9 +161,9 @@ class TestToolMethods:
         result = engine.tool_risk_map()
         app = next(r for r in result["files"] if r["file_path"] == "app.py")
         # app.py has 3 functions, 2 are tested (process_data, validate_input)
-        # format_output is untested → coverage_gap = 1/3 ≈ 0.33
+        # format_output is untested → coverage_gap = 1/3 ≈ 0.33, quantized to 0.25
         assert app["breakdown"]["coverage_gap"] < 1.0
-        assert abs(app["breakdown"]["coverage_gap"] - 0.3333) < 0.01
+        assert app["breakdown"]["coverage_gap"] == 0.25
 
     def test_tool_stale_tests(self, engine):
         engine.analyze()
@@ -223,6 +225,21 @@ class TestToolMethods:
         if result:
             assert all("test_id" in item for item in result)
 
+    def test_tool_diff_impact_includes_untracked_code(self, engine, git_project):
+        engine.analyze()
+        (git_project / "addon.py").write_text("def addon():\n    return 42\n")
+        (git_project / "tests" / "test_addon.py").write_text(
+            "from addon import addon\n\n"
+            "def test_addon():\n"
+            "    assert addon() == 42\n"
+        )
+        engine.analyze()
+        result = engine.tool_diff_impact()
+        assert isinstance(result, list)
+        assert len(result) >= 1
+        test_ids = {item["test_id"] for item in result}
+        assert any("test_addon" in tid for tid in test_ids)
+
     def test_tool_record_result(self, engine):
         engine.analyze()
         all_tests = engine.storage.get_all_test_units()
@@ -264,6 +281,8 @@ class TestToolMethods:
         assert "total_files" in meta
         assert "effective_components" in meta
         assert "uniform_components" in meta
+        assert "coverage_gap_mode" in meta
+        assert meta["coverage_gap_mode"] == "edge_count"
         assert isinstance(meta["effective_components"], list)
         assert isinstance(meta["uniform_components"], dict)
         # With the test fixture, some components should be effective
@@ -275,8 +294,8 @@ class TestToolMethods:
         assert isinstance(result, dict)
         base_keys = {
             "code_units", "test_units", "test_edges", "commits",
-            "commit_files", "blame_cache", "co_changes", "churn_stats",
-            "file_hashes", "test_results",
+            "commit_files", "blame_cache", "co_changes", "branch_co_changes",
+            "import_edges", "churn_stats", "file_hashes", "test_results",
         }
         assert base_keys.issubset(set(result.keys()))
         for key in base_keys:

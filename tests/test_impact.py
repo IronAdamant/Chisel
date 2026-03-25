@@ -67,6 +67,17 @@ class TestGetImpactedTests:
         direct_bar = [r for r in result if "direct" in r["reason"] and "bar" in r["reason"]]
         assert len(direct_bar) == 0
 
+    def test_untracked_ignores_function_filter(self, storage, analyzer):
+        _seed_basic_data(storage)
+        result = analyzer.get_impacted_tests(
+            ["app.py"],
+            changed_functions=["foo"],
+            untracked_files={"app.py"},
+        )
+        test_ids = [r["test_id"] for r in result]
+        assert "test_app.py:test_foo" in test_ids
+        assert "test_app.py:test_bar" in test_ids
+
     def test_empty_changed_files(self, storage, analyzer):
         _seed_basic_data(storage)
         assert analyzer.get_impacted_tests([]) == []
@@ -96,6 +107,10 @@ class TestRiskScore:
         bd = risk["breakdown"]
         assert "churn" in bd
         assert "coupling" in bd
+        assert "import_coupling" in bd
+        assert "cochange_coupling" in bd
+        assert "cochange_global" in bd
+        assert "cochange_branch" in bd
         assert "coverage_gap" in bd
         assert "author_concentration" in bd
         assert "test_instability" in bd
@@ -230,8 +245,8 @@ class TestRiskMap:
         storage.upsert_churn_stat("m.py", "", churn_score=1.0)
         risk_map = analyzer.get_risk_map()
         entry = next(r for r in risk_map if r["file_path"] == "m.py")
-        # 1 of 3 tested → coverage 0.333, gap 0.667
-        assert abs(entry["breakdown"]["coverage_gap"] - 0.6667) < 0.01
+        # 1 of 3 tested → coverage 0.333, gap 0.667 → quantized to 0.75
+        assert entry["breakdown"]["coverage_gap"] == 0.75
 
     def test_exclude_tests_filters_test_files(self, storage, analyzer):
         """Test files should be excluded from risk_map by default."""
@@ -325,6 +340,12 @@ class TestTestInstability:
     def test_mixed_results(self):
         rate = _test_instability({"t1"}, {"t1": 0.5})
         assert abs(rate - 0.5) < 0.01
+
+    def test_duration_cv_when_no_fail_rates(self):
+        cv = _test_instability(
+            {"t1"}, {}, {"t1": 0.4, "t2": 0.2},
+        )
+        assert 0 < cv <= 1.0
 
     def test_fetch_failure_rates(self, storage):
         storage.record_test_result("t1", False)

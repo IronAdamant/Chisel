@@ -5,6 +5,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import fmean, pstdev
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,23 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_churn_stats_file ON churn_stats(file_path);
                 CREATE INDEX IF NOT EXISTS idx_co_changes_file_b ON co_changes(file_b);
 
+                CREATE TABLE IF NOT EXISTS import_edges (
+                    importer_file TEXT NOT NULL,
+                    imported_file TEXT NOT NULL,
+                    PRIMARY KEY (importer_file, imported_file)
+                );
+                CREATE INDEX IF NOT EXISTS idx_import_edges_imported
+                    ON import_edges(imported_file);
+
+                CREATE TABLE IF NOT EXISTS branch_co_changes (
+                    file_a TEXT,
+                    file_b TEXT,
+                    co_commit_count INTEGER,
+                    last_co_commit TEXT,
+                    PRIMARY KEY (file_a, file_b)
+                );
+                CREATE INDEX IF NOT EXISTS idx_branch_co_changes_b ON branch_co_changes(file_b);
+
                 CREATE TABLE IF NOT EXISTS test_results (
                     test_id TEXT,
                     passed INTEGER NOT NULL,
@@ -157,6 +175,11 @@ class Storage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_test_results_test
                     ON test_results(test_id);
+
+                CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
             """)
 
     # --- Query helpers ---
@@ -271,6 +294,26 @@ class Storage:
         )
         return {r["file_path"] for r in rows}
 
+    def get_all_test_files(self):
+        """Return all test files with their unit names, ordered by file path.
+
+        Returns a dict mapping file_path -> [test_unit_names].
+        Used by suggest_tests fallback when a file has no direct test edges.
+        """
+        rows = self._fetchall(
+            "SELECT DISTINCT file_path FROM test_units ORDER BY file_path",
+        )
+        if not rows:
+            return {}
+        result = {r["file_path"]: [] for r in rows}
+        unit_rows = self._fetchall(
+            "SELECT file_path, name FROM test_units ORDER BY file_path, name",
+        )
+        for row in unit_rows:
+            if row["file_path"] in result:
+                result[row["file_path"]].append(row["name"])
+        return result
+
     # --- test_edges ---
 
     def upsert_test_edge(self, test_id, code_id, edge_type, weight=1.0):
@@ -373,6 +416,85 @@ class Storage:
                ORDER BY co_commit_count DESC""",
             (file_path, file_path, min_count),
         )
+
+    # --- import_edges ---
+
+    def clear_import_edges(self):
+        """Remove all static import edges (full rebuild before reinsert)."""
+        self._execute("DELETE FROM import_edges")
+
+    def upsert_import_edge(self, importer_file, imported_file):
+        self._execute(
+            """INSERT OR IGNORE INTO import_edges (importer_file, imported_file)
+               VALUES (?, ?)""",
+            (importer_file, imported_file),
+        )
+
+    def get_import_neighbors_batch(self, file_paths):
+        """Return distinct neighbor files (either direction) per path in *file_paths*.
+
+        Neighbors exclude the file itself.  Used for structural coupling.
+        """
+        if not file_paths:
+            return {}
+        result = {fp: set() for fp in file_paths}
+        for chunk in self._chunked(list(file_paths)):
+            placeholders = ",".join("?" for _ in chunk)
+            sql = f"""SELECT importer_file, imported_file FROM import_edges
+                      WHERE importer_file IN ({placeholders})
+                         OR imported_file IN ({placeholders})"""
+            rows = self._fetchall(sql, tuple(chunk) + tuple(chunk))
+            for row in rows:
+                a, b = row["importer_file"], row["imported_file"]
+                if a in result and b != a:
+                    result[a].add(b)
+                if b in result and a != b:
+                    result[b].add(a)
+        return {fp: sorted(neighbors) for fp, neighbors in result.items()}
+
+    # --- branch_co_changes (merge-base..HEAD only, rebuilt each analyze) ---
+
+    def clear_branch_co_changes(self):
+        self._execute("DELETE FROM branch_co_changes")
+
+    def upsert_branch_co_change(self, file_a, file_b, co_commit_count, last_co_commit=None):
+        a, b = sorted([file_a, file_b])
+        self._execute(
+            """INSERT INTO branch_co_changes (file_a, file_b, co_commit_count, last_co_commit)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(file_a, file_b) DO UPDATE SET
+               co_commit_count=excluded.co_commit_count,
+               last_co_commit=excluded.last_co_commit""",
+            (a, b, co_commit_count, last_co_commit),
+        )
+
+    def get_branch_co_changes(self, file_path, min_count=1):
+        return self._fetchall(
+            """SELECT * FROM branch_co_changes
+               WHERE (file_a = ? OR file_b = ?) AND co_commit_count >= ?
+               ORDER BY co_commit_count DESC""",
+            (file_path, file_path, min_count),
+        )
+
+    def get_branch_co_changes_batch(self, file_paths, min_count=1):
+        if not file_paths:
+            return {}
+        result = {fp: [] for fp in file_paths}
+        for chunk in self._chunked(list(file_paths)):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._fetchall(
+                f"""SELECT * FROM branch_co_changes
+                    WHERE (file_a IN ({placeholders}) OR file_b IN ({placeholders}))
+                    AND co_commit_count >= ?
+                    ORDER BY co_commit_count DESC""",
+                (*chunk, *chunk, min_count),
+            )
+            for row in rows:
+                if row["file_a"] in result:
+                    result[row["file_a"]].append(row)
+                if row["file_b"] in result and row["file_b"] != row["file_a"]:
+                    result[row["file_b"]].append(row)
+        return result
 
     # --- churn_stats ---
 
@@ -507,6 +629,40 @@ class Storage:
                GROUP BY test_id"""
         )
 
+    def get_test_duration_cv_batch(self, test_ids, max_runs=20):
+        """Coefficient of variation (std/mean) of duration_ms per test_id.
+
+        Uses up to *max_runs* most recent rows with non-null *duration_ms*.
+        Returns {test_id: cv} for tests with at least 3 samples.
+        """
+        if not test_ids:
+            return {}
+
+        result = {}
+        for chunk in self._chunked(list(test_ids)):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._fetchall(
+                f"""SELECT test_id, duration_ms, recorded_at FROM test_results
+                    WHERE test_id IN ({placeholders}) AND duration_ms IS NOT NULL""",
+                tuple(chunk),
+            )
+            by_test = {}
+            for row in rows:
+                by_test.setdefault(row["test_id"], []).append(
+                    (row["recorded_at"], row["duration_ms"]),
+                )
+            for tid, pairs in by_test.items():
+                pairs.sort(key=lambda x: x[0], reverse=True)
+                durs = [p[1] for p in pairs[:max_runs]]
+                if len(durs) < 3:
+                    continue
+                mu = fmean(durs)
+                if mu <= 0:
+                    continue
+                sigma = pstdev(durs)
+                result[tid] = min(sigma / mu, 1.0)
+        return result
+
     def cleanup_orphaned_test_results(self):
         """Delete test_results rows whose test_id no longer exists in test_units.
 
@@ -528,6 +684,34 @@ class Storage:
         row = self._fetchone("SELECT 1 FROM code_units LIMIT 1")
         return row is not None
 
+    # --- meta (key-value) ---
+
+    def get_meta(self, key):
+        """Return stored value for *key*, or None if missing."""
+        row = self._fetchone("SELECT value FROM meta WHERE key = ?", (key,))
+        return row["value"] if row else None
+
+    def set_meta(self, key, value):
+        """Upsert a meta key (string values)."""
+        self._execute(
+            """INSERT INTO meta (key, value) VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (key, str(value)),
+        )
+
+    def get_co_change_query_min(self):
+        """Minimum co_commit_count used when querying co_changes (matches ingest).
+
+        Default 3 for databases analyzed before co_change_query_min was stored.
+        """
+        raw = self.get_meta("co_change_query_min")
+        if raw is None:
+            return 3
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return 3
+
     def get_stats(self):
         """Get summary counts for all tables in a single query.
 
@@ -544,6 +728,8 @@ class Storage:
                UNION ALL SELECT 'commit_files', COUNT(*) FROM commit_files
                UNION ALL SELECT 'blame_cache', COUNT(*) FROM blame_cache
                UNION ALL SELECT 'co_changes', COUNT(*) FROM co_changes
+               UNION ALL SELECT 'branch_co_changes', COUNT(*) FROM branch_co_changes
+               UNION ALL SELECT 'import_edges', COUNT(*) FROM import_edges
                UNION ALL SELECT 'churn_stats', COUNT(*) FROM churn_stats
                UNION ALL SELECT 'file_hashes', COUNT(*) FROM file_hashes
                UNION ALL SELECT 'test_results', COUNT(*) FROM test_results"""

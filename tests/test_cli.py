@@ -336,23 +336,30 @@ class TestHandlerOutputFormats:
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_coupling_human(self, mock_cls, capsys):
         engine = _make_engine_mock()
-        engine.tool_coupling.return_value = [
-            {"file_b": "utils.py", "co_commit_count": 5},
-        ]
+        engine.tool_coupling.return_value = {
+            "co_change_partners": [
+                {"file_b": "utils.py", "co_commit_count": 5},
+            ],
+            "import_partners": [{"file": "helpers.py"}],
+        }
         mock_cls.return_value = engine
 
         args = _make_args(file="app.py", min_count=3)
         result = cmd_coupling(args)
 
-        assert len(result) == 1
         output = capsys.readouterr().out
         assert "utils.py" in output
         assert "5 co-commits" in output
+        assert "Import partners" in output
+        assert "helpers.py" in output
 
     @patch("chisel.cli.ChiselEngine")
     def test_cmd_coupling_empty(self, mock_cls, capsys):
         engine = _make_engine_mock()
-        engine.tool_coupling.return_value = []
+        engine.tool_coupling.return_value = {
+            "co_change_partners": [],
+            "import_partners": [],
+        }
         mock_cls.return_value = engine
 
         args = _make_args(file="app.py", min_count=3)
@@ -672,7 +679,10 @@ class TestMain:
     @patch("chisel.cli.ChiselEngine")
     def test_main_coupling_with_min_count(self, mock_cls):
         engine = _make_engine_mock()
-        engine.tool_coupling.return_value = []
+        engine.tool_coupling.return_value = {
+            "co_change_partners": [],
+            "import_partners": [],
+        }
         mock_cls.return_value = engine
 
         main(["coupling", "--project-dir", "/tmp/p", "f.py", "--min-count", "7"])
@@ -703,7 +713,7 @@ class TestMain:
 
         main(["suggest-tests", "--project-dir", "/tmp/p", "app.py"])
 
-        engine.tool_suggest_tests.assert_called_once_with(file_path="app.py")
+        engine.tool_suggest_tests.assert_called_once_with(file_path="app.py", fallback_to_all=False)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_ownership(self, mock_cls):
@@ -725,7 +735,9 @@ class TestMain:
 
         main(["risk-map", "--project-dir", "/tmp/p"])
 
-        engine.tool_risk_map.assert_called_once_with(directory=None, exclude_tests=True)
+        engine.tool_risk_map.assert_called_once_with(
+            directory=None, exclude_tests=True, proximity_adjustment=False,
+        )
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_stale_tests(self, mock_cls):

@@ -8,12 +8,14 @@ Test impact analysis and code intelligence for LLM agents. Zero external depende
 chisel/
   engine.py         — Orchestrator. Owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock, ProcessLock.
   project.py        — Multi-agent safety: project root detection, path normalization, storage resolution, cross-process file lock.
-  storage.py        — SQLite persistence (WAL mode, 30s busy timeout, write retry). 10 tables.
+  storage.py        — SQLite persistence (WAL mode, 30s busy timeout, write retry). 13 tables (incl. meta, import_edges, branch_co_changes).
   ast_utils.py      — Multi-lang AST extraction (12 languages). CodeUnit dataclass. _extract_brace_lang() shared by brace-delimited langs.
   git_analyzer.py   — Parses git log/blame via subprocess. Branch/diff queries.
-  metrics.py        — Pure computation: churn scoring, ownership aggregation, co-change detection. _parse_iso_date shared utility.
+  metrics.py        — Pure computation: churn scoring, ownership aggregation, co-change detection, coupling_threshold(). _parse_iso_date shared utility.
+  import_graph.py   — Static import_edges between source files (structural coupling).
   test_mapper.py    — Test file discovery, framework detection, dependency extraction, edge building.
-  impact.py         — Impact analysis, risk scoring, stale test detection, reviewer suggestions. Caches failure rates.
+  impact.py         — Impact analysis, risk scoring, stale test detection, reviewer suggestions.
+  risk_meta.py      — Risk-map _meta diagnostics and dynamic reweighting when components are uniform.
   cli.py            — argparse CLI (18 subcommands). _run_tool() shared handler. Entry point: chisel.cli:main
   schemas.py        — JSON Schema definitions for all 16 tools + dispatch table. Shared by HTTP and stdio servers.
   mcp_server.py     — HTTP MCP server (GET /tools, /health, POST /call). ThreadedHTTPServer. dispatch_tool() shared by both servers.
@@ -27,8 +29,8 @@ chisel/
 - **Zero deps**: stdlib only. `ast` for Python, regex for JS/TS/Go/Rust. `subprocess.run(["git", ...])` for git. Requires Python >= 3.11.
 - **FK enforcement disabled** in SQLite: stale test detection relies on orphaned edge refs; re-analysis deletes/recreates code_units freely.
 - **Churn formula**: `sum(1 / (1 + days_since_commit))` — recent changes weigh heavily.
-- **Risk formula**: `0.35*churn + 0.25*coupling + 0.2*coverage_gap + 0.1*author_concentration + 0.1*test_instability`
-- **Co-change threshold**: Only pairs with >= 3 co-commits stored. Commits touching >50 files are skipped (bulk operations).
+- **Risk formula**: `0.35*churn + 0.25*coupling + 0.2*coverage_gap + 0.1*author_concentration + 0.1*test_instability`. Coupling uses `max(git co-change, static import-graph)` breadth. `coverage_gap` is graduated (quantized to 0.25 steps: 0.0/0.25/0.5/0.75/1.0). `get_risk_map` may reweight the composite when 3+ components are uniform across files. `proximity_adjustment` optionally reduces `coverage_gap` by import distance to tested code.
+- **Co-change ingest**: `compute_co_changes` uses adaptive `min_count` from `coupling_threshold()`; queries use `meta.co_change_query_min` so stored pairs are visible. Branch-only pairs stored in `branch_co_changes` from `merge-base..HEAD`. Commits touching >50 files are skipped (bulk operations).
 - **Blame caching**: Cached by file content hash, invalidated on change.
 - **Incremental updates**: File content hashes tracked in `file_hashes` table.
 - **Persistent connection**: Storage uses a single SQLite connection (`check_same_thread=False`) with RWLock for thread safety.
@@ -53,9 +55,9 @@ chisel/
 - **Next-step suggestions**: `next_steps.py` provides `compute_next_steps(tool_name, result)` which returns structured suggestions per tool. Each hint is a dict: `{"tool": "...", "args": {...}, "reason": "..."}` for tool invocations, or `{"action": "...", "reason": "..."}` for non-tool guidance. LLM agents can directly invoke suggested tools without parsing prose. Integrated at the dispatch level in `mcp_server.py` — HTTP responses include `"next_steps": [...]` as a sibling to `"result"`, stdio wraps both in a `{"result": ..., "next_steps": [...]}` envelope. CLI is unaffected. All 16 tools now have registered hint functions — `churn`, `ownership`, `coupling`, `who_reviews`, `history`, `stats`, and `record_result` were added in v0.7.
 - **Diagnostic empty responses**: `diff_impact` returns `{"status": "no_changes", ...}` when no diff found. `stale_tests` returns `{"status": "no_edges", "stale_tests": [], ...}` when no test edges exist (so agents can distinguish "no stale tests" from "nothing to evaluate"). CLI `_is_no_data()` handles `"no_data"`, `"no_changes"`, and `"no_edges"` status values.
 - **LLM-prescriptive schema descriptions**: Tool descriptions in `schemas.py` use prescriptive language ("Use when...", "Use after...") to help LLM agents decide which tool to call. Cross-references between related tools (ownership↔who_reviews, analyze↔update, impact↔diff_impact). Coupling description references `stats` for threshold visibility.
-- **Inline coupling partners**: `risk_map` includes `"coupling_partners"` (top 3 by co-commit count) in each file entry alongside the breakdown. Data is already fetched in the batch query — no extra DB calls.
+- **Inline coupling partners**: `risk_map` includes `"coupling_partners"` (top 3 git co-change) and `"import_partners"` (top 3 static import neighbors) per file. The `coupling` tool exposes the same data at the single-file level.
 - **Triage tool**: Composite `triage` runs `risk_map` (top-N) + `test_gaps` (filtered to top-N files) + `stale_tests` in a single read lock. Returns a dict, not a list, so `limit` is not injected. Summary includes `test_edge_count`, `test_result_count`, and `coupling_threshold` for data quality visibility.
-- **Risk-map `_meta` envelope**: `tool_risk_map()` returns `{"files": [...], "_meta": {...}}` instead of a bare list. `_meta` contains: `total_files`, `coupling_threshold`, `total_test_edges`, `total_test_results`, `effective_components` (list of components that vary across files), `uniform_components` (dict of components with identical values + diagnostic reason). This tells LLM agents which risk components are providing real signal vs noise. `_build_risk_meta()` and `_diagnose_uniform()` in `engine.py`. `dispatch_tool()` in `mcp_server.py` applies `limit` to `result["files"]` for dict-wrapped responses. CLI `_limit()` handles both formats.
+- **Risk-map `_meta` envelope**: `tool_risk_map()` returns `{"files": [...], "_meta": {...}}`. `_meta` includes `effective_components`, `uniform_components`, `reweighted`, `effective_weights`, `coverage_gap_mode`, `coupling_threshold`, `total_test_edges`, `total_test_results`. Built by `build_risk_meta()` / `apply_risk_reweighting()` in `risk_meta.py`. `dispatch_tool()` applies `limit` to `result["files"]` for dict-wrapped responses.
 - **Risk-map test-file exclusion**: `risk_map` and `triage` exclude test files by default (`exclude_tests=True`). Test files always score `coverage_gap=1.0` because edges go FROM test units, never TO test-file code units — including them adds noise and masks real coverage differences between source files. `storage.get_test_file_paths()` fetches distinct test file paths from `test_units`. CLI flag: `--no-exclude-tests`. Aligns with `test_gaps` which already excludes test files by default.
 
 ## Dev Commands
@@ -71,10 +73,12 @@ chisel serve --port 8377                          # HTTP MCP server
 ## Module Dependency Graph
 
 ```
-engine.py → project.py, storage.py, ast_utils.py, git_analyzer.py, metrics.py, test_mapper.py, impact.py, rwlock.py
+engine.py → project.py, storage.py, ast_utils.py, git_analyzer.py, metrics.py, import_graph.py, test_mapper.py, impact.py, risk_meta.py, rwlock.py
 project.py → (no internal deps, uses subprocess for git)
+import_graph.py → test_mapper.py
 test_mapper.py → ast_utils.py, project.py
 impact.py → metrics.py
+risk_meta.py → metrics.py
 metrics.py → (no internal deps)
 cli.py → engine.py, mcp_server.py, mcp_stdio.py
 schemas.py → (no internal deps)
@@ -89,11 +93,13 @@ next_steps.py → (no internal deps)
 
 Each wired through: engine.tool_*() → CLI subcommand, HTTP POST /call, stdio MCP.
 
-- **`diff_impact`**: Auto-detects changed files/functions from `git diff` and returns impacted tests. Branch-aware: on feature branches diffs against main; on main diffs against HEAD. Returns diagnostic dict (`status: "no_changes"`) with `ref`, `branch`, `message` when no diff is found, instead of bare `[]`.
+- **`diff_impact`**: Combines `git diff` changed files with untracked code files (`ls-files --others`) and returns impacted tests. Branch-aware: on feature branches diffs against main; on main diffs against HEAD. Untracked paths use whole-file impact (no function-level diff). Returns diagnostic dict (`status: "no_changes"`) when neither diff nor untracked code files exist.
 - **`update`**: Incremental re-analysis — only re-processes changed files and new commits.
-- **`test_gaps`**: Finds code units with zero test coverage, prioritized by churn risk. Excludes test files by default.
+- **`test_gaps`**: Finds code units that have no test coverage, prioritized by churn risk. Excludes test files by default.
+- **`suggest_tests`**: Returns impacted tests ranked by relevance. Accepts `fallback_to_all=True` to return all known test files ranked by stem-match similarity when the target file has no test edges (useful for new/unanalyzed files).
+- **`coupling`**: Returns both `co_change_partners` (git co-change pairs with commit counts) and `import_partners` (static import neighbors) for a file. The `risk_map` breakdown exposes the same coupling data as sub-components.
 - **`record_result`**: Records test pass/fail outcomes. Feeds into `suggest_tests` (failure rate boost) and `risk_map` (test instability component). Also attempts heuristic edge creation via filename matching when no edges exist for the test file — `_create_heuristic_edges()` in `engine.py` uses `_test_to_source_stem()` and `storage.get_code_units_by_file_stem()`.
-- **`stats`**: Returns summary counts for all database tables plus `coupling_threshold` (when commits > 0) so LLM agents can diagnose coupling=0.0 results.
+- **`stats`**: Returns summary counts for all database tables plus `coupling_threshold`, `co_change_query_min`, and `branch_coupling_commits` (when present) for diagnostics.
 - **`triage`**: Combined risk_map + test_gaps + stale_tests for top-N riskiest files. Single command for pre-audit/refactor prioritization. Returns `{top_risk_files, test_gaps, stale_tests, summary}`.
 - **`limit` parameter**: All list-returning tools accept `limit` to cap result size. Also applies to dict-wrapped responses with a `files` key (e.g. `risk_map`).
-- **Adaptive coupling threshold**: `max(2, int(log2(commits) / 2) + 1)` — half-log scaling. Previous `max(3, int(log2(N)) + 1)` was too aggressive for small/medium projects (10 commits → threshold 4, killing all signal when max co-change is 2-3). Half-log with floor of 2 surfaces early coupling signal: 10→2, 50→3, 100→4, 200→4, 1000→5, 10000→7. Defined in `_coupling_threshold()` in `engine.py`.
+- **Adaptive coupling threshold**: `coupling_threshold()` in `metrics.py` — half-log scaling: 10→2, 50→3, 100→4, 200→4, 1000→5, 10000→7.

@@ -1,9 +1,45 @@
 """Impact analysis, risk scoring, stale test detection, and reviewer suggestions."""
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 
 from chisel.metrics import _parse_iso_date, compute_ownership
+
+# Co-change coupling: breadth of partners (normalized by this count).
+_COCHANGE_COUPLING_CAP = 10
+# Static import-graph coupling: distinct neighbor files (either direction).
+_IMPORT_COUPLING_CAP = 8
+
+_PROXIMITY_ALPHA = 0.15
+_PROXIMITY_CAP_HOPS = 5
+
+_QUANTIZE_STEPS = 4
+
+
+def _quantize_gap(value, steps=4):
+    """Quantize coverage_gap to fixed steps for graduated risk levels."""
+    return round(value * steps) / steps
+
+
+def _import_hops_to_tested(all_files, tested_files, neighbors_batch):
+    """BFS distance from multi-source *tested_files* over undirected import edges."""
+    dist = {fp: 0 for fp in tested_files}
+    q = deque(tested_files)
+    while q:
+        u = q.popleft()
+        for v in neighbors_batch.get(u, []):
+            if v in all_files and v not in dist:
+                dist[v] = dist[u] + 1
+                q.append(v)
+    return dist
+
+
+def _apply_coverage_proximity(coverage_gap, min_hops):
+    """Slightly reduce coverage_gap when *min_hops* from a tested file (import graph)."""
+    factor = 1.0 - _PROXIMITY_ALPHA * max(
+        0, (_PROXIMITY_CAP_HOPS - min_hops),
+    ) / float(_PROXIMITY_CAP_HOPS)
+    return coverage_gap * max(0.0, factor)
 
 
 class ImpactAnalyzer:
@@ -16,24 +52,30 @@ class ImpactAnalyzer:
     # Impacted tests
     # ------------------------------------------------------------------ #
 
-    def get_impacted_tests(self, changed_files, changed_functions=None):
+    def get_impacted_tests(self, changed_files, changed_functions=None,
+                           untracked_files=None):
         """Find tests affected by the given file/function changes.
 
         Uses both direct test edges and transitive co-change coupling.
 
         Args:
             changed_files: List of changed file paths.
-            changed_functions: Optional list of changed function names.
+            changed_functions: Optional list of changed function names (tracked
+                diffs).  Ignored for paths in *untracked_files* (whole-file).
+            untracked_files: Optional set of paths that are untracked; those
+                use full-file impact (no function-level diff available).
 
         Returns:
             List of dicts: {test_id, file_path, name, reason, score}
         """
         impacted = {}
+        untracked = untracked_files or set()
 
         # Direct hits via single JOIN query per file
         for file_path in changed_files:
+            fn = None if file_path in untracked else changed_functions
             hits = self.storage.get_direct_impacted_tests(
-                file_path, changed_functions,
+                file_path, fn,
             )
             for hit in hits:
                 new_score = hit["weight"]
@@ -46,9 +88,10 @@ class ImpactAnalyzer:
                         "score": new_score,
                     }
 
+        query_min = self.storage.get_co_change_query_min()
         # Transitive hits via co-change coupling
         for file_path in changed_files:
-            co_changes = self.storage.get_co_changes(file_path, min_count=3)
+            co_changes = self.storage.get_co_changes(file_path, min_count=query_min)
             for cc in co_changes:
                 coupled_file = cc["file_b"] if cc["file_a"] == file_path else cc["file_a"]
                 hits = self.storage.get_direct_impacted_tests(coupled_file)
@@ -92,9 +135,26 @@ class ImpactAnalyzer:
         churn_raw = churn_stat["churn_score"] if churn_stat else 0.0
         churn_norm = min(churn_raw / 5.0, 1.0)  # normalize: 5.0 score => 1.0
 
-        # Coupling breadth component (0-1)
-        co_changes = self.storage.get_co_changes(file_path, min_count=3)
-        coupling_norm = min(len(co_changes) / 10.0, 1.0)  # 10+ coupled files => 1.0
+        # Coupling: max(git co-change breadth, static import-graph breadth)
+        query_min = self.storage.get_co_change_query_min()
+        co_global = self.storage.get_co_changes(file_path, min_count=query_min)
+        co_branch = self.storage.get_branch_co_changes_batch(
+            [file_path], min_count=1,
+        ).get(file_path, [])
+        cochange_global_norm = min(
+            len(co_global) / float(_COCHANGE_COUPLING_CAP), 1.0,
+        )
+        cochange_branch_norm = min(
+            len(co_branch) / float(_COCHANGE_COUPLING_CAP), 1.0,
+        )
+        cochange_coupling_norm = max(cochange_global_norm, cochange_branch_norm)
+        import_neighbors = self.storage.get_import_neighbors_batch(
+            [file_path],
+        ).get(file_path, [])
+        import_coupling_norm = min(
+            len(import_neighbors) / float(_IMPORT_COUPLING_CAP), 1.0,
+        )
+        coupling_norm = max(import_coupling_norm, cochange_coupling_norm)
 
         # Test coverage component (0-1, inverted)
         code_units = self.storage.get_code_units_by_file(file_path)
@@ -109,16 +169,21 @@ class ImpactAnalyzer:
                 for e in edges:
                     covering_test_ids.add(e["test_id"])
         coverage = tested_count / max(len(code_units), 1)
-        coverage_gap = 1.0 - coverage
+        coverage_gap = _quantize_gap(1.0 - coverage)
 
         # Author concentration component (0-1)
         blame_data = self.storage.get_blame(file_path, _latest_hash(self.storage, file_path))
         author_conc = _author_concentration(blame_data)
 
-        # Test instability component (0-1): avg failure rate of covering tests
+        # Test instability: failure rate + duration CV of covering tests
         if failure_rates is None:
             failure_rates = _fetch_failure_rates(self.storage)
-        instability = _test_instability(covering_test_ids, failure_rates)
+        duration_cv = self.storage.get_test_duration_cv_batch(
+            list(covering_test_ids),
+        )
+        instability = _test_instability(
+            covering_test_ids, failure_rates, duration_cv,
+        )
 
         risk = (
             0.35 * churn_norm
@@ -134,6 +199,10 @@ class ImpactAnalyzer:
             "breakdown": {
                 "churn": round(churn_norm, 4),
                 "coupling": round(coupling_norm, 4),
+                "import_coupling": round(import_coupling_norm, 4),
+                "cochange_coupling": round(cochange_coupling_norm, 4),
+                "cochange_global": round(cochange_global_norm, 4),
+                "cochange_branch": round(cochange_branch_norm, 4),
                 "coverage_gap": round(coverage_gap, 4),
                 "author_concentration": round(author_conc, 4),
                 "test_instability": round(instability, 4),
@@ -144,15 +213,23 @@ class ImpactAnalyzer:
     # Test suggestions
     # ------------------------------------------------------------------ #
 
-    def suggest_tests(self, file_path):
+    def suggest_tests(self, file_path, fallback_to_all=False):
         """Suggest tests to run for a changed file, ordered by relevance.
 
         Uses recorded test results to boost tests with higher failure rates.
+
+        Args:
+            fallback_to_all: If True and no test edges exist for this file,
+                return all known test files ranked by stem-match relevance.
 
         Returns:
             List of dicts: {test_id, file_path, name, relevance, reason}
         """
         impacted = self.get_impacted_tests([file_path])
+
+        # Fallback: if no impacted tests and fallback requested, return all test files
+        if not impacted and fallback_to_all:
+            return self._fallback_suggest_tests(file_path)
 
         # Boost tests that have historically failed more often
         failure_rates = _fetch_failure_rates(self.storage)
@@ -173,6 +250,40 @@ class ImpactAnalyzer:
 
         result.sort(key=lambda x: x["relevance"], reverse=True)
         return result
+
+    def _fallback_suggest_tests(self, file_path):
+        """Return all test files ranked by stem similarity to file_path.
+
+        Used when a file has no test edges (new/unanalyzed files).
+        """
+        import os
+        source_stem = os.path.splitext(os.path.basename(file_path))[0]
+        all_test_files = self.storage.get_all_test_files()
+        if not all_test_files:
+            return []
+
+        scored = []
+        for test_file, test_names in all_test_files.items():
+            test_stem = os.path.splitext(os.path.basename(test_file))[0]
+            # Scoring: 1.0 exact stem match, 0.5 partial, 0.1 for all
+            if test_stem == source_stem:
+                score = 1.0
+            elif source_stem in test_stem or test_stem in source_stem:
+                score = 0.5
+            else:
+                score = 0.1
+
+            for name in test_names:
+                scored.append({
+                    "test_id": f"{test_file}:{name}",
+                    "file_path": test_file,
+                    "name": name,
+                    "relevance": score,
+                    "reason": "fallback: stem-matched test file",
+                })
+
+        scored.sort(key=lambda x: x["relevance"], reverse=True)
+        return scored
 
     # ------------------------------------------------------------------ #
     # Stale test detection
@@ -223,7 +334,8 @@ class ImpactAnalyzer:
     # Risk map
     # ------------------------------------------------------------------ #
 
-    def get_risk_map(self, directory=None, exclude_tests=True):
+    def get_risk_map(self, directory=None, exclude_tests=True,
+                     proximity_adjustment=False):
         """Compute risk scores for all tracked files (optionally in a directory).
 
         Uses batch queries to avoid the N+1 pattern: fetches churn, coupling,
@@ -235,6 +347,8 @@ class ImpactAnalyzer:
                 risk map.  Test files always score coverage_gap=1.0 (edges
                 go *from* tests, never *to* test-file code units), which
                 adds noise and masks real coverage differences.
+            proximity_adjustment: If True, reduce ``coverage_gap`` slightly for
+                files that are a few import hops from tested code.
 
         Returns:
             List of dicts: {file_path, risk_score, breakdown}
@@ -250,10 +364,12 @@ class ImpactAnalyzer:
         if not files:
             return []
 
-        # Batch-fetch all data upfront (5 queries total, not N*5)
         failure_rates = _fetch_failure_rates(self.storage)
+        query_min = self.storage.get_co_change_query_min()
         churn_batch = self.storage.get_churn_stats_batch(files)
-        co_changes_batch = self.storage.get_co_changes_batch(files)
+        co_changes_batch = self.storage.get_co_changes_batch(files, min_count=query_min)
+        branch_cc_batch = self.storage.get_branch_co_changes_batch(files, min_count=1)
+        import_neighbors_batch = self.storage.get_import_neighbors_batch(files)
         code_units_batch = self.storage.get_code_units_by_files_batch(files)
 
         all_code_ids = [
@@ -261,12 +377,32 @@ class ImpactAnalyzer:
         ]
         edges_batch = self.storage.get_edges_for_code_batch(all_code_ids)
 
+        all_test_ids = set()
+        for cid in all_code_ids:
+            for e in edges_batch.get(cid, []):
+                all_test_ids.add(e["test_id"])
+        duration_cv_by_test = self.storage.get_test_duration_cv_batch(
+            list(all_test_ids),
+        )
+
+        tested_files = set()
+        for fp in files:
+            for cu in code_units_batch.get(fp, []):
+                if edges_batch.get(cu["id"]):
+                    tested_files.add(fp)
+                    break
+
+        hop_dist = {}
+        if proximity_adjustment:
+            hop_dist = _import_hops_to_tested(
+                set(files), tested_files, import_neighbors_batch,
+            )
+
         file_hash_pairs = [
             (fp, _latest_hash(self.storage, fp)) for fp in files
         ]
         blame_batch = self.storage.get_blame_batch(file_hash_pairs)
 
-        # Compute risk scores from pre-fetched data
         risk_map = []
         for fp in files:
             churn_stat = churn_batch.get(fp)
@@ -274,10 +410,24 @@ class ImpactAnalyzer:
             churn_norm = min(churn_raw / 5.0, 1.0)
 
             co_changes = co_changes_batch.get(fp, [])
-            coupling_norm = min(len(co_changes) / 10.0, 1.0)
+            branch_cc = branch_cc_batch.get(fp, [])
+            cochange_global_norm = min(
+                len(co_changes) / float(_COCHANGE_COUPLING_CAP), 1.0,
+            )
+            cochange_branch_norm = min(
+                len(branch_cc) / float(_COCHANGE_COUPLING_CAP), 1.0,
+            )
+            cochange_coupling_norm = max(cochange_global_norm, cochange_branch_norm)
 
-            # Top 3 coupling partners (by co-commit count, desc)
-            sorted_cc = sorted(co_changes, key=lambda c: c["co_commit_count"], reverse=True)[:3]
+            import_neighbors = import_neighbors_batch.get(fp, [])
+            import_coupling_norm = min(
+                len(import_neighbors) / float(_IMPORT_COUPLING_CAP), 1.0,
+            )
+            coupling_norm = max(import_coupling_norm, cochange_coupling_norm)
+
+            sorted_cc = sorted(
+                co_changes, key=lambda c: c["co_commit_count"], reverse=True,
+            )[:3]
             coupling_partners = [
                 {
                     "file": cc["file_b"] if cc["file_a"] == fp else cc["file_a"],
@@ -285,6 +435,7 @@ class ImpactAnalyzer:
                 }
                 for cc in sorted_cc
             ]
+            import_partners = [{"file": n} for n in import_neighbors[:3]]
 
             code_units = code_units_batch.get(fp, [])
             tested_count = 0
@@ -296,12 +447,19 @@ class ImpactAnalyzer:
                     for e in edges:
                         covering_test_ids.add(e["test_id"])
             coverage = tested_count / max(len(code_units), 1)
-            coverage_gap = 1.0 - coverage
+            coverage_gap = _quantize_gap(1.0 - coverage)
+
+            if proximity_adjustment and fp not in tested_files:
+                mh = hop_dist.get(fp)
+                if mh is not None and mh > 0:
+                    coverage_gap = _apply_coverage_proximity(coverage_gap, mh)
 
             blame_data = blame_batch.get(fp, [])
             author_conc = _author_concentration(blame_data)
 
-            instability = _test_instability(covering_test_ids, failure_rates)
+            instability = _test_instability(
+                covering_test_ids, failure_rates, duration_cv_by_test,
+            )
 
             risk = (
                 0.35 * churn_norm
@@ -315,9 +473,14 @@ class ImpactAnalyzer:
                 "unit_name": None,
                 "risk_score": round(risk, 4),
                 "coupling_partners": coupling_partners,
+                "import_partners": import_partners,
                 "breakdown": {
                     "churn": round(churn_norm, 4),
                     "coupling": round(coupling_norm, 4),
+                    "import_coupling": round(import_coupling_norm, 4),
+                    "cochange_coupling": round(cochange_coupling_norm, 4),
+                    "cochange_global": round(cochange_global_norm, 4),
+                    "cochange_branch": round(cochange_branch_norm, 4),
                     "coverage_gap": round(coverage_gap, 4),
                     "author_concentration": round(author_conc, 4),
                     "test_instability": round(instability, 4),
@@ -460,18 +623,19 @@ def _fetch_failure_rates(storage):
     }
 
 
-def _test_instability(test_ids, failure_rates):
-    """Compute average failure rate for a set of tests (0 = stable, 1 = always fails).
-
-    Args:
-        test_ids: Set of test IDs to check.
-        failure_rates: Dict of {test_id: failure_rate} from _fetch_failure_rates.
-
-    Returns 0.0 if no recorded results exist.
-    """
+def _test_instability(test_ids, failure_rates, duration_cv_by_test=None):
+    """Blend failure rate with duration coefficient-of-variation when available."""
+    duration_cv_by_test = duration_cv_by_test or {}
     if not test_ids:
         return 0.0
     rates = [failure_rates[tid] for tid in test_ids if tid in failure_rates]
-    if not rates:
+    fail_component = sum(rates) / len(rates) if rates else 0.0
+    cvs = [duration_cv_by_test[tid] for tid in test_ids if tid in duration_cv_by_test]
+    cv_component = sum(cvs) / len(cvs) if cvs else 0.0
+    if not rates and not cvs:
         return 0.0
-    return sum(rates) / len(rates)
+    if not rates:
+        return min(cv_component, 1.0)
+    if not cvs:
+        return fail_component
+    return min(1.0, 0.65 * fail_component + 0.35 * cv_component)

@@ -58,13 +58,21 @@ _TOOL_SCHEMAS = {
     },
     "suggest_tests": {
         "name": "suggest_tests",
-        "description": "Suggest tests to run for a file, ranked by relevance. Use to find existing test coverage for a specific file.",
+        "description": "Suggest tests to run for a file, ranked by relevance. Use to find existing test coverage for a specific file. Returns empty for untracked/new files unless fallback_to_all is set.",
         "parameters": {
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
                     "description": "Path to the file to suggest tests for.",
+                },
+                "fallback_to_all": {
+                    "type": "boolean",
+                    "description": (
+                        "If true and no test edges exist for the file, return all known "
+                        "test files ranked by name similarity instead of empty. "
+                        "Useful for new/untracked files that have no analysis data yet."
+                    ),
                 },
             },
             "required": ["file_path"],
@@ -104,7 +112,7 @@ _TOOL_SCHEMAS = {
     },
     "coupling": {
         "name": "coupling",
-        "description": "Get files that frequently change together (co-change coupling). Use when risk_map shows coupling > 0, or before refactoring to find hidden dependencies. Threshold scales with project maturity (see 'stats' for current value).",
+        "description": "Get files that frequently change together (co-change coupling) or share static import edges (structural coupling). Use when risk_map shows coupling > 0, or before refactoring to find hidden dependencies. Returns both git co-change partners and import neighbors. Threshold scales with project maturity (see 'stats' for current value).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -122,10 +130,12 @@ _TOOL_SCHEMAS = {
     },
     "risk_map": {
         "name": "risk_map",
-        "description": (
-            "Risk scores for all files combining churn, coupling, coverage gaps, "
-            "author concentration, and test instability. Returns {files: [...], "
-            "_meta: {effective_components, uniform_components, coupling_threshold, "
+            "description": (
+            "Risk scores for all files combining churn, coupling (git co-change "
+            "and/or static import graph), coverage gaps, author concentration, "
+            "and test instability (failure rate + duration variance). Returns "
+            "{files: [...], _meta: {effective_components, uniform_components, "
+            "reweighted, effective_weights, coverage_gap_mode, coupling_threshold, "
             "total_test_edges, total_test_results}}. Check _meta.uniform_components "
             "to identify metrics providing no signal (all files score identically). "
             "Use as first step to prioritize which files need attention."
@@ -142,6 +152,13 @@ _TOOL_SCHEMAS = {
                     "description": (
                         "Exclude test files (default: true). Test files always "
                         "score coverage_gap=1.0, adding noise."
+                    ),
+                },
+                "proximity_adjustment": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, slightly reduce coverage_gap for files a few "
+                        "import hops from code covered by tests (see _meta.coverage_gap_mode)."
                     ),
                 },
             },
@@ -306,11 +323,11 @@ _TOOL_SCHEMAS = {
 _TOOL_DISPATCH = {
     "analyze": ("tool_analyze", ["directory", "force"]),
     "impact": ("tool_impact", ["files", "functions"]),
-    "suggest_tests": ("tool_suggest_tests", ["file_path"]),
+    "suggest_tests": ("tool_suggest_tests", ["file_path", "fallback_to_all"]),
     "churn": ("tool_churn", ["file_path", "unit_name"]),
     "ownership": ("tool_ownership", ["file_path"]),
     "coupling": ("tool_coupling", ["file_path", "min_count"]),
-    "risk_map": ("tool_risk_map", ["directory", "exclude_tests"]),
+    "risk_map": ("tool_risk_map", ["directory", "exclude_tests", "proximity_adjustment"]),
     "stale_tests": ("tool_stale_tests", []),
     "history": ("tool_history", ["file_path"]),
     "who_reviews": ("tool_who_reviews", ["file_path"]),

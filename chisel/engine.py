@@ -1,13 +1,20 @@
 """ChiselEngine — main orchestrator tying together all subsystems."""
 
-import math
 import os
 
-from chisel.ast_utils import _EXTENSION_MAP, _SKIP_DIRS, compute_file_hash, extract_code_units
+from chisel.ast_utils import (
+    _EXTENSION_MAP,
+    _SKIP_DIRS,
+    compute_file_hash,
+    extract_code_units,
+    path_has_code_extension,
+)
 from chisel.git_analyzer import GitAnalyzer
+from chisel.import_graph import build_import_edges
 from chisel.impact import ImpactAnalyzer
-from chisel.metrics import compute_churn, compute_co_changes
+from chisel.metrics import compute_churn, compute_co_changes, coupling_threshold as _coupling_threshold
 from chisel.project import ProcessLock, detect_project_root, normalize_path, resolve_storage_dir
+from chisel.risk_meta import apply_risk_reweighting, build_risk_meta
 from chisel.rwlock import RWLock
 from chisel.storage import Storage
 from chisel.test_mapper import TestMapper
@@ -15,55 +22,6 @@ from chisel.test_mapper import TestMapper
 
 # Derived from ast_utils._EXTENSION_MAP to avoid duplication.
 _CODE_EXTENSIONS = frozenset(_EXTENSION_MAP)
-
-def _coupling_threshold(commit_count):
-    """Adaptive co-change threshold with half-log scaling.
-
-    Previous ``max(3, int(log2(N)) + 1)`` was too aggressive for small/medium
-    projects — 10 commits → threshold 4, killing all signal when max co-change
-    is typically 2-3.  Half-log with a floor of 2 surfaces early coupling
-    signal while still scaling to filter noise in large repos:
-      10 → 2, 50 → 3, 100 → 4, 200 → 4, 1000 → 5, 10000 → 7.
-    """
-    if commit_count <= 0:
-        return 2
-    return max(2, int(math.log2(commit_count) / 2) + 1)
-
-
-def _diagnose_uniform(comp, value, stats):
-    """Return a diagnostic reason for a uniform risk component."""
-    if comp == "coupling":
-        if value == 0.0:
-            threshold = _coupling_threshold(stats.get("commits", 0))
-            return (f"no co-changes above threshold ({threshold}); "
-                    "may need more git history or lower threshold")
-        return "all files equally coupled"
-    if comp == "coverage_gap":
-        edges = stats.get("test_edges", 0)
-        if value == 1.0 and edges == 0:
-            return ("no test edges found; edge builder may not match "
-                    "this project's import/require patterns")
-        if value == 1.0:
-            return "no code units have test edges despite edges existing"
-        if value == 0.0:
-            return "all code units have test coverage"
-        return f"all files have identical coverage ({value})"
-    if comp == "test_instability":
-        results = stats.get("test_results", 0)
-        if value == 0.0 and results == 0:
-            return "no test results recorded; use record_result after running tests"
-        if value == 0.0:
-            return "all covering tests passing"
-        return f"all files have identical instability ({value})"
-    if comp == "author_concentration":
-        if value == 1.0:
-            return "single author per file (common in small teams)"
-        return f"all files have identical concentration ({value})"
-    if comp == "churn":
-        if value == 0.0:
-            return "no churn data; run analyze with git history"
-        return f"all files have identical churn ({value})"
-    return ""
 
 
 def _test_to_source_stem(test_file_path):
@@ -175,6 +133,8 @@ class ChiselEngine:
                 stats["test_units_found"] = len(test_units)
                 stats["test_edges_built"] = edge_count
 
+                self._rebuild_import_edges(code_files)
+
                 stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
                 return stats
 
@@ -217,6 +177,7 @@ class ChiselEngine:
                     pass
 
                 self._discover_and_build_edges(code_files)
+                self._rebuild_import_edges(code_files)
                 stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
                 return stats
 
@@ -243,14 +204,14 @@ class ChiselEngine:
                     return empty
                 return self.impact.get_impacted_tests(files, functions)
 
-    def tool_suggest_tests(self, file_path):
+    def tool_suggest_tests(self, file_path, fallback_to_all=False):
         """MCP tool: suggest tests for a file."""
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                return self.impact.suggest_tests(file_path)
+                return self.impact.suggest_tests(file_path, fallback_to_all=fallback_to_all)
 
     def tool_churn(self, file_path, unit_name=None):
         """MCP tool: get churn stats. Always returns a list."""
@@ -276,15 +237,23 @@ class ChiselEngine:
                 return self.impact.get_ownership(file_path)
 
     def tool_coupling(self, file_path, min_count=3):
-        """MCP tool: get co-change coupling partners."""
+        """MCP tool: get co-change and import coupling partners."""
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                return self.storage.get_co_changes(file_path, min_count)
+                query_min = self.storage.get_co_change_query_min()
+                effective = max(min_count, query_min)
+                co_change_partners = self.storage.get_co_changes(file_path, min_count=effective)
+                import_neighbors = self.storage.get_import_neighbors_batch([file_path]).get(file_path, [])
+                return {
+                    "co_change_partners": co_change_partners,
+                    "import_partners": [{"file": path} for path in import_neighbors],
+                }
 
-    def tool_risk_map(self, directory=None, exclude_tests=True):
+    def tool_risk_map(self, directory=None, exclude_tests=True,
+                      proximity_adjustment=False):
         """MCP tool: risk scores for all files.
 
         Returns ``{"files": [...], "_meta": {...}}`` so LLM agents can
@@ -296,14 +265,30 @@ class ChiselEngine:
                 files always score coverage_gap=1.0 (no edges point *to*
                 test-file code units), which adds noise and masks real
                 coverage signal.
+            proximity_adjustment: If True, slightly reduce coverage_gap for
+                files a few import hops from tested code (see ``_meta``).
         """
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                files = self.impact.get_risk_map(directory, exclude_tests)
-                meta = self._build_risk_meta(files)
+                files = self.impact.get_risk_map(
+                    directory, exclude_tests, proximity_adjustment,
+                )
+                files, rw_meta = apply_risk_reweighting(files)
+                stats = self.storage.get_stats()
+                meta = build_risk_meta(files, stats)
+                meta.update(rw_meta)
+                meta["coverage_gap_mode"] = (
+                    "proximity_adjusted" if proximity_adjustment else "edge_count"
+                )
+                bc = self.storage.get_meta("branch_coupling_commits")
+                if bc is not None:
+                    try:
+                        meta["branch_coupling_commits"] = int(bc)
+                    except ValueError:
+                        pass
                 return {"files": files, "_meta": meta}
 
     def tool_stale_tests(self):
@@ -368,7 +353,13 @@ class ChiselEngine:
                     return empty
         if ref is None:
             ref = self._detect_diff_base()
-        changed_files = self.git.get_changed_files(ref)
+        diff_files = self.git.get_changed_files(ref)
+        untracked_raw = self.git.get_untracked_files()
+        untracked_code = {
+            p for p in untracked_raw
+            if path_has_code_extension(p)
+        }
+        changed_files = sorted(set(diff_files) | untracked_code)
         if not changed_files:
             try:
                 branch = self.git.get_current_branch()
@@ -378,10 +369,12 @@ class ChiselEngine:
                 "status": "no_changes",
                 "ref": ref,
                 "branch": branch,
-                "message": f"No files differ against '{ref}'",
+                "message": f"No files differ against '{ref}' and no untracked code files",
             }
         functions = []
         for fp in changed_files:
+            if fp in untracked_code:
+                continue
             try:
                 functions.extend(self.git.get_changed_functions(fp, ref))
             except RuntimeError:
@@ -389,7 +382,9 @@ class ChiselEngine:
         with self._process_lock.shared():
             with self.lock.read_lock():
                 return self.impact.get_impacted_tests(
-                    changed_files, functions or None,
+                    changed_files,
+                    functions or None,
+                    untracked_files=untracked_code,
                 )
 
     def tool_update(self):
@@ -464,50 +459,15 @@ class ChiselEngine:
                     commit_count = stats.get("commits", 0)
                     if commit_count > 0:
                         stats["coupling_threshold"] = _coupling_threshold(commit_count)
+                    qm = self.storage.get_co_change_query_min()
+                    stats["co_change_query_min"] = qm
+                    bc = self.storage.get_meta("branch_coupling_commits")
+                    if bc is not None:
+                        try:
+                            stats["branch_coupling_commits"] = int(bc)
+                        except ValueError:
+                            pass
                 return stats
-
-    # ------------------------------------------------------------------ #
-    # Risk-map diagnostics
-    # ------------------------------------------------------------------ #
-
-    def _build_risk_meta(self, files):
-        """Build diagnostic metadata about risk score data quality.
-
-        Tells LLM agents which risk components are actually differentiating
-        across files vs uniform (providing zero signal).
-        """
-        if not files:
-            return {"total_files": 0}
-
-        stats = self.storage.get_stats()
-        commit_count = stats.get("commits", 0)
-
-        components = [
-            "churn", "coupling", "coverage_gap",
-            "author_concentration", "test_instability",
-        ]
-        uniform = {}
-        effective = []
-
-        for comp in components:
-            values = {f["breakdown"][comp] for f in files}
-            if len(values) <= 1:
-                val = next(iter(values)) if values else 0.0
-                uniform[comp] = {
-                    "value": val,
-                    "reason": _diagnose_uniform(comp, val, stats),
-                }
-            else:
-                effective.append(comp)
-
-        return {
-            "total_files": len(files),
-            "coupling_threshold": _coupling_threshold(commit_count) if commit_count > 0 else None,
-            "total_test_edges": stats.get("test_edges", 0),
-            "total_test_results": stats.get("test_results", 0),
-            "effective_components": effective,
-            "uniform_components": uniform,
-        }
 
     # ------------------------------------------------------------------ #
     # Shared internal helpers
@@ -631,12 +591,40 @@ class ChiselEngine:
                             )
 
         adaptive_min = _coupling_threshold(len(commits))
+        self.storage.set_meta("co_change_query_min", str(adaptive_min))
         co_changes = compute_co_changes(commits, min_count=adaptive_min)
         for cc in co_changes:
             self.storage.upsert_co_change(
                 cc["file_a"], cc["file_b"],
                 cc["co_commit_count"], cc["last_co_commit"],
             )
+
+        self.storage.clear_branch_co_changes()
+        try:
+            branch = self.git.get_current_branch()
+            if branch in ("main", "master"):
+                self.storage.set_meta("branch_coupling_commits", "0")
+            else:
+                base = next(
+                    (n for n in ("main", "master") if self.git.branch_exists(n)),
+                    None,
+                )
+                if base:
+                    mb = self.git.merge_base_with(base)
+                    branch_commits = self.git.parse_log_range(f"{mb}..HEAD")
+                    self.storage.set_meta(
+                        "branch_coupling_commits", str(len(branch_commits)),
+                    )
+                    br_cc = compute_co_changes(branch_commits, min_count=1)
+                    for cc in br_cc:
+                        self.storage.upsert_branch_co_change(
+                            cc["file_a"], cc["file_b"],
+                            cc["co_commit_count"], cc["last_co_commit"],
+                        )
+                else:
+                    self.storage.set_meta("branch_coupling_commits", "0")
+        except RuntimeError:
+            self.storage.set_meta("branch_coupling_commits", "0")
 
     def _discover_and_build_edges(self, code_files):
         """Discover test files, parse them, build test edges.
@@ -671,6 +659,17 @@ class ChiselEngine:
                 edge["edge_type"], edge["weight"],
             )
         return all_test_units, len(test_files), len(edges)
+
+    def _rebuild_import_edges(self, code_files):
+        """Rebuild static import_edges for all scanned code files."""
+        self.storage.clear_import_edges()
+        test_paths = set(self.storage.get_test_file_paths())
+        rels = [normalize_path(f, self.project_dir) for f in code_files]
+        edges = build_import_edges(self.mapper, self.project_dir, rels, test_paths)
+        for e in edges:
+            self.storage.upsert_import_edge(
+                e["importer_file"], e["imported_file"],
+            )
 
     # ------------------------------------------------------------------ #
     # Lifecycle
