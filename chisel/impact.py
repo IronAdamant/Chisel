@@ -1,5 +1,6 @@
 """Impact analysis, risk scoring, stale test detection, and reviewer suggestions."""
 
+import re
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
@@ -13,7 +14,7 @@ _IMPORT_COUPLING_CAP = 8
 _PROXIMITY_ALPHA = 0.15
 _PROXIMITY_CAP_HOPS = 5
 
-_QUANTIZE_STEPS = 4
+_QUANTIZE_STEPS = 10
 
 
 def _quantize_gap(value, steps=4):
@@ -40,6 +41,104 @@ def _apply_coverage_proximity(coverage_gap, min_hops):
         0, (_PROXIMITY_CAP_HOPS - min_hops),
     ) / float(_PROXIMITY_CAP_HOPS)
     return coverage_gap * max(0.0, factor)
+
+
+def _tarjan_scc(nodes, neighbors_func):
+    """Tarjan's SCC algorithm.
+
+    Args:
+        nodes: iterable of node identifiers.
+        neighbors_func: callable(node) -> list of neighbor nodes.
+
+    Returns:
+        List of SCCs, each SCC is a list of nodes. SCCs with size > 1 are cycles.
+    """
+    index_counter = [0]
+    stack = []
+    lowlinks = {}
+    index = {}
+    on_stack = {}
+    sccs = []
+
+    def strongconnect(v):
+        index[v] = lowlinks[v] = index_counter[0]
+        index_counter[0] += 1
+        stack.append(v)
+        on_stack[v] = True
+        for w in neighbors_func(v):
+            if w not in index:
+                strongconnect(w)
+                lowlinks[v] = min(lowlinks[v], lowlinks[w])
+            elif on_stack.get(w, False):
+                lowlinks[v] = min(lowlinks[v], index[w])
+        if lowlinks[v] == index[v]:
+            scc = []
+            while stack[-1] != v:
+                w = stack.pop()
+                on_stack[w] = False
+                scc.append(w)
+            stack.pop()
+            on_stack[v] = False
+            scc.append(v)
+            sccs.append(scc)
+
+    for v in nodes:
+        if v not in index:
+            strongconnect(v)
+    return sccs
+
+
+def _find_circular_dependencies(all_files, neighbors_batch):
+    """Find circular dependencies in the import graph via Tarjan's SCC.
+
+    Returns top-3 cycles sorted by severity (largest first), each as
+    ``{"files": [...], "length": N}``.
+    """
+    def neighbors(fp):
+        return neighbors_batch.get(fp, [])
+
+    sccs = _tarjan_scc(list(all_files), neighbors)
+    cycles = [
+        {"files": sorted(scc), "length": len(scc)}
+        for scc in sccs if len(scc) > 1
+    ]
+    cycles.sort(key=lambda c: c["length"], reverse=True)
+    return cycles[:3]
+
+
+# ------------------------------------------------------------------ #
+# Plugin / dynamic require awareness
+# ------------------------------------------------------------------ #
+
+_PLUGIN_REGISTRY_FUNCS = re.compile(
+    r"\b(?:registerPlugin|loadPlugin|addPlugin|"
+    r"installPlugin|enabledPlugins?|getPlugin|hasPlugin)\s*\(",
+)
+_PLUGIN_MANAGER_CLASSES = re.compile(
+    r"\b(?:PluginManager|ModuleRegistry|ExtensionRegistry|"
+    r"PluginLoader|ModuleLoader)\b",
+)
+_PLUGIN_DIRS = re.compile(
+    r"\b(?:plugins?|extensions?|addons?)\b",
+)
+_PLUGIN_CONFIG_RE = re.compile(
+    r"""require\s*\(\s*['\"](?:[^'\"]*[/\\])?(?:plugins?|extensions?|builtin)['\"]\s*\)""",
+)
+
+
+def detect_plugin_signals(content):
+    """Return plugin-related signals found in file content.
+
+    For awareness only — not used in coupling/risk scoring.
+    ``require(variable)`` and dynamic ``import()`` are fundamentally invisible
+    to static analysis.
+    """
+    return {
+        "has_plugin_registry": bool(_PLUGIN_REGISTRY_FUNCS.search(content)),
+        "has_plugin_manager": bool(_PLUGIN_MANAGER_CLASSES.search(content)),
+        "has_plugin_dir_ref": bool(_PLUGIN_DIRS.search(content)),
+        "has_plugin_config": bool(_PLUGIN_CONFIG_RE.search(content)),
+    }
 
 
 class ImpactAnalyzer:
@@ -178,6 +277,7 @@ class ImpactAnalyzer:
         tested_lines = 0
         total_lines = 0
         covering_test_ids = set()
+        edge_type_counts = {"call": 0, "import": 0}
         for cu in code_units:
             unit_lines = cu["line_end"] - cu["line_start"] + 1
             total_lines += unit_lines
@@ -187,11 +287,19 @@ class ImpactAnalyzer:
                 tested_lines += unit_lines
                 for e in edges:
                     covering_test_ids.add(e["test_id"])
+                    edge_type_counts[e.get("edge_type", "import")] += 1
         if coverage_mode == "line" and total_lines > 0:
             coverage = tested_lines / total_lines
         else:
             coverage = tested_count / max(len(code_units), 1)
         coverage_gap = _quantize_gap(1.0 - coverage)
+
+        # Multi-dimensional coverage signals
+        total_edges = sum(edge_type_counts.values())
+        coverage_depth = round(min(len(covering_test_ids) / 5.0, 1.0), 4)
+        edge_type_quality = round(
+            edge_type_counts.get("call", 0) / max(total_edges, 1), 4,
+        ) if total_edges > 0 else 0.0
 
         # Author concentration component (0-1)
         blame_data = self.storage.get_blame(file_path, _latest_hash(self.storage, file_path))
@@ -226,6 +334,8 @@ class ImpactAnalyzer:
                 "cochange_global": round(cochange_global_norm, 4),
                 "cochange_branch": round(cochange_branch_norm, 4),
                 "coverage_gap": round(coverage_gap, 4),
+                "coverage_depth": coverage_depth,
+                "edge_type_quality": edge_type_quality,
                 "author_concentration": round(author_conc, 4),
                 "test_instability": round(instability, 4),
             },
@@ -395,6 +505,7 @@ class ImpactAnalyzer:
         co_changes_batch = self.storage.get_co_changes_batch(files, min_count=query_min)
         branch_cc_batch = self.storage.get_branch_co_changes_batch(files, min_count=1)
         import_neighbors_batch = self.storage.get_import_neighbors_batch(files)
+        cycles = _find_circular_dependencies(set(files), import_neighbors_batch)
         code_units_batch = self.storage.get_code_units_by_files_batch(files)
 
         all_code_ids = [
@@ -477,6 +588,7 @@ class ImpactAnalyzer:
             tested_lines = 0
             total_lines = 0
             covering_test_ids = set()
+            edge_type_counts = {"call": 0, "import": 0}
             for cu in code_units:
                 unit_lines = cu["line_end"] - cu["line_start"] + 1
                 total_lines += unit_lines
@@ -486,11 +598,19 @@ class ImpactAnalyzer:
                     tested_lines += unit_lines
                     for e in edges:
                         covering_test_ids.add(e["test_id"])
+                        edge_type_counts[e.get("edge_type", "import")] += 1
             if coverage_mode == "line" and total_lines > 0:
                 coverage = tested_lines / total_lines
             else:
                 coverage = tested_count / max(len(code_units), 1)
             coverage_gap = _quantize_gap(1.0 - coverage)
+
+            # Multi-dimensional coverage signals
+            total_edges = sum(edge_type_counts.values())
+            coverage_depth = round(min(len(covering_test_ids) / 5.0, 1.0), 4)
+            edge_type_quality = round(
+                edge_type_counts.get("call", 0) / max(total_edges, 1), 4,
+            ) if total_edges > 0 else 0.0
 
             if proximity_adjustment and fp not in tested_files:
                 mh = hop_dist.get(fp)
@@ -525,6 +645,8 @@ class ImpactAnalyzer:
                     "cochange_global": round(cochange_global_norm, 4),
                     "cochange_branch": round(cochange_branch_norm, 4),
                     "coverage_gap": round(coverage_gap, 4),
+                    "coverage_depth": coverage_depth,
+                    "edge_type_quality": edge_type_quality,
                     "author_concentration": round(author_conc, 4),
                     "test_instability": round(instability, 4),
                 },

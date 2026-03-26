@@ -392,10 +392,14 @@ _JS_KEYWORDS = frozenset({
 _JS_IMPORT_RE = re.compile(
     r"""(?:import\s+(?:\{[^}]*\}|\w+).*?from\s+['"]([^'"]+)['"]|"""
     r"""require\s*\(\s*['"]([^'"]+)['"]\s*\))""",
-    re.MULTILINE,
+    re.MULTILINE | re.DOTALL,
 )
 _JS_CALL_RE = re.compile(r"(\w+)\s*\(")
 _JS_NAMED_IMPORT_RE = re.compile(r"import\s+\{([^}]+)\}")
+# Named ESM imports WITH module_path: import { foo, bar } from './path'
+_JS_NAMED_IMPORT_WITH_PATH_RE = re.compile(
+    r"import\s+\{([^}]+)\}\s+from\s+['\"]([^'\"]+)['\"]",
+)
 
 # ESM default import binding: import SearchService from '...'
 _JS_ESM_DEFAULT_RE = re.compile(
@@ -446,7 +450,16 @@ def _extract_js_deps(content):
             if name:
                 deps.append({"name": name, "dep_type": "import", "module_path": mod})
 
-    # Named ESM imports: import { foo, bar } from ...
+    # Named ESM imports WITH module_path: import { foo, bar } from './path'
+    # (process before the fallback named-import block below)
+    for m in _JS_NAMED_IMPORT_WITH_PATH_RE.finditer(content):
+        mod = m.group(2)
+        for name in m.group(1).split(","):
+            name = name.strip().split(" as ")[0].strip()
+            if name:
+                deps.append({"name": name, "dep_type": "import", "module_path": mod})
+
+    # Named ESM imports: import { foo, bar } from ... (fallback, no module_path)
     for m in _JS_NAMED_IMPORT_RE.finditer(content):
         for name in m.group(1).split(","):
             name = name.strip().split(" as ")[0].strip()

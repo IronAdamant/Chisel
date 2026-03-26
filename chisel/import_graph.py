@@ -79,10 +79,8 @@ def _resolve_import_targets(importer, dep, module_path, all_paths: set[str]):
             return
         # Non-relative bare module name (e.g. require('SimilarityService'))
         # falls through to name-based matching below.
-        # Skip path-style non-relative imports (e.g. 'src/utils', 'lib/foo')
-        # as they don't map cleanly to project file stems.
-        if module_path and "/" in module_path:
-            return
+        # Path-style non-relative imports (e.g. 'src/utils', 'lib/foo') also
+        # fall through — the stem-based fallback at the bottom handles them.
 
     # Fallback: unique name match (last resort)
     name = dep.get("name")

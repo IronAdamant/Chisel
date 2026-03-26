@@ -23,3 +23,20 @@ class TestBuildImportEdges:
         edges = build_import_edges(mapper, str(tmp_project), rels, set())
         pairs = {(e["importer_file"], e["imported_file"]) for e in edges}
         assert ("consumer.py", "provider.py") in pairs
+
+    def test_js_non_relative_bare_import(self, tmp_path):
+        """Path-style bare imports (require('src/utils')) are not skipped.
+
+        Previously, any import path containing '/' was skipped as an npm package.
+        After removing that skip, the fallback stem-based matching handles them.
+        """
+        root = tmp_path / "proj"
+        root.mkdir()
+        # src/utils.js matches require('utils') via stem (basename without ext)
+        (root / "utils.js").write_text("export function value() { return 1; }\n")
+        (root / "main.js").write_text("const utils = require('utils');\n")
+        mapper = TestMapper(str(root))
+        rels = ["utils.js", "main.js"]
+        edges = build_import_edges(mapper, str(root), rels, set())
+        pairs = {(e["importer_file"], e["imported_file"]) for e in edges}
+        assert ("main.js", "utils.js") in pairs

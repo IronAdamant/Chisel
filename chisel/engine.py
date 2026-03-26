@@ -306,6 +306,12 @@ class ChiselEngine:
                         meta["branch_coupling_commits"] = int(bc)
                     except ValueError:
                         pass
+                # Compute cycles from import graph for inclusion in _meta
+                all_files = {f["file_path"] for f in files}
+                import_neighbors = self.storage.get_import_neighbors_batch(list(all_files))
+                from chisel.impact import _find_circular_dependencies
+                cycles = _find_circular_dependencies(all_files, import_neighbors)
+                meta["cycles"] = cycles
                 return {"files": files, "_meta": meta}
 
     def tool_stale_tests(self):
@@ -454,7 +460,8 @@ class ChiselEngine:
                     return empty
                 risk_map = self.impact.get_risk_map(
                     directory, exclude_tests,
-                )[:top_n]
+                )
+                risk_map = risk_map[:top_n]
                 test_gaps = self.impact.get_test_gaps(directory=directory)
                 stale = self.impact.detect_stale_tests()
                 stats = self.storage.get_stats()

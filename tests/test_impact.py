@@ -112,8 +112,21 @@ class TestRiskScore:
         assert "cochange_global" in bd
         assert "cochange_branch" in bd
         assert "coverage_gap" in bd
+        assert "coverage_depth" in bd
+        assert "edge_type_quality" in bd
         assert "author_concentration" in bd
         assert "test_instability" in bd
+
+    def test_coverage_depth_and_quality(self, storage, analyzer):
+        """Coverage depth and edge type quality are computed from edge data."""
+        _seed_basic_data(storage)
+        risk = analyzer.compute_risk_score("app.py")
+        bd = risk["breakdown"]
+        # app.py: foo has import edge, bar has call edge, 2 distinct test files
+        assert 0.0 <= bd["coverage_depth"] <= 1.0
+        assert 0.0 <= bd["edge_type_quality"] <= 1.0
+        # edge_type_quality = call_edges / total_edges = 1/2 = 0.5
+        assert bd["edge_type_quality"] == 0.5
 
     def test_low_risk_file(self, storage, analyzer):
         _seed_basic_data(storage)
@@ -360,3 +373,95 @@ class TestTestInstability:
         storage.record_test_result("test_app.py:test_foo", False)
         risk = analyzer.compute_risk_score("app.py")
         assert risk["breakdown"]["test_instability"] > 0
+
+
+class TestTarjanSCC:
+    """Tests for _tarjan_scc and _find_circular_dependencies."""
+
+    def test_detects_simple_cycle(self):
+        from chisel.impact import _tarjan_scc
+        # a -> b -> c -> a
+        nodes = ["a", "b", "c"]
+        neighbors = {"a": ["b"], "b": ["c"], "c": ["a"]}
+        sccs = _tarjan_scc(nodes, lambda n: neighbors.get(n, []))
+        cycle_sccs = [s for s in sccs if len(s) > 1]
+        assert len(cycle_sccs) == 1
+        assert set(cycle_sccs[0]) == {"a", "b", "c"}
+
+    def test_no_cycle(self):
+        from chisel.impact import _tarjan_scc
+        # a -> b -> c (linear, no cycle)
+        nodes = ["a", "b", "c"]
+        neighbors = {"a": ["b"], "b": ["c"]}
+        sccs = _tarjan_scc(nodes, lambda n: neighbors.get(n, []))
+        cycle_sccs = [s for s in sccs if len(s) > 1]
+        assert cycle_sccs == []
+
+    def test_two_independent_cycles(self):
+        from chisel.impact import _tarjan_scc
+        # a -> b -> a and c -> d -> c
+        nodes = ["a", "b", "c", "d"]
+        neighbors = {"a": ["b"], "b": ["a"], "c": ["d"], "d": ["c"]}
+        sccs = _tarjan_scc(nodes, lambda n: neighbors.get(n, []))
+        cycle_sccs = [s for s in sccs if len(s) > 1]
+        assert len(cycle_sccs) == 2
+
+    def test_find_circular_dependencies_returns_top_3(self):
+        from chisel.impact import _find_circular_dependencies
+        import_neighbors = {
+            "a": ["b"], "b": ["c"], "c": ["a"],  # 3-cycle
+            "x": ["y"], "y": ["z"], "z": ["x"],  # 3-cycle
+            "m": ["n"], "n": ["o"], "o": ["m"],  # 3-cycle
+            "p": [],  # no cycle
+        }
+        cycles = _find_circular_dependencies(
+            {"a", "b", "c", "x", "y", "z", "m", "n", "o", "p"}, import_neighbors,
+        )
+        assert len(cycles) == 3  # top-3
+        # All cycles should be length 3 and sorted by length desc
+        assert all(c["length"] == 3 for c in cycles)
+
+    def test_find_circular_dependencies_skips_orphans(self):
+        from chisel.impact import _find_circular_dependencies
+        import_neighbors = {
+            "a": ["b"],
+            "b": ["a"],  # cycle
+            "c": [],  # no cycle
+        }
+        cycles = _find_circular_dependencies({"a", "b", "c"}, import_neighbors)
+        assert len(cycles) == 1
+        assert set(cycles[0]["files"]) == {"a", "b"}
+
+
+class TestDetectPluginSignals:
+    """Tests for detect_plugin_signals utility function."""
+
+    def test_detects_plugin_registry_calls(self):
+        from chisel.impact import detect_plugin_signals
+        content = "registerPlugin('my-plugin', handler);"
+        signals = detect_plugin_signals(content)
+        assert signals["has_plugin_registry"] is True
+
+    def test_detects_plugin_manager_class(self):
+        from chisel.impact import detect_plugin_signals
+        content = "class PluginManager { load() {} }"
+        signals = detect_plugin_signals(content)
+        assert signals["has_plugin_manager"] is True
+
+    def test_detects_plugin_config_require(self):
+        from chisel.impact import detect_plugin_signals
+        content = "const plugins = require('./config/plugins');"
+        signals = detect_plugin_signals(content)
+        assert signals["has_plugin_config"] is True
+
+    def test_detects_plugin_dir_reference(self):
+        from chisel.impact import detect_plugin_signals
+        content = "const ext = await import('./extensions/my-ext');"
+        signals = detect_plugin_signals(content)
+        assert signals["has_plugin_dir_ref"] is True
+
+    def test_no_false_positives_on_clean_code(self):
+        from chisel.impact import detect_plugin_signals
+        content = "function processData(input) { return input.map(x => x * 2); }"
+        signals = detect_plugin_signals(content)
+        assert all(v is False for v in signals.values())

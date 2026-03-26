@@ -52,6 +52,14 @@ def _diagnose_uniform(comp, value, stats):
         if value == 0.0:
             return "all code units have test coverage"
         return f"all files have identical coverage ({value})"
+    if comp == "coverage_depth":
+        if value == 0.0:
+            return "no code units covered by multiple test files"
+        return f"all files have identical coverage depth ({value})"
+    if comp == "edge_type_quality":
+        if value == 0.0:
+            return "no call edges; all test edges are import-only (reference, not exercise)"
+        return f"all files have identical edge quality ({value})"
     if comp == "test_instability":
         results = stats.get("test_results", 0)
         if value == 0.0 and results == 0:

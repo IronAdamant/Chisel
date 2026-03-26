@@ -407,6 +407,29 @@ class TestDepExtractionEdgeCases:
         assert "alpha" in names
         assert "beta" in names  # "beta as b" extracts "beta"
 
+    def test_js_named_imports_multiline(self, mapper):
+        """DOTALL flag: multi-line named imports are matched."""
+        content = "import {\n    alpha,\n    beta\n} from '../src/utils';\n"
+        deps = mapper.extract_test_dependencies("test.test.js", content)
+        names = [d["name"] for d in deps]
+        assert "alpha" in names
+        assert "beta" in names
+
+    def test_js_named_imports_with_module_path(self, mapper):
+        """Named ESM imports should capture module_path for path-based matching."""
+        content = "import { foo, bar } from './services/api';\n"
+        deps = mapper.extract_test_dependencies("test.test.js", content)
+        named_deps = [d for d in deps if d["name"] in ("foo", "bar")]
+        assert all(d.get("module_path") == "./services/api" for d in named_deps)
+
+    def test_js_named_imports_alias(self, mapper):
+        """Named imports with 'as' alias should extract the original name."""
+        content = "import { foo as bar } from './utils';\n"
+        deps = mapper.extract_test_dependencies("test.test.js", content)
+        names = [d["name"] for d in deps]
+        assert "foo" in names
+        assert "bar" not in names  # alias is not the original name
+
 
 class TestBuildEdgesEdgeCases:
     def test_unreadable_test_file(self, mapper, tmp_path):
