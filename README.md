@@ -144,6 +144,26 @@ chisel stats
 
 Chisel works standalone or alongside [Stele](https://github.com/IronAdamant/Stele) for multi-agent code coordination. Chisel handles test intelligence; Stele handles document-level context and conflict prevention.
 
+## Design Notes
+
+### Coupling: co-change vs. import-graph
+
+Chisel's `coupling` tool has two coupling sources:
+
+1. **Co-change coupling** (`co_change_partners`) — files that frequently appear in the same git commits. This signal requires **multiple agents or multiple human collaborators** making separate commits. In solo-agent workflows, there is no co-change signal and this returns 0.0.
+
+2. **Import-graph coupling** (`import_partners`) — static `import`/`require` edges between source files. This works in any project and provides structural coupling data even when co-change is absent.
+
+When co-change is 0.0, import coupling still provides meaningful structural data. The `risk_map` tool uses the maximum of the two coupling sources.
+
+### Coverage Gap: Graduated Scoring
+
+Coverage gap is quantized to 4 steps (0.0, 0.25, 0.5, 0.75, 1.0) rather than binary. This graduated scoring provides finer granularity for risk assessment in `risk_map`.
+
+### `--verbose` Flag
+
+`chisel analyze` does not accept a `--verbose` flag. Using it causes the command to silently fail. For diagnostic output after analysis, use `chisel stats` to verify edge counts.
+
 ## License
 
 MIT
