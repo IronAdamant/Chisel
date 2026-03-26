@@ -17,7 +17,7 @@ chisel/
   impact.py         — Impact analysis, risk scoring, stale test detection, reviewer suggestions.
   risk_meta.py      — Risk-map _meta diagnostics and dynamic reweighting when components are uniform.
   cli.py            — argparse CLI (18 subcommands). _run_tool() shared handler. Entry point: chisel.cli:main
-  schemas.py        — JSON Schema definitions for all 16 tools + dispatch table. Shared by HTTP and stdio servers.
+  schemas.py        — JSON Schema definitions for all 22 tools + dispatch table. Shared by HTTP and stdio servers.
   mcp_server.py     — HTTP MCP server (GET /tools, /health, POST /call). ThreadedHTTPServer. dispatch_tool() shared by both servers.
   mcp_stdio.py      — stdio MCP server (requires optional 'mcp' package). _configure_server() for engine lifecycle mgmt.
   next_steps.py     — Contextual next-step suggestions for MCP tool responses. compute_next_steps() dispatched per tool.
@@ -87,19 +87,21 @@ mcp_stdio.py → engine.py, mcp_server.py, schemas.py
 next_steps.py → (no internal deps)
 ```
 
-## 16 MCP Tools
+## 22 MCP Tools
 
-`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`, `diff_impact`, `update`, `test_gaps`, `record_result`, `stats`, `triage`
+`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`, `diff_impact`, `update`, `test_gaps`, `record_result`, `stats`, `triage`, plus 6 advisory file lock tools
 
 Each wired through: engine.tool_*() → CLI subcommand, HTTP POST /call, stdio MCP.
 
 - **`diff_impact`**: Combines `git diff` changed files with untracked code files (`ls-files --others`) and returns impacted tests. Branch-aware: on feature branches diffs against main; on main diffs against HEAD. Untracked paths use whole-file impact (no function-level diff). Returns diagnostic dict (`status: "no_changes"`) when neither diff nor untracked code files exist.
 - **`update`**: Incremental re-analysis — only re-processes changed files and new commits.
-- **`test_gaps`**: Finds code units that have no test coverage, prioritized by churn risk. Excludes test files by default.
-- **`suggest_tests`**: Returns impacted tests ranked by relevance. Accepts `fallback_to_all=True` to return all known test files ranked by stem-match similarity when the target file has no test edges (useful for new/unanalyzed files).
-- **`coupling`**: Returns both `co_change_partners` (git co-change pairs with commit counts) and `import_partners` (static import neighbors) for a file. The `risk_map` breakdown exposes the same coupling data as sub-components.
+- **`test_gaps`**: Finds code units that have no test coverage, prioritized by churn risk. Excludes test files by default. Accepts `working_tree=True` to also scan untracked (uncommitted) files from disk and include their code units as gaps with churn=0.
+- **`suggest_tests`**: Returns impacted tests ranked by relevance. Accepts `fallback_to_all=True` to return all known test files ranked by stem-match similarity when the target file has no test edges (useful for new/unanalyzed files). Accepts `working_tree=True` to also scan untracked files on disk.
+- **`coupling`**: Returns both `co_change_partners` (git co-change pairs with commit counts) and `import_partners` (static import neighbors) for a file. Uses adaptive hybrid scoring: co-change dominates when present; import coupling is the sole source in single-author projects; additive boost when both are non-zero.
 - **`record_result`**: Records test pass/fail outcomes. Feeds into `suggest_tests` (failure rate boost) and `risk_map` (test instability component). Also attempts heuristic edge creation via filename matching when no edges exist for the test file — `_create_heuristic_edges()` in `engine.py` uses `_test_to_source_stem()` and `storage.get_code_units_by_file_stem()`.
 - **`stats`**: Returns summary counts for all database tables plus `coupling_threshold`, `co_change_query_min`, and `branch_coupling_commits` (when present) for diagnostics.
 - **`triage`**: Combined risk_map + test_gaps + stale_tests for top-N riskiest files. Single command for pre-audit/refactor prioritization. Returns `{top_risk_files, test_gaps, stale_tests, summary}`.
 - **`limit` parameter**: All list-returning tools accept `limit` to cap result size. Also applies to dict-wrapped responses with a `files` key (e.g. `risk_map`).
 - **Adaptive coupling threshold**: `coupling_threshold()` in `metrics.py` — half-log scaling: 10→2, 50→3, 100→4, 200→4, 1000→5, 10000→7.
+- **Coverage gap modes**: `risk_map` accepts `coverage_mode="unit"` (default, equal weight per code unit) or `"line"` (weighted by line count so large untested units have proportionally higher gap).
+- **Working-tree mode**: `suggest_tests` and `test_gaps` accept `working_tree=True` to analyze untracked files directly from disk, enabling coverage insights during active development before files are committed.

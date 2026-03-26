@@ -117,7 +117,8 @@ class ImpactAnalyzer:
     # Risk scoring
     # ------------------------------------------------------------------ #
 
-    def compute_risk_score(self, file_path, unit_name=None, failure_rates=None):
+    def compute_risk_score(self, file_path, unit_name=None, failure_rates=None,
+                           coverage_mode="unit"):
         """Compute a risk score for a file or function.
 
         Formula: 0.35*churn + 0.25*coupling + 0.2*coverage_gap
@@ -126,6 +127,9 @@ class ImpactAnalyzer:
         Args:
             failure_rates: Optional pre-fetched dict of {test_id: rate}.
                            Fetched from storage if not provided.
+            coverage_mode: "unit" (default) weights each code unit equally;
+                           "line" weights by line count so large untested
+                           units have proportionally higher coverage_gap.
 
         Returns:
             Dict: {file_path, unit_name, risk_score, breakdown}
@@ -154,21 +158,39 @@ class ImpactAnalyzer:
         import_coupling_norm = min(
             len(import_neighbors) / float(_IMPORT_COUPLING_CAP), 1.0,
         )
-        coupling_norm = max(import_coupling_norm, cochange_coupling_norm)
+        # Additive hybrid: both signals boost coupling, but co-change dominates
+        # when present (it reflects actual change-history coupling).
+        # Formula: use co-change if non-zero; otherwise import coupling;
+        # if both are non-zero, use co-change + 0.25 * import (additive boost).
+        if cochange_coupling_norm > 0:
+            coupling_norm = max(
+                cochange_coupling_norm,
+                cochange_coupling_norm + 0.25 * import_coupling_norm,
+            )
+        else:
+            coupling_norm = import_coupling_norm
 
         # Test coverage component (0-1, inverted)
         code_units = self.storage.get_code_units_by_file(file_path)
         if unit_name:
             code_units = [cu for cu in code_units if cu["name"] == unit_name]
         tested_count = 0
+        tested_lines = 0
+        total_lines = 0
         covering_test_ids = set()
         for cu in code_units:
+            unit_lines = cu["line_end"] - cu["line_start"] + 1
+            total_lines += unit_lines
             edges = self.storage.get_edges_for_code(cu["id"])
             if edges:
                 tested_count += 1
+                tested_lines += unit_lines
                 for e in edges:
                     covering_test_ids.add(e["test_id"])
-        coverage = tested_count / max(len(code_units), 1)
+        if coverage_mode == "line" and total_lines > 0:
+            coverage = tested_lines / total_lines
+        else:
+            coverage = tested_count / max(len(code_units), 1)
         coverage_gap = _quantize_gap(1.0 - coverage)
 
         # Author concentration component (0-1)
@@ -335,7 +357,7 @@ class ImpactAnalyzer:
     # ------------------------------------------------------------------ #
 
     def get_risk_map(self, directory=None, exclude_tests=True,
-                     proximity_adjustment=False):
+                     proximity_adjustment=False, coverage_mode="unit"):
         """Compute risk scores for all tracked files (optionally in a directory).
 
         Uses batch queries to avoid the N+1 pattern: fetches churn, coupling,
@@ -349,6 +371,9 @@ class ImpactAnalyzer:
                 adds noise and masks real coverage differences.
             proximity_adjustment: If True, reduce ``coverage_gap`` slightly for
                 files that are a few import hops from tested code.
+            coverage_mode: "unit" (default) weights each code unit equally;
+                "line" weights by line count so large untested units have
+                proportionally higher coverage_gap.
 
         Returns:
             List of dicts: {file_path, risk_score, breakdown}
@@ -423,7 +448,17 @@ class ImpactAnalyzer:
             import_coupling_norm = min(
                 len(import_neighbors) / float(_IMPORT_COUPLING_CAP), 1.0,
             )
-            coupling_norm = max(import_coupling_norm, cochange_coupling_norm)
+            # Additive hybrid: co-change dominates when present; import coupling
+            # is the sole source in single-author projects. When both are non-zero,
+            # additive boost reflects that files with both coupling types are more
+            # tightly integrated than either alone.
+            if cochange_coupling_norm > 0:
+                coupling_norm = max(
+                    cochange_coupling_norm,
+                    cochange_coupling_norm + 0.25 * import_coupling_norm,
+                )
+            else:
+                coupling_norm = import_coupling_norm
 
             sorted_cc = sorted(
                 co_changes, key=lambda c: c["co_commit_count"], reverse=True,
@@ -439,14 +474,22 @@ class ImpactAnalyzer:
 
             code_units = code_units_batch.get(fp, [])
             tested_count = 0
+            tested_lines = 0
+            total_lines = 0
             covering_test_ids = set()
             for cu in code_units:
+                unit_lines = cu["line_end"] - cu["line_start"] + 1
+                total_lines += unit_lines
                 edges = edges_batch.get(cu["id"], [])
                 if edges:
                     tested_count += 1
+                    tested_lines += unit_lines
                     for e in edges:
                         covering_test_ids.add(e["test_id"])
-            coverage = tested_count / max(len(code_units), 1)
+            if coverage_mode == "line" and total_lines > 0:
+                coverage = tested_lines / total_lines
+            else:
+                coverage = tested_count / max(len(code_units), 1)
             coverage_gap = _quantize_gap(1.0 - coverage)
 
             if proximity_adjustment and fp not in tested_files:

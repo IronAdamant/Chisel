@@ -205,14 +205,27 @@ class ChiselEngine:
                     return empty
                 return self.impact.get_impacted_tests(files, functions)
 
-    def tool_suggest_tests(self, file_path, fallback_to_all=False):
-        """MCP tool: suggest tests for a file."""
+    def tool_suggest_tests(self, file_path, fallback_to_all=False,
+                           working_tree=False):
+        """MCP tool: suggest tests for a file.
+
+        Args:
+            fallback_to_all: If True and no test edges exist, return all known
+                test files ranked by stem-match relevance.
+            working_tree: If True, also check untracked files on disk and use
+                stem-matching to find relevant tests when the file has no DB edges.
+                Useful during active development before files are committed.
+        """
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                return self.impact.suggest_tests(file_path, fallback_to_all=fallback_to_all)
+                result = self.impact.suggest_tests(file_path, fallback_to_all=fallback_to_all)
+                if working_tree and not result:
+                    # File may be untracked — try stem-matching against known test files
+                    result = self._working_tree_suggest(file_path)
+                return result
 
     def tool_churn(self, file_path, unit_name=None):
         """MCP tool: get churn stats. Always returns a list."""
@@ -254,7 +267,7 @@ class ChiselEngine:
                 }
 
     def tool_risk_map(self, directory=None, exclude_tests=True,
-                      proximity_adjustment=False):
+                      proximity_adjustment=False, coverage_mode="unit"):
         """MCP tool: risk scores for all files.
 
         Returns ``{"files": [...], "_meta": {...}}`` so LLM agents can
@@ -268,6 +281,9 @@ class ChiselEngine:
                 coverage signal.
             proximity_adjustment: If True, slightly reduce coverage_gap for
                 files a few import hops from tested code (see ``_meta``).
+            coverage_mode: "unit" (default) weights each code unit equally;
+                "line" weights by line count so large untested units have
+                proportionally higher coverage_gap.
         """
         with self._process_lock.shared():
             with self.lock.read_lock():
@@ -275,14 +291,14 @@ class ChiselEngine:
                 if empty is not None:
                     return empty
                 files = self.impact.get_risk_map(
-                    directory, exclude_tests, proximity_adjustment,
+                    directory, exclude_tests, proximity_adjustment, coverage_mode,
                 )
                 files, rw_meta = apply_risk_reweighting(files)
                 stats = self.storage.get_stats()
                 meta = build_risk_meta(files, stats)
                 meta.update(rw_meta)
                 meta["coverage_gap_mode"] = (
-                    "proximity_adjusted" if proximity_adjustment else "edge_count"
+                    "proximity_adjusted" if proximity_adjustment else coverage_mode
                 )
                 bc = self.storage.get_meta("branch_coupling_commits")
                 if bc is not None:
@@ -392,14 +408,26 @@ class ChiselEngine:
         """MCP tool: incremental re-analysis of changed files."""
         return self.update()
 
-    def tool_test_gaps(self, file_path=None, directory=None, exclude_tests=True):
-        """MCP tool: find code units with no test coverage."""
+    def tool_test_gaps(self, file_path=None, directory=None, exclude_tests=True,
+                       working_tree=False):
+        """MCP tool: find code units with no test coverage.
+
+        Args:
+            working_tree: If True, also scan untracked (uncommitted) files from
+                disk and include their code units as gaps with churn=0. Useful
+                for identifying coverage gaps in files that haven't been committed.
+        """
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                return self.impact.get_test_gaps(file_path, directory, exclude_tests)
+                gaps = list(self.impact.get_test_gaps(
+                    file_path, directory, exclude_tests,
+                ))
+                if working_tree:
+                    gaps.extend(self._working_tree_gaps(file_path, directory, exclude_tests))
+                return gaps
 
     def tool_record_result(self, test_id, passed, duration_ms=None):
         """MCP tool: record a test result (pass/fail) for future prioritization.
@@ -806,6 +834,92 @@ class ChiselEngine:
                     )
                     count += 1
         return count
+
+    def _working_tree_suggest(self, file_path):
+        """Suggest tests for an untracked file using stem-matching.
+
+        Reads the file from disk, extracts code units, and matches
+        against known test files in storage by stem similarity.
+        Returns an empty list if no matching tests are found.
+        """
+        import os
+        source_stem = os.path.splitext(os.path.basename(file_path))[0]
+        all_test_files = self.storage.get_all_test_files()
+        if not all_test_files:
+            return []
+
+        scored = []
+        for test_file, test_names in all_test_files.items():
+            test_stem = os.path.splitext(os.path.basename(test_file))[0]
+            if test_stem == source_stem:
+                score = 1.0
+            elif source_stem in test_stem or test_stem in source_stem:
+                score = 0.5
+            else:
+                score = 0.1
+
+            for name in test_names:
+                scored.append({
+                    "test_id": f"{test_file}:{name}",
+                    "file_path": test_file,
+                    "name": name,
+                    "relevance": score,
+                    "reason": "working-tree: stem-matched test (file not yet committed)",
+                })
+
+        scored.sort(key=lambda x: x["relevance"], reverse=True)
+        return scored
+
+    def _working_tree_gaps(self, file_path=None, directory=None, exclude_tests=True):
+        """Find coverage gaps in untracked files by scanning disk directly.
+
+        Untracked files have no git history, so churn=0 for all their code units.
+        Only returns gaps for files that are genuinely untracked (not in DB).
+        """
+        try:
+            untracked = set(self.git.get_untracked_files())
+        except RuntimeError:
+            return []
+
+        if not untracked:
+            return []
+
+        # Filter to code files, optionally scoped to directory
+        dir_prefix = directory.rstrip("/") + "/" if directory else ""
+        code_exts = _CODE_EXTENSIONS
+        gaps = []
+        for ufp in untracked:
+            if not any(ufp.endswith(ext) for ext in code_exts):
+                continue
+            if dir_prefix and not ufp.startswith(dir_prefix):
+                continue
+            # Skip test files if exclude_tests
+            if exclude_tests and ufp.startswith("test"):
+                continue
+            # Skip if already in DB (analyzed file — not truly untracked)
+            if self.storage.get_code_units_by_file(ufp):
+                continue
+            # Read from disk and extract code units
+            abs_path = os.path.join(self.project_dir, ufp)
+            try:
+                with open(abs_path, encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+            except OSError:
+                continue
+            units = extract_code_units(abs_path, content)
+            for u in units:
+                gaps.append({
+                    "id": f"{ufp}:{u.name}:{u.unit_type}",
+                    "file_path": ufp,
+                    "name": u.name,
+                    "unit_type": u.unit_type,
+                    "line_start": u.line_start,
+                    "line_end": u.line_end,
+                    "churn_score": 0.0,
+                    "commit_count": 0,
+                    "_working_tree": True,
+                })
+        return gaps
 
     def _scan_code_files(self, directory=None):
         """Walk project tree and return all code file paths.

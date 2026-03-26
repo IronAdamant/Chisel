@@ -60,6 +60,8 @@ def create_parser():
     p_suggest.add_argument("file", help="File path")
     p_suggest.add_argument("--fallback", action="store_true",
                            help="Also return all test files if no edges found")
+    p_suggest.add_argument("--working-tree", action="store_true",
+                           help="Include untracked files on disk in analysis")
 
     # churn
     p_churn = sub.add_parser("churn", parents=[shared],
@@ -89,6 +91,9 @@ def create_parser():
                         help="Include test files in risk map")
     p_risk.add_argument("--proximity", action="store_true", default=False,
                         help="Adjust coverage_gap by import distance to tested code")
+    p_risk.add_argument("--coverage-mode", choices=["unit", "line"],
+                        default="unit",
+                        help="Coverage mode: 'unit' weights units equally, 'line' weights by line count")
 
     # stale-tests
     sub.add_parser("stale-tests", parents=[shared], help="Detect stale tests")
@@ -122,6 +127,8 @@ def create_parser():
                         help="Scope to a directory")
     p_gaps.add_argument("--no-exclude-tests", action="store_true", default=False,
                         help="Include test file units in results")
+    p_gaps.add_argument("--working-tree", action="store_true",
+                        help="Include untracked files on disk as gaps with churn=0")
 
     # record-result
     p_record = sub.add_parser("record-result", parents=[shared],
@@ -285,7 +292,8 @@ def cmd_impact(args):
 
 def cmd_suggest_tests(args):
     return _run_tool(args, "tool_suggest_tests",
-                     {"file_path": args.file, "fallback_to_all": args.fallback},
+                     {"file_path": args.file, "fallback_to_all": args.fallback,
+                      "working_tree": args.working_tree},
                      _fmt_list("No test suggestions.", "Suggested tests:",
                                lambda i: f"{i['name']}  (score: {i['relevance']})"))
 
@@ -355,7 +363,8 @@ def cmd_risk_map(args):
     return _run_tool(args, "tool_risk_map",
                      {"directory": args.directory,
                       "exclude_tests": not args.no_exclude_tests,
-                      "proximity_adjustment": args.proximity}, fmt)
+                      "proximity_adjustment": args.proximity,
+                      "coverage_mode": args.coverage_mode}, fmt)
 
 
 def cmd_stale_tests(args):
@@ -399,7 +408,8 @@ def cmd_test_gaps(args):
     return _run_tool(
         args, "tool_test_gaps",
         {"file_path": args.file, "directory": args.directory,
-         "exclude_tests": not args.no_exclude_tests},
+         "exclude_tests": not args.no_exclude_tests,
+         "working_tree": args.working_tree},
         _fmt_list(
             "No untested code units found.",
             lambda r, a: f"Untested code units ({len(r)}):",

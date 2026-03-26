@@ -282,7 +282,7 @@ class TestToolMethods:
         assert "effective_components" in meta
         assert "uniform_components" in meta
         assert "coverage_gap_mode" in meta
-        assert meta["coverage_gap_mode"] == "edge_count"
+        assert meta["coverage_gap_mode"] == "unit"
         assert isinstance(meta["effective_components"], list)
         assert isinstance(meta["uniform_components"], dict)
         # With the test fixture, some components should be effective

@@ -17,10 +17,27 @@ def _diagnose_uniform(comp, value, stats):
     """Return a diagnostic reason for a uniform risk component."""
     if comp == "coupling":
         if value == 0.0:
+            import_edges = stats.get("import_edges", 0)
+            co_changes = stats.get("co_changes", 0)
             thr = coupling_threshold(stats.get("commits", 0))
+            if import_edges == 0 and co_changes == 0:
+                return (
+                    "no import edges and no co-change pairs found; "
+                    "edge builder may not match this project's import/require patterns"
+                )
+            if import_edges == 0:
+                return (
+                    "no import edges found; edge builder may not match "
+                    "this project's import/require patterns (co-changes exist but no structural coupling)"
+                )
+            if co_changes == 0:
+                return (
+                    f"no co-changes above threshold ({thr}); "
+                    "single-author or bulk-commit history produces no co-change signal"
+                )
             return (
-                f"no co-changes above threshold ({thr}); "
-                "may need more git history or lower threshold"
+                f"all files have zero coupling despite {import_edges} import edges "
+                f"and {co_changes} co-change pairs; coupling caps may be too restrictive"
             )
         return "all files equally coupled"
     if comp == "coverage_gap":

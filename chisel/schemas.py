@@ -58,7 +58,7 @@ _TOOL_SCHEMAS = {
     },
     "suggest_tests": {
         "name": "suggest_tests",
-        "description": "Suggest tests to run for a file, ranked by relevance. Use to find existing test coverage for a specific file. Returns empty for untracked/new files unless fallback_to_all is set.",
+        "description": "Suggest tests to run for a file, ranked by relevance. Use to find existing test coverage for a specific file. Returns empty for untracked/new files unless fallback_to_all or working_tree is set.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -72,6 +72,14 @@ _TOOL_SCHEMAS = {
                         "If true and no test edges exist for the file, return all known "
                         "test files ranked by name similarity instead of empty. "
                         "Useful for new/untracked files that have no analysis data yet."
+                    ),
+                },
+                "working_tree": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, also scan untracked (uncommitted) files on disk and use "
+                        "stem-matching to find relevant tests when the file has no DB edges. "
+                        "useful during active development before files are committed."
                     ),
                 },
             },
@@ -159,6 +167,15 @@ _TOOL_SCHEMAS = {
                     "description": (
                         "If true, slightly reduce coverage_gap for files a few "
                         "import hops from code covered by tests (see _meta.coverage_gap_mode)."
+                    ),
+                },
+                "coverage_mode": {
+                    "type": "string",
+                    "enum": ["unit", "line"],
+                    "description": (
+                        "'unit' (default) weights each code unit equally when "
+                        "computing coverage_gap; 'line' weights by line count "
+                        "so large untested units have proportionally higher gap."
                     ),
                 },
             },
@@ -281,6 +298,14 @@ _TOOL_SCHEMAS = {
                 "exclude_tests": {
                     "type": "boolean",
                     "description": "Exclude units from test files (default: true).",
+                },
+                "working_tree": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, also scan untracked (uncommitted) files from disk and "
+                        "include their code units as gaps with churn=0. "
+                        "useful for identifying coverage gaps in files that haven't been committed yet."
+                    ),
                 },
             },
             "required": [],
@@ -437,7 +462,7 @@ _TOOL_SCHEMAS = {
 _TOOL_DISPATCH = {
     "analyze": ("tool_analyze", ["directory", "force"]),
     "impact": ("tool_impact", ["files", "functions"]),
-    "suggest_tests": ("tool_suggest_tests", ["file_path", "fallback_to_all"]),
+    "suggest_tests": ("tool_suggest_tests", ["file_path", "fallback_to_all", "working_tree"]),
     "churn": ("tool_churn", ["file_path", "unit_name"]),
     "ownership": ("tool_ownership", ["file_path"]),
     "coupling": ("tool_coupling", ["file_path", "min_count"]),
@@ -447,7 +472,7 @@ _TOOL_DISPATCH = {
     "who_reviews": ("tool_who_reviews", ["file_path"]),
     "diff_impact": ("tool_diff_impact", ["ref"]),
     "update": ("tool_update", []),
-    "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests"]),
+    "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests", "working_tree"]),
     "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
     "triage": ("tool_triage", ["directory", "top_n", "exclude_tests"]),
     "stats": ("tool_stats", []),

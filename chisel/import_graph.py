@@ -76,7 +76,13 @@ def _resolve_import_targets(importer, dep, module_path, all_paths: set[str]):
                 for p in all_paths:
                     if _matches_js_import_path(p, resolved):
                         yield p
-        return
+            return
+        # Non-relative bare module name (e.g. require('SimilarityService'))
+        # falls through to name-based matching below.
+        # Skip path-style non-relative imports (e.g. 'src/utils', 'lib/foo')
+        # as they don't map cleanly to project file stems.
+        if module_path and "/" in module_path:
+            return
 
     # Fallback: unique name match (last resort)
     name = dep.get("name")

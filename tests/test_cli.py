@@ -713,7 +713,7 @@ class TestMain:
 
         main(["suggest-tests", "--project-dir", "/tmp/p", "app.py"])
 
-        engine.tool_suggest_tests.assert_called_once_with(file_path="app.py", fallback_to_all=False)
+        engine.tool_suggest_tests.assert_called_once_with(file_path="app.py", fallback_to_all=False, working_tree=False)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_ownership(self, mock_cls):
@@ -737,6 +737,7 @@ class TestMain:
 
         engine.tool_risk_map.assert_called_once_with(
             directory=None, exclude_tests=True, proximity_adjustment=False,
+            coverage_mode="unit",
         )
 
     @patch("chisel.cli.ChiselEngine")
@@ -797,7 +798,7 @@ class TestMain:
 
         main(["test-gaps", "--project-dir", "/tmp/p"])
 
-        engine.tool_test_gaps.assert_called_once_with(file_path=None, directory=None, exclude_tests=True)
+        engine.tool_test_gaps.assert_called_once_with(file_path=None, directory=None, exclude_tests=True, working_tree=False)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_test_gaps_with_file(self, mock_cls):
@@ -810,7 +811,7 @@ class TestMain:
 
         main(["test-gaps", "--project-dir", "/tmp/p", "app.py"])
 
-        engine.tool_test_gaps.assert_called_once_with(file_path="app.py", directory=None, exclude_tests=True)
+        engine.tool_test_gaps.assert_called_once_with(file_path="app.py", directory=None, exclude_tests=True, working_tree=False)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_analyze_force(self, mock_cls):
