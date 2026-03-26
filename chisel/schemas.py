@@ -314,6 +314,120 @@ _TOOL_SCHEMAS = {
             "required": [],
         },
     },
+    # --- file_locks (advisory locking for multi-agent coordination) ---
+    "acquire_file_lock": {
+        "name": "acquire_file_lock",
+        "description": (
+            "Acquire an advisory lock on a file before editing. Other agents "
+            "checking this file will see you hold the lock. Use ttl to set how "
+            "long the lock persists before auto-expiry (default 300s)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "File path to lock (normalized relative path).",
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Unique identifier for the requesting agent.",
+                },
+                "ttl": {
+                    "type": "integer",
+                    "description": "Lock TTL in seconds (default 300).",
+                },
+                "purpose": {
+                    "type": "string",
+                    "description": "Optional purpose or description.",
+                },
+            },
+            "required": ["file_path", "agent_id"],
+        },
+    },
+    "release_file_lock": {
+        "name": "release_file_lock",
+        "description": (
+            "Release an advisory lock held by this agent. "
+            "Returns false if the lock is not held by this agent."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "agent_id": {"type": "string"},
+            },
+            "required": ["file_path", "agent_id"],
+        },
+    },
+    "refresh_file_lock": {
+        "name": "refresh_file_lock",
+        "description": (
+            "Extend the TTL of a lock held by this agent. "
+            "Call periodically while actively editing a locked file."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "ttl": {
+                    "type": "integer",
+                    "description": "New TTL in seconds (default 300).",
+                },
+            },
+            "required": ["file_path", "agent_id"],
+        },
+    },
+    "check_file_lock": {
+        "name": "check_file_lock",
+        "description": (
+            "Check if a file is currently locked. Returns lock holder info "
+            "or null if the file is not locked."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+            },
+            "required": ["file_path"],
+        },
+    },
+    "check_locks": {
+        "name": "check_locks",
+        "description": (
+            "Batch-check lock status for multiple files at once. "
+            "Use before starting work to check for collisions."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of file paths to check.",
+                },
+            },
+            "required": ["file_paths"],
+        },
+    },
+    "list_file_locks": {
+        "name": "list_file_locks",
+        "description": (
+            "List all active file locks, optionally filtered by agent. "
+            "Use to audit what other agents are working on."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": "Filter locks by this agent (optional).",
+                },
+            },
+            "required": [],
+        },
+    },
 }
 
 # ------------------------------------------------------------------ #
@@ -337,6 +451,13 @@ _TOOL_DISPATCH = {
     "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
     "triage": ("tool_triage", ["directory", "top_n", "exclude_tests"]),
     "stats": ("tool_stats", []),
+    # --- file_locks ---
+    "acquire_file_lock": ("tool_acquire_file_lock", ["file_path", "agent_id", "ttl", "purpose"]),
+    "release_file_lock": ("tool_release_file_lock", ["file_path", "agent_id"]),
+    "refresh_file_lock": ("tool_refresh_file_lock", ["file_path", "agent_id", "ttl"]),
+    "check_file_lock": ("tool_check_file_lock", ["file_path"]),
+    "check_locks": ("tool_check_locks", ["file_paths"]),
+    "list_file_locks": ("tool_list_file_locks", ["agent_id"]),
 }
 
 # Inject 'limit' parameter into all list-returning tool schemas.
@@ -345,6 +466,10 @@ _LIMIT_PROP = {
     "description": "Maximum number of results to return.",
 }
 for _name, _schema in _TOOL_SCHEMAS.items():
-    if _name not in ("analyze", "update", "record_result", "stats", "triage"):
+    if _name not in (
+        "analyze", "update", "record_result", "stats", "triage",
+        "acquire_file_lock", "release_file_lock", "refresh_file_lock",
+        "check_file_lock",
+    ):
         _schema["parameters"]["properties"]["limit"] = dict(_LIMIT_PROP)
 del _name, _schema

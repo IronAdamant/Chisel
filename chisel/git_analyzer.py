@@ -95,6 +95,16 @@ class GitAnalyzer:
         raw = self._run_git(args)
         return self._parse_log_output(raw)
 
+    def parse_log_range(self, rev_range):
+        """Parse ``git log REV_RANGE --numstat`` (e.g. ``merge-base..HEAD``)."""
+        args = ["log", f"--format={self._LOG_FORMAT}", "--numstat", rev_range]
+        raw = self._run_git(args)
+        return self._parse_log_output(raw)
+
+    def merge_base_with(self, ref):
+        """Return merge-base commit of HEAD and *ref* (hex hash)."""
+        return self._run_git(["merge-base", "HEAD", ref]).strip()
+
     def _parse_log_output(self, raw):
         """Parse raw git log output into commit dicts.
 
@@ -296,6 +306,11 @@ class GitAnalyzer:
         Uses git diff --name-only against the ref.
         """
         raw = self._run_git(["diff", "--name-only", ref])
+        return [s for line in raw.strip().splitlines() if (s := line.strip())]
+
+    def get_untracked_files(self):
+        """Return paths of untracked files (respects .gitignore via exclude-standard)."""
+        raw = self._run_git(["ls-files", "--others", "--exclude-standard"])
         return [s for line in raw.strip().splitlines() if (s := line.strip())]
 
     def get_changed_functions(self, file_path, ref="HEAD~1"):

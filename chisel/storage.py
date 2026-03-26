@@ -180,6 +180,16 @@ class Storage:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS file_locks (
+                    file_path    TEXT PRIMARY KEY,
+                    agent_id     TEXT NOT NULL,
+                    acquired_at  REAL NOT NULL,
+                    expires_at   REAL NOT NULL,
+                    purpose      TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_file_locks_agent
+                    ON file_locks(agent_id);
             """)
 
     # --- Query helpers ---
@@ -698,6 +708,86 @@ class Storage:
                ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
             (key, str(value)),
         )
+
+    # --- file_locks ---
+
+    def acquire_file_lock(self, file_path, agent_id, ttl=300, purpose=None):
+        """Acquire an exclusive advisory lock on file_path.
+
+        Returns (acquired: bool, holder: str|None, expires_at: float).
+        If already held by another agent, returns (False, holder, expires_at).
+        Cleans up expired locks before checking.
+        """
+        self._cleanup_expired_locks()
+        existing = self._fetchone(
+            "SELECT agent_id, expires_at FROM file_locks WHERE file_path = ?",
+            (file_path,),
+        )
+        if existing and existing["agent_id"] != agent_id:
+            return False, existing["agent_id"], existing["expires_at"]
+        now = time.time()
+        self._execute(
+            """INSERT INTO file_locks (file_path, agent_id, acquired_at, expires_at, purpose)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(file_path) DO UPDATE SET
+                   agent_id=excluded.agent_id,
+                   acquired_at=excluded.acquired_at,
+                   expires_at=excluded.expires_at,
+                   purpose=excluded.purpose""",
+            (file_path, agent_id, now, now + ttl, purpose),
+        )
+        return True, None, now + ttl
+
+    def release_file_lock(self, file_path, agent_id):
+        """Release lock only if held by agent_id. Returns bool."""
+        row = self._fetchone(
+            "SELECT agent_id FROM file_locks WHERE file_path = ?", (file_path,)
+        )
+        if not row or row["agent_id"] != agent_id:
+            return False
+        self._execute("DELETE FROM file_locks WHERE file_path = ?", (file_path,))
+        return True
+
+    def refresh_file_lock(self, file_path, agent_id, ttl=300):
+        """Extend TTL if lock held by agent_id. Returns (bool, new_expires_at)."""
+        row = self._fetchone(
+            "SELECT agent_id FROM file_locks WHERE file_path = ?", (file_path,)
+        )
+        if not row or row["agent_id"] != agent_id:
+            return False, None
+        now = time.time()
+        new_expires = now + ttl
+        self._execute(
+            "UPDATE file_locks SET expires_at = ? WHERE file_path = ?",
+            (new_expires, file_path),
+        )
+        return True, new_expires
+
+    def get_file_lock(self, file_path):
+        """Return lock info dict or None. Cleans up expired locks first."""
+        self._cleanup_expired_locks()
+        row = self._fetchone(
+            "SELECT * FROM file_locks WHERE file_path = ?", (file_path,)
+        )
+        return dict(row) if row else None
+
+    def list_file_locks(self, agent_id=None):
+        """List all active locks, optionally filtered by agent."""
+        self._cleanup_expired_locks()
+        if agent_id is None:
+            rows = self._fetchall(
+                "SELECT * FROM file_locks ORDER BY acquired_at DESC"
+            )
+        else:
+            rows = self._fetchall(
+                "SELECT * FROM file_locks WHERE agent_id = ? ORDER BY acquired_at DESC",
+                (agent_id,),
+            )
+        return [dict(r) for r in rows]
+
+    def _cleanup_expired_locks(self):
+        """Delete all locks past their expires_at. Called before reads/writes."""
+        self._execute("DELETE FROM file_locks WHERE expires_at < ?", (time.time(),))
 
     def get_co_change_query_min(self):
         """Minimum co_commit_count used when querying co_changes (matches ingest).

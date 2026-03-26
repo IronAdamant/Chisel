@@ -161,6 +161,38 @@ def create_parser():
     sub.add_parser("serve-mcp", parents=[shared],
                    help="Start MCP server (stdio mode)")
 
+    # --- file_locks ---
+    p_acq = sub.add_parser("acquire-lock", parents=[shared],
+                           help="Acquire advisory lock on a file")
+    p_acq.add_argument("file", help="File path")
+    p_acq.add_argument("agent_id", help="Agent identifier")
+    p_acq.add_argument("--ttl", type=int, default=300,
+                       help="Lock TTL in seconds (default: 300)")
+    p_acq.add_argument("--purpose", help="Purpose or description")
+
+    p_rel = sub.add_parser("release-lock", parents=[shared],
+                           help="Release advisory lock held by this agent")
+    p_rel.add_argument("file", help="File path")
+    p_rel.add_argument("agent_id", help="Agent identifier")
+
+    p_ref = sub.add_parser("refresh-lock", parents=[shared],
+                           help="Refresh/advisory lock TTL")
+    p_ref.add_argument("file", help="File path")
+    p_ref.add_argument("agent_id", help="Agent identifier")
+    p_ref.add_argument("--ttl", type=int, default=300,
+                        help="New TTL in seconds (default: 300)")
+
+    sub.add_parser("check-lock", parents=[shared],
+                   help="Check if a file is locked").add_argument("file", help="File path")
+
+    p_chk = sub.add_parser("check-locks", parents=[shared],
+                            help="Batch-check lock status for multiple files")
+    p_chk.add_argument("files", nargs="+", help="File paths to check")
+
+    p_lst = sub.add_parser("list-locks", parents=[shared],
+                            help="List all active file locks")
+    p_lst.add_argument("--agent-id", help="Filter by agent (optional)")
+
     return parser
 
 
@@ -422,6 +454,92 @@ def cmd_stats(args):
                      _fmt_kv("Chisel database stats:"), use_limit=False)
 
 
+# --- file_locks ---
+
+def cmd_acquire_lock(args):
+    def fmt(result, _args):
+        if result["acquired"]:
+            print(f"Locked: {args.file}")
+            print(f"Agent:  {args.agent_id}")
+            print(f"TTL:    {result['expires_at']}")
+        else:
+            print(f"FAILED: {args.file} is already locked by {result['holder']}")
+            print(f"Expires: {result['expires_at']}")
+    return _run_tool(args, "tool_acquire_file_lock",
+                     {"file_path": args.file, "agent_id": args.agent_id,
+                      "ttl": args.ttl, "purpose": args.purpose},
+                     fmt, use_limit=False)
+
+
+def cmd_release_lock(args):
+    def fmt(result, _args):
+        if result["released"]:
+            print(f"Released: {args.file}")
+        else:
+            print(f"Not held: {args.file} is not locked by {args.agent_id}")
+    return _run_tool(args, "tool_release_file_lock",
+                     {"file_path": args.file, "agent_id": args.agent_id},
+                     fmt, use_limit=False)
+
+
+def cmd_refresh_lock(args):
+    def fmt(result, _args):
+        if result["refreshed"]:
+            print(f"Refreshed: {args.file}")
+            print(f"New TTL:   {result['expires_at']}")
+        else:
+            print(f"Not held: {args.file} is not locked by {args.agent_id}")
+    return _run_tool(args, "tool_refresh_file_lock",
+                     {"file_path": args.file, "agent_id": args.agent_id,
+                      "ttl": args.ttl},
+                     fmt, use_limit=False)
+
+
+def cmd_check_lock(args):
+    def fmt(result, _args):
+        if not result["locked"]:
+            print(f"Unlocked: {args.file}")
+        else:
+            print(f"Locked:   {args.file}")
+            print(f"Holder:   {result['holder']}")
+            print(f"TTL rem:  {result['ttl_remaining']}s")
+            print(f"Stale:    {result['stale']}")
+            if result.get("purpose"):
+                print(f"Purpose:  {result['purpose']}")
+    return _run_tool(args, "tool_check_file_lock", {"file_path": args.file},
+                     fmt, use_limit=False)
+
+
+def cmd_check_locks(args):
+    def fmt(result, _args):
+        if not result["conflicts"]:
+            print(f"No locks on {len(result['checked'])} checked file(s)")
+        else:
+            print(f"{len(result['conflicts'])} lock(s) found:")
+            for c in result["conflicts"]:
+                stale = " (STALE)" if c["stale"] else ""
+                print(f"  {c['file_path']}: {c['holder']} ({c['ttl_remaining']}s remaining){stale}")
+    return _run_tool(args, "tool_check_locks", {"file_paths": args.files},
+                     fmt, use_limit=False)
+
+
+def cmd_list_locks(args):
+    def fmt(result, _args):
+        locks = result["locks"]
+        if not locks:
+            print("No active locks")
+        else:
+            print(f"{result['total']} active lock(s):")
+            for lock in locks:
+                stale = " (STALE)" if lock["ttl_remaining"] < 60 else ""
+                print(f"  {lock['file_path']}: {lock['agent_id']} "
+                      f"({lock['ttl_remaining']}s remaining){stale}")
+    agent_filter = getattr(args, "agent_id", None)
+    return _run_tool(args, "tool_list_file_locks",
+                     {"agent_id": agent_filter},
+                     fmt, use_limit=False)
+
+
 def cmd_serve(args):
     """Handle the 'serve' subcommand."""
     from chisel.mcp_server import ChiselMCPServer
@@ -470,6 +588,13 @@ _COMMANDS = {
     "stats": cmd_stats,
     "serve": cmd_serve,
     "serve-mcp": cmd_serve_mcp,
+    # --- file_locks ---
+    "acquire-lock": cmd_acquire_lock,
+    "release-lock": cmd_release_lock,
+    "refresh-lock": cmd_refresh_lock,
+    "check-lock": cmd_check_lock,
+    "check-locks": cmd_check_locks,
+    "list-locks": cmd_list_locks,
 }
 
 

@@ -4,6 +4,7 @@ Stateless functions extracted from GitAnalyzer to keep git_analyzer.py
 focused on git subprocess interaction.
 """
 
+import math
 from collections import defaultdict
 from datetime import datetime, timezone
 from itertools import combinations
@@ -199,3 +200,13 @@ def compute_co_changes(commits, min_count=3):
 
     result.sort(key=lambda x: x["co_commit_count"], reverse=True)
     return result
+
+
+def coupling_threshold(commit_count):
+    """Adaptive co-change threshold with half-log scaling (ingest + diagnostics).
+
+    10 → 2, 50 → 3, 100 → 4, 200 → 4, 1000 → 5, 10000 → 7.
+    """
+    if commit_count <= 0:
+        return 2
+    return max(2, int(math.log2(commit_count) / 2) + 1)

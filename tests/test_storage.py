@@ -1,6 +1,7 @@
 """Tests for chisel.storage — all CRUD operations per table."""
 
 import sqlite3
+import time
 
 
 class TestDatabaseInit:
@@ -17,7 +18,8 @@ class TestDatabaseInit:
         expected = {
             "code_units", "test_units", "test_edges", "commits",
             "commit_files", "blame_cache", "co_changes", "churn_stats",
-            "file_hashes", "test_results",
+            "file_hashes", "test_results", "meta", "branch_co_changes",
+            "file_locks",
         }
         conn = sqlite3.connect(str(storage.db_path))
         tables = {
@@ -190,6 +192,28 @@ class TestCoChanges:
         assert len(storage.get_co_changes("b.py", min_count=1)) == 1
 
 
+class TestMeta:
+    def test_get_set(self, storage):
+        assert storage.get_meta("k") is None
+        storage.set_meta("k", "v")
+        assert storage.get_meta("k") == "v"
+        storage.set_meta("k", "v2")
+        assert storage.get_meta("k") == "v2"
+
+    def test_get_co_change_query_min_defaults(self, storage):
+        assert storage.get_co_change_query_min() == 3
+
+    def test_get_co_change_query_min_from_meta(self, storage):
+        storage.set_meta("co_change_query_min", "2")
+        assert storage.get_co_change_query_min() == 2
+
+    def test_co_changes_visible_when_meta_aligns(self, storage):
+        storage.upsert_co_change("a.py", "b.py", 2)
+        storage.set_meta("co_change_query_min", "2")
+        qm = storage.get_co_change_query_min()
+        assert len(storage.get_co_changes("a.py", min_count=qm)) == 1
+
+
 class TestChurnStats:
     def test_upsert_and_get(self, storage):
         storage.upsert_churn_stat("f.py", "foo", 10, 3, 50, 20, "2026-01-01", 0.82)
@@ -268,7 +292,7 @@ class TestStats:
         stats = storage.get_stats()
         assert stats["code_units"] == 0
         assert stats["test_results"] == 0
-        assert len(stats) == 10
+        assert len(stats) == 12
 
     def test_counts_data(self, storage):
         storage.upsert_code_unit("f.py:foo:func", "f.py", "foo", "func")
@@ -377,3 +401,82 @@ class TestBatchQueries:
         assert result["f.py"][1]["author"] == "Bob"
         assert len(result["g.py"]) == 1
         assert result["g.py"][0]["author"] == "Carol"
+
+
+class TestFileLocks:
+    def test_acquire_and_release(self, storage):
+        acquired, holder, expires_at = storage.acquire_file_lock("a.py", "agent-1")
+        assert acquired is True
+        assert holder is None
+        assert expires_at > time.time()
+
+        lock = storage.get_file_lock("a.py")
+        assert lock is not None
+        assert lock["agent_id"] == "agent-1"
+
+        released = storage.release_file_lock("a.py", "agent-1")
+        assert released is True
+        assert storage.get_file_lock("a.py") is None
+
+    def test_cannot_acquire_someone_elses_lock(self, storage):
+        storage.acquire_file_lock("a.py", "agent-1")
+        acquired, holder, _ = storage.acquire_file_lock("a.py", "agent-2")
+        assert acquired is False
+        assert holder == "agent-1"
+
+    def test_reacquire_after_release(self, storage):
+        storage.acquire_file_lock("a.py", "agent-1")
+        storage.release_file_lock("a.py", "agent-1")
+        acquired, holder, _ = storage.acquire_file_lock("a.py", "agent-2")
+        assert acquired is True
+        assert holder is None
+
+    def test_refresh_extends_ttl(self, storage):
+        storage.acquire_file_lock("a.py", "agent-1", ttl=10)
+        ok, new_exp = storage.refresh_file_lock("a.py", "agent-1", ttl=300)
+        assert ok is True
+        assert new_exp > time.time() + 100
+
+    def test_refresh_wrong_agent_fails(self, storage):
+        storage.acquire_file_lock("a.py", "agent-1", ttl=10)
+        ok, _ = storage.refresh_file_lock("a.py", "agent-2", ttl=300)
+        assert ok is False
+
+    def test_release_wrong_agent_fails(self, storage):
+        storage.acquire_file_lock("a.py", "agent-1")
+        released = storage.release_file_lock("a.py", "agent-2")
+        assert released is False
+        assert storage.get_file_lock("a.py") is not None
+
+    def test_expired_locks_cleaned_up(self, storage):
+        storage.acquire_file_lock("a.py", "agent-1", ttl=1)
+        time.sleep(1.1)
+        assert storage.get_file_lock("a.py") is None
+
+    def test_list_all_locks(self, storage):
+        storage.acquire_file_lock("a.py", "agent-1")
+        storage.acquire_file_lock("b.py", "agent-2")
+        locks = storage.list_file_locks()
+        assert len(locks) == 2
+
+    def test_list_locks_filtered_by_agent(self, storage):
+        storage.acquire_file_lock("a.py", "agent-1")
+        storage.acquire_file_lock("b.py", "agent-2")
+        locks = storage.list_file_locks("agent-1")
+        assert len(locks) == 1
+        assert locks[0]["file_path"] == "a.py"
+
+    def test_acquire_with_purpose(self, storage):
+        storage.acquire_file_lock("a.py", "agent-1", purpose="refactoring auth")
+        lock = storage.get_file_lock("a.py")
+        assert lock["purpose"] == "refactoring auth"
+
+    def test_reacquire_same_agent_extends(self, storage):
+        """Same agent re-acquiring should extend TTL (upsert behavior)."""
+        storage.acquire_file_lock("a.py", "agent-1", ttl=10)
+        acquired, holder, expires_at_1 = storage.acquire_file_lock(
+            "a.py", "agent-1", ttl=300,
+        )
+        assert acquired is True
+        assert holder is None
+        assert expires_at_1 > time.time() + 100

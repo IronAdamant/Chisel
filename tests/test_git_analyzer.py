@@ -626,6 +626,14 @@ class TestGetChangedFiles:
         assert "hello.py" in files
 
 
+class TestGetUntrackedFiles:
+    def test_lists_untracked_not_in_diff(self, analyzer, git_repo):
+        (git_repo / "newfile.py").write_text("x = 1\n")
+        assert analyzer.get_changed_files() == []
+        untracked = analyzer.get_untracked_files()
+        assert "newfile.py" in untracked
+
+
 class TestGetChangedFunctions:
     """Integration tests for get_changed_functions."""
 

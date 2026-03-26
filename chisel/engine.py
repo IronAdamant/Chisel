@@ -1,6 +1,7 @@
 """ChiselEngine — main orchestrator tying together all subsystems."""
 
 import os
+import time
 
 from chisel.ast_utils import (
     _EXTENSION_MAP,
@@ -447,6 +448,93 @@ class ChiselEngine:
                         "coupling_threshold": _coupling_threshold(commit_count),
                     },
                 }
+
+    # --- file_locks (advisory multi-agent locking) ---
+
+    def tool_acquire_file_lock(self, file_path, agent_id, ttl=300, purpose=None):
+        """MCP tool: acquire an advisory lock on a file."""
+        with self._process_lock.exclusive():
+            with self.lock.write_lock():
+                acquired, holder, expires_at = self.storage.acquire_file_lock(
+                    file_path, agent_id, ttl, purpose,
+                )
+                return {
+                    "acquired": acquired,
+                    "holder": holder,
+                    "expires_at": expires_at,
+                }
+
+    def tool_release_file_lock(self, file_path, agent_id):
+        """MCP tool: release an advisory lock held by this agent."""
+        with self._process_lock.exclusive():
+            with self.lock.write_lock():
+                released = self.storage.release_file_lock(file_path, agent_id)
+                return {"released": released}
+
+    def tool_refresh_file_lock(self, file_path, agent_id, ttl=300):
+        """MCP tool: extend the TTL of a lock held by this agent."""
+        with self._process_lock.exclusive():
+            with self.lock.write_lock():
+                ok, new_expires = self.storage.refresh_file_lock(
+                    file_path, agent_id, ttl,
+                )
+                return {"refreshed": ok, "expires_at": new_expires}
+
+    def tool_check_file_lock(self, file_path):
+        """MCP tool: check if a file is currently locked."""
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                lock = self.storage.get_file_lock(file_path)
+                if lock is None:
+                    return {
+                        "locked": False,
+                        "holder": None,
+                        "expires_at": None,
+                        "ttl_remaining": None,
+                    }
+                now = time.time()
+                ttl_remaining = max(0.0, lock["expires_at"] - now)
+                stale = ttl_remaining < 60.0
+                return {
+                    "locked": True,
+                    "holder": lock["agent_id"],
+                    "acquired_at": lock["acquired_at"],
+                    "expires_at": lock["expires_at"],
+                    "ttl_remaining": round(ttl_remaining, 1),
+                    "stale": stale,
+                    "purpose": lock.get("purpose"),
+                }
+
+    def tool_check_locks(self, file_paths):
+        """MCP tool: batch-check lock status for multiple files."""
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                conflicts = []
+                for fp in file_paths:
+                    lock = self.storage.get_file_lock(fp)
+                    if lock:
+                        now = time.time()
+                        ttl_remaining = max(0.0, lock["expires_at"] - now)
+                        conflicts.append({
+                            "file_path": fp,
+                            "holder": lock["agent_id"],
+                            "expires_at": lock["expires_at"],
+                            "ttl_remaining": round(ttl_remaining, 1),
+                            "stale": ttl_remaining < 60.0,
+                        })
+                return {"conflicts": conflicts, "checked": len(file_paths)}
+
+    def tool_list_file_locks(self, agent_id=None):
+        """MCP tool: list all active file locks, optionally filtered by agent."""
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                locks = self.storage.list_file_locks(agent_id)
+                now = time.time()
+                for lock in locks:
+                    lock["ttl_remaining"] = round(
+                        max(0.0, lock["expires_at"] - now), 1,
+                    )
+                return {"locks": locks, "total": len(locks)}
 
     def tool_stats(self):
         """MCP tool: get summary counts for the Chisel database."""

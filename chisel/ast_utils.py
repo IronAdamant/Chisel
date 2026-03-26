@@ -75,6 +75,11 @@ def detect_language(file_path: str) -> str | None:
     return _EXTENSION_MAP.get(ext)
 
 
+def path_has_code_extension(file_path: str) -> bool:
+    """True if *file_path* uses a known code extension (same set as analysis)."""
+    return detect_language(file_path) is not None
+
+
 # ---------------------------------------------------------------------------
 # File hashing
 # ---------------------------------------------------------------------------
