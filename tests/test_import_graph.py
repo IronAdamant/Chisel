@@ -2,7 +2,7 @@
 
 import pytest
 
-from chisel.import_graph import build_import_edges
+from chisel.import_graph import _resolve_import_targets, build_import_edges
 from chisel.test_mapper import TestMapper
 
 
@@ -40,3 +40,14 @@ class TestBuildImportEdges:
         edges = build_import_edges(mapper, str(root), rels, set())
         pairs = {(e["importer_file"], e["imported_file"]) for e in edges}
         assert ("main.js", "utils.js") in pairs
+
+    def test_go_import_resolve_targets(self, tmp_path):
+        root = tmp_path / "goproj"
+        root.mkdir()
+        (root / "widget.go").write_text("package widget\nfunc W() {}\n")
+        dep = {"name": "widget", "dep_type": "import", "module_path": "x/y/widget"}
+        all_paths = {"widget.go"}
+        hits = list(
+            _resolve_import_targets("widget_test.go", dep, "x/y/widget", all_paths),
+        )
+        assert "widget.go" in hits

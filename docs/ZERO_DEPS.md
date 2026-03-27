@@ -1,6 +1,6 @@
 # Zero-dependency policy
 
-Chisel’s **runtime** is **stdlib only** (`pyproject.toml` has `dependencies = []`). This is intentional: install anywhere Python 3.11+ runs, no supply-chain surface for core behavior, and predictable behavior in sandboxes.
+Chisel’s **runtime** is **stdlib only** (`pyproject.toml` has `dependencies = []`). This is intentional: install anywhere Python 3.11+ runs, minimal supply-chain surface for core behavior (important for supply-chain–aware deployments), and predictable behavior in sandboxes. For how agents should interpret results under this model, see **`LLM_CONTRACT.md`**.
 
 ## What is allowed
 

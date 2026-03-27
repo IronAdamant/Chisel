@@ -115,6 +115,11 @@ class TestToolMethods:
         result = engine.tool_suggest_tests("app.py")
         assert isinstance(result, list)
 
+    def test_tool_suggest_tests_includes_hybrid_when_static_and_db_agree(self, engine):
+        engine.analyze()
+        result = engine.tool_suggest_tests("app.py")
+        assert any(r.get("source") == "hybrid" for r in result)
+
     def test_tool_churn(self, engine):
         engine.analyze()
         result = engine.tool_churn("app.py")
@@ -245,6 +250,8 @@ class TestToolMethods:
             result = engine.tool_diff_impact()
         assert isinstance(result, dict)
         assert result["status"] == "git_error"
+        assert result.get("error") == "not_a_git_repo"
+        assert result.get("cwd") == str(proj)
         assert "project_dir" in result
         assert "git" in result["message"].lower() or "failed" in result["message"].lower()
 
@@ -804,6 +811,42 @@ class TestRecordResultHeuristicEdges:
         # No extra edges added
         edges_after = engine.storage.get_edges_for_test(test_units[0]["id"])
         assert len(edges_after) == len(edges_before)
+
+
+# ------------------------------------------------------------------ #
+# Static require/import fallback (no DB test edges)
+# ------------------------------------------------------------------ #
+
+
+class TestStaticSuggestWhenEdgesCleared:
+    """When test_edges are empty, suggest_tests / test_gaps use static imports."""
+
+    def test_suggest_tests_and_gaps_use_static_requires(self, tmp_path, run_git):
+        proj = tmp_path / "jsp"
+        proj.mkdir()
+        src = proj / "src"
+        src.mkdir()
+        tdir = proj / "tests"
+        tdir.mkdir()
+        (src / "widget.js").write_text("export const x = 1;\n")
+        (tdir / "widget.test.js").write_text(
+            "const w = require('../src/widget');\n"
+            "describe('w', () => { it('a', () => {}); });\n"
+        )
+        run_git(proj, "init")
+        run_git(proj, "config", "user.name", "T")
+        run_git(proj, "config", "user.email", "t@e.org")
+        run_git(proj, "add", "-A")
+        run_git(proj, "commit", "-m", "init")
+        storage_dir = tmp_path / "chisel_st"
+        with ChiselEngine(str(proj), storage_dir=storage_dir) as engine:
+            engine.analyze(force=True)
+            engine.storage._execute("DELETE FROM test_edges")
+            sug = engine.tool_suggest_tests("src/widget.js")
+            gaps = engine.tool_test_gaps(file_path="src/widget.js")
+        assert len(sug) >= 1
+        assert any(r.get("source") == "static_require" for r in sug)
+        assert gaps == []
 
 
 # ------------------------------------------------------------------ #

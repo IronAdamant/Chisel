@@ -261,8 +261,11 @@ def _run_tool(args, method, kwargs, formatter, use_limit=True):
             print(result["message"])
             if result.get("hint"):
                 print(result["hint"])
-            if result.get("project_dir"):
-                print(f"Project directory: {result['project_dir']}")
+            if result.get("error"):
+                print(f"Error: {result['error']}")
+            cwd = result.get("cwd") or result.get("project_dir")
+            if cwd:
+                print(f"Directory: {cwd}")
         else:
             formatter(result, args)
         return result

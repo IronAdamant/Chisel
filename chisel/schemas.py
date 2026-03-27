@@ -2,7 +2,12 @@
 
 Contains the JSON Schema definitions for all 16 engine tools and the
 dispatch mapping used by both the HTTP and stdio MCP servers.
+
+Agent-facing vocabulary and trust rules: ``chisel.llm_contract`` and
+``docs/LLM_CONTRACT.md``.
 """
+
+from chisel.llm_contract import HEURISTIC_TRUST_NOTE
 
 # ------------------------------------------------------------------ #
 # Tool schemas — JSON Schema definitions for all 16 engine tools
@@ -17,7 +22,8 @@ _TOOL_SCHEMAS = {
             "extracts code units, discovers tests, parses git history, builds "
             "test-to-code edges. For incremental changes, use 'update' instead. "
             "Large repos: run `chisel analyze --force` in a terminal (not only via MCP) "
-            "so long runs are not mistaken for a hung tool."
+            "so long runs are not mistaken for a hung tool. "
+            + HEURISTIC_TRUST_NOTE
         ),
         "parameters": {
             "type": "object",
@@ -39,7 +45,8 @@ _TOOL_SCHEMAS = {
         "description": (
             "Get impacted tests for specific changed files/functions. Use when "
             "you know exactly which files changed. For auto-detection from git "
-            "diff, use 'diff_impact' instead."
+            "diff, use 'diff_impact' instead. "
+            + HEURISTIC_TRUST_NOTE
         ),
         "parameters": {
             "type": "object",
@@ -64,16 +71,24 @@ _TOOL_SCHEMAS = {
             "Suggest tests to run for a file, ranked by relevance. Combines direct "
             "test edges, git co-change, and static import-graph reachability (e.g. "
             "facade tests covering inner modules). Each item may include "
-            "source: direct | co_change | import_graph | fallback | working_tree. "
-            "Returns empty for untracked/new files unless fallback_to_all or "
-            "working_tree is set."
+            "source: direct | co_change | import_graph | static_require | hybrid | "
+            "fallback | working_tree. Merges DB impact with a static scan of test "
+            "files (require/import → source path); hybrid = both agree. With "
+            "working_tree=true, also indexes untracked test files and git-untracked "
+            "source paths for resolution. Returns empty for untracked/new files "
+            "unless fallback_to_all or working_tree is set. "
+            + HEURISTIC_TRUST_NOTE
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the file to suggest tests for.",
+                    "description": (
+                        "Path to the file to suggest tests for. "
+                        "Trust: prefer items with source direct or hybrid over "
+                        "static_require or fallback alone."
+                    ),
                 },
                 "fallback_to_all": {
                     "type": "boolean",
@@ -134,7 +149,8 @@ _TOOL_SCHEMAS = {
             "static import edges (structural coupling). Returns co_change_partners, "
             "import_partners, and numeric import_coupling / effective_coupling scores "
             "(import graph is first-class even when co-change is empty in solo repos). "
-            "Threshold scales with project maturity (see 'stats' for current value)."
+            "Threshold scales with project maturity (see 'stats' for current value). "
+            + HEURISTIC_TRUST_NOTE
         ),
         "parameters": {
             "type": "object",
@@ -153,7 +169,7 @@ _TOOL_SCHEMAS = {
     },
     "risk_map": {
         "name": "risk_map",
-            "description": (
+        "description": (
             "Risk scores for all files combining churn, coupling (git co-change "
             "and/or static import graph), coverage gaps, author concentration, "
             "and test instability (failure rate + duration variance). Returns "
@@ -161,7 +177,8 @@ _TOOL_SCHEMAS = {
             "reweighted, effective_weights, coverage_gap_mode, coupling_threshold, "
             "total_test_edges, total_test_results}}. Check _meta.uniform_components "
             "to identify metrics providing no signal (all files score identically). "
-            "Use as first step to prioritize which files need attention."
+            "Use as first step to prioritize which files need attention. "
+            + HEURISTIC_TRUST_NOTE
         ),
         "parameters": {
             "type": "object",
@@ -263,7 +280,9 @@ _TOOL_SCHEMAS = {
             "changed files/functions from git diff. On feature branches diffs "
             "against main; on main diffs HEAD. Returns diagnostic when no changes "
             "detected. If git fails (wrong cwd, not a repo), returns status=git_error "
-            "with message and project_dir — never silent empty lists."
+            "with error (not_a_git_repo or git_command_failed), cwd, message, and "
+            "project_dir — never silent empty lists. "
+            + HEURISTIC_TRUST_NOTE
         ),
         "parameters": {
             "type": "object",
@@ -292,7 +311,11 @@ _TOOL_SCHEMAS = {
     },
     "stats": {
         "name": "stats",
-        "description": "Database summary counts plus coupling threshold. Use to verify analysis state or diagnose empty results from other tools.",
+        "description": (
+            "Database summary counts plus coupling threshold. Use to verify analysis state "
+            "or diagnose empty results from other tools. "
+            + HEURISTIC_TRUST_NOTE
+        ),
         "parameters": {
             "type": "object",
             "properties": {},
@@ -303,7 +326,11 @@ _TOOL_SCHEMAS = {
         "name": "test_gaps",
         "description": (
             "Find code units with no test coverage, sorted by churn risk. "
-            "Use to decide which tests to write first. Excludes test files by default."
+            "Use to decide which tests to write first. Excludes test files by default. "
+            "If the DB has no test edges but a JS/TS relative import or Go import "
+            "resolves to the source path, that file is treated as covered. With "
+            "working_tree=true, untracked tests/paths are included in that scan. "
+            + HEURISTIC_TRUST_NOTE
         ),
         "parameters": {
             "type": "object",
@@ -337,7 +364,8 @@ _TOOL_SCHEMAS = {
         "description": (
             "Combined risk + test gaps + stale tests for top-N files. "
             "Use as the first reconnaissance step before audits or "
-            "refactors. Single call replaces risk_map + test_gaps + stale_tests."
+            "refactors. Single call replaces risk_map + test_gaps + stale_tests. "
+            + HEURISTIC_TRUST_NOTE
         ),
         "parameters": {
             "type": "object",

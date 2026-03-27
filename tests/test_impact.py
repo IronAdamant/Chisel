@@ -6,8 +6,8 @@ from chisel.impact import ImpactAnalyzer, _author_concentration, _fetch_failure_
 
 
 @pytest.fixture
-def analyzer(storage):
-    return ImpactAnalyzer(storage)
+def analyzer(storage, tmp_path):
+    return ImpactAnalyzer(storage, str(tmp_path))
 
 
 def _seed_basic_data(storage):

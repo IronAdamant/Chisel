@@ -29,6 +29,7 @@ chisel/
   mcp_server.py     — HTTP MCP server (GET /tools, /health, POST /call). ThreadedHTTPServer. dispatch_tool() shared by both servers.
   mcp_stdio.py      — stdio MCP server (requires optional 'mcp' package). _configure_server() for engine lifecycle mgmt.
   next_steps.py     — Contextual next-step suggestions for MCP tool responses. compute_next_steps() dispatched per tool.
+  llm_contract.py   — Agent vocabulary: trust note, status/source constants; MCP tool descriptions reference this (see docs/LLM_CONTRACT.md).
   rwlock.py         — Read-write lock for in-process concurrent access.
 ```
 

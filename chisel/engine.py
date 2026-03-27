@@ -63,10 +63,17 @@ _NO_DATA_RESPONSE = {
 
 def _git_tool_error(project_dir, message):
     """Structured failure when git subprocess fails (wrong cwd, not a repo, etc.)."""
+    low = message.lower()
+    if "not a git repository" in low or "not a git repo" in low:
+        err = "not_a_git_repo"
+    else:
+        err = "git_command_failed"
     return {
         "status": "git_error",
+        "error": err,
         "message": message,
         "project_dir": project_dir,
+        "cwd": project_dir,
         "hint": (
             "Use the repository root as the project directory: "
             "`chisel ... --project-dir /path/to/repo` or start the MCP server "
@@ -100,7 +107,7 @@ class ChiselEngine:
         self.storage = Storage(base_dir=resolved_storage)
         self.git = GitAnalyzer(self.project_dir)
         self.mapper = TestMapper(self.project_dir)
-        self.impact = ImpactAnalyzer(self.storage)
+        self.impact = ImpactAnalyzer(self.storage, self.project_dir)
         self.lock = RWLock()
         self._process_lock = ProcessLock(resolved_storage)
         self._bg_jobs_lock = threading.Lock()
@@ -320,7 +327,14 @@ class ChiselEngine:
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                result = self.impact.suggest_tests(file_path, fallback_to_all=fallback_to_all)
+                disk = self._disk_only_test_map() if working_tree else None
+                extra = self._git_untracked_code_paths() if working_tree else None
+                result = self.impact.suggest_tests(
+                    file_path,
+                    fallback_to_all=fallback_to_all,
+                    disk_test_files=disk,
+                    extra_code_paths=extra,
+                )
                 if working_tree and not result:
                     # File may be untracked — try stem-matching against known test files
                     result = self._working_tree_suggest(file_path)
@@ -545,8 +559,12 @@ class ChiselEngine:
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
+                disk = self._disk_only_test_map() if working_tree else None
+                extra = self._git_untracked_code_paths() if working_tree else None
                 gaps = list(self.impact.get_test_gaps(
                     file_path, directory, exclude_tests,
+                    disk_test_files=disk,
+                    extra_code_paths=extra,
                 ))
                 if working_tree:
                     gaps.extend(self._working_tree_gaps(file_path, directory, exclude_tests))
@@ -958,6 +976,29 @@ class ChiselEngine:
                     )
                     count += 1
         return count
+
+    def _git_untracked_code_paths(self):
+        """Project-relative untracked code paths (for static import resolution)."""
+        try:
+            raw = self.git.get_untracked_files()
+        except RuntimeError:
+            return set()
+        return {p for p in raw if path_has_code_extension(p)}
+
+    def _disk_only_test_map(self):
+        """Test files on disk not yet represented in ``test_units`` (e.g. untracked)."""
+        mapper = self.mapper
+        known = self.storage.get_test_file_paths()
+        out = {}
+        for abs_path in mapper.discover_test_files():
+            rel = normalize_path(abs_path, self.project_dir)
+            if rel in known:
+                continue
+            units = mapper.parse_test_file(abs_path)
+            if not units:
+                continue
+            out[rel] = [u["name"] for u in units]
+        return out
 
     def _working_tree_suggest(self, file_path):
         """Suggest tests for an untracked file using stem-matching.

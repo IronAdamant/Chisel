@@ -5,6 +5,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 
 from chisel.metrics import _parse_iso_date, compute_ownership
+from chisel.static_test_imports import StaticImportIndex
 
 # Co-change coupling: breadth of partners (normalized by this count).
 _COCHANGE_COUPLING_CAP = 10
@@ -20,6 +21,50 @@ _QUANTIZE_STEPS = 10
 _IMPORT_GRAPH_TEST_WEIGHT = 0.45
 _IMPORT_HOP_DECAY = 0.88
 _MAX_IMPORT_CLOSURE_HOPS = 32
+
+# When DB impact and static import scan agree on the same test, blend scores (non-binary).
+_HYBRID_STATIC_BONUS = 0.28
+
+
+def _merge_impacted_and_static(db, static):
+    """Combine ``get_impacted_tests`` output with static ``require`` / import hints."""
+    by_id = {}
+    for item in db:
+        tid = item["test_id"]
+        by_id[tid] = {
+            "test_id": tid,
+            "file_path": item["file_path"],
+            "name": item["name"],
+            "score": item["score"],
+            "reason": item["reason"],
+            "source": item.get("source", "direct"),
+        }
+    for item in static:
+        tid = item["test_id"]
+        s = item["score"]
+        if tid in by_id:
+            prev = by_id[tid]
+            new_score = min(1.0, prev["score"] + s * _HYBRID_STATIC_BONUS)
+            by_id[tid] = {
+                "test_id": tid,
+                "file_path": prev["file_path"],
+                "name": prev["name"],
+                "score": new_score,
+                "reason": f"{prev['reason']}; {item['reason']}",
+                "source": "hybrid",
+            }
+        else:
+            by_id[tid] = {
+                "test_id": tid,
+                "file_path": item["file_path"],
+                "name": item["name"],
+                "score": s,
+                "reason": item["reason"],
+                "source": item.get("source", "static_require"),
+            }
+    out = list(by_id.values())
+    out.sort(key=lambda x: x["score"], reverse=True)
+    return out
 
 
 def _quantize_gap(value, steps=4):
@@ -149,8 +194,9 @@ def detect_plugin_signals(content):
 class ImpactAnalyzer:
     """Analyzes test impact, risk, and ownership using data from Storage."""
 
-    def __init__(self, storage):
+    def __init__(self, storage, project_dir: str):
         self.storage = storage
+        self.project_dir = project_dir
 
     def _import_graph_undirected_neighbors(self, file_path):
         """One-hop neighbors on the static import graph (both directions)."""
@@ -407,20 +453,40 @@ class ImpactAnalyzer:
     # Test suggestions
     # ------------------------------------------------------------------ #
 
-    def suggest_tests(self, file_path, fallback_to_all=False):
+    def suggest_tests(
+        self,
+        file_path,
+        fallback_to_all=False,
+        disk_test_files=None,
+        extra_code_paths=None,
+    ):
         """Suggest tests to run for a changed file, ordered by relevance.
 
-        Uses ``get_impacted_tests`` (direct edges, co-change, import graph) and
-        boosts by recorded test failure rates.
+        Merges ``get_impacted_tests`` (direct edges, co-change, import graph)
+        with a static scan of test files' ``require()`` / import paths. When
+        both agree on a test, scores are blended (``source: hybrid``). Static
+        alone uses ``source: static_require``.
 
         Args:
             fallback_to_all: If True and no test edges exist for this file,
                 return all known test files ranked by stem-match relevance.
+            disk_test_files: Optional ``{rel_path: [test unit names]}`` for tests
+                on disk not yet in the DB (e.g. untracked); used with working_tree.
+            extra_code_paths: Extra project-relative paths unioned into resolution
+                targets (e.g. git-untracked source files).
 
         Returns:
             List of dicts: {test_id, file_path, name, relevance, reason, source}
         """
-        impacted = self.get_impacted_tests([file_path])
+        db = self.get_impacted_tests([file_path])
+        idx = StaticImportIndex(
+            self.project_dir,
+            self.storage,
+            disk_test_files=disk_test_files,
+            extra_code_paths=set(extra_code_paths or ()),
+        )
+        static = idx.find_tests(file_path, include_python=True)
+        impacted = _merge_impacted_and_static(db, static)
 
         # Fallback: if no impacted tests and fallback requested, return all test files
         if not impacted and fallback_to_all:
@@ -435,13 +501,14 @@ class ImpactAnalyzer:
             fail_rate = failure_rates.get(item["test_id"], 0.0)
             # Boost by up to 50% based on historical failure rate
             relevance *= (1.0 + 0.5 * fail_rate)
+            src = item.get("source", "direct")
             result.append({
                 "test_id": item["test_id"],
                 "file_path": item["file_path"],
                 "name": item["name"],
                 "relevance": relevance,
                 "reason": item["reason"],
-                "source": item.get("source", "direct"),
+                "source": src,
             })
 
         result.sort(key=lambda x: x["relevance"], reverse=True)
@@ -509,8 +576,20 @@ class ImpactAnalyzer:
     # Test gap detection
     # ------------------------------------------------------------------ #
 
-    def get_test_gaps(self, file_path=None, directory=None, exclude_tests=True):
+    def get_test_gaps(
+        self,
+        file_path=None,
+        directory=None,
+        exclude_tests=True,
+        disk_test_files=None,
+        extra_code_paths=None,
+    ):
         """Find code units that have no test coverage, prioritized by churn.
+
+        Narrows gaps using JS/TS relative imports and Go test imports that
+        resolve to a source file (not Python ``from module import`` — that does
+        not imply every unit is covered). Optional *disk_test_files* and
+        *extra_code_paths* match ``suggest_tests`` working-tree behavior.
 
         Args:
             file_path: Scope to a single file.
@@ -521,11 +600,30 @@ class ImpactAnalyzer:
             List of dicts: {id, file_path, name, unit_type, line_start,
                             line_end, churn_score, commit_count}
         """
-        return self.storage.get_untested_code_units(
+        gaps = list(self.storage.get_untested_code_units(
             file_path=file_path,
             directory=directory if not file_path else None,
             exclude_tests=exclude_tests,
+        ))
+        if not gaps:
+            return gaps
+        idx = StaticImportIndex(
+            self.project_dir,
+            self.storage,
+            disk_test_files=disk_test_files,
+            extra_code_paths=set(extra_code_paths or ()),
         )
+        covered_files = set()
+        for fp in {g["file_path"] for g in gaps}:
+            if idx.find_tests(
+                fp,
+                include_python=False,
+                gap_eligible_only=True,
+            ):
+                covered_files.add(fp)
+        if not covered_files:
+            return gaps
+        return [g for g in gaps if g["file_path"] not in covered_files]
 
     # ------------------------------------------------------------------ #
     # Risk map

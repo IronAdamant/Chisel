@@ -246,6 +246,36 @@ class TestCouplingHints:
         impact_hint = next(h for h in hints if h.get("tool") == "impact")
         assert "utils.py" in impact_hint["args"]["files"]
 
+    def test_with_dict_like_tool_coupling(self):
+        """tool_coupling returns a dict with co_change_partners / import_partners."""
+        result = {
+            "co_change_partners": [
+                {"file_a": "app.py", "file_b": "lib.py", "co_commit_count": 3},
+            ],
+            "import_partners": [],
+            "co_change_breadth": 1,
+            "import_breadth": 0,
+            "cochange_coupling": 0.1,
+            "import_coupling": 0.0,
+            "effective_coupling": 0.1,
+        }
+        hints = compute_next_steps("coupling", result)
+        assert _has_tool(hints, "risk_map")
+        assert _has_tool(hints, "impact")
+
+    def test_dict_only_import_partners_notes_solo_repo(self):
+        result = {
+            "co_change_partners": [],
+            "import_partners": [{"file": "dep.js"}],
+            "co_change_breadth": 0,
+            "import_breadth": 1,
+            "cochange_coupling": 0.0,
+            "import_coupling": 0.2,
+            "effective_coupling": 0.2,
+        }
+        hints = compute_next_steps("coupling", result)
+        assert _has_action(hints, "note_structural_coupling")
+
     def test_empty_results(self):
         assert compute_next_steps("coupling", []) == []
 
@@ -288,6 +318,22 @@ class TestStatsHints:
         assert _has_reason(hints, "threshold")
 
 
+class TestSuggestTestsHints:
+    def test_static_source_suggests_update(self):
+        result = [
+            {"test_id": "t/x.js:a", "source": "static_require", "relevance": 0.5},
+        ]
+        hints = compute_next_steps("suggest_tests", result)
+        assert _has_tool(hints, "update")
+
+    def test_fallback_suggests_verify_action(self):
+        result = [
+            {"test_id": "t/x.js:a", "source": "fallback", "relevance": 0.1},
+        ]
+        hints = compute_next_steps("suggest_tests", result)
+        assert _has_action(hints, "verify_in_repo")
+
+
 class TestRecordResultHints:
     def test_after_recording(self):
         result = {"test_id": "t1", "passed": True, "recorded": True}
@@ -317,6 +363,18 @@ class TestStructuredFormat:
             ("churn", [{"file_path": "a.py", "churn_score": 1.0}]),
             ("ownership", [{"author": "Alice", "percentage": 100}]),
             ("coupling", [{"file_a": "a.py", "file_b": "b.py", "co_commit_count": 5}]),
+            (
+                "coupling",
+                {
+                    "co_change_partners": [{"file_a": "a.py", "file_b": "b.py"}],
+                    "import_partners": [],
+                    "co_change_breadth": 1,
+                    "import_breadth": 0,
+                    "cochange_coupling": 0.1,
+                    "import_coupling": 0.0,
+                    "effective_coupling": 0.1,
+                },
+            ),
             ("who_reviews", [{"author": "Bob", "role": "suggested_reviewer"}]),
             ("history", [{"hash": "abc", "date": "2026-03-01", "author": "A", "message": "x"}]),
             ("stats", {"code_units": 50, "commits": 100, "co_changes": 5}),

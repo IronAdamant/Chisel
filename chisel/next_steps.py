@@ -10,6 +10,8 @@ Each suggestion is a dict with:
             fills remaining required args from context)
     - action: Descriptive action label (only for non-tool suggestions)
     - reason: Why this step is recommended
+
+Structured for MCP consumers; aligns with ``docs/LLM_CONTRACT.md`` (read order, trust).
 """
 
 
@@ -172,10 +174,31 @@ def _hints_impact(result):
 
 def _hints_suggest_tests(result):
     if isinstance(result, list) and result:
-        return [
+        steps = [
             {"action": "run_tests", "reason": "Execute suggested tests in order of relevance"},
             {"tool": "record_result", "args": {}, "reason": "Log outcomes for future prioritization"},
         ]
+        sources = {r.get("source") for r in result if isinstance(r, dict)}
+        if sources & {"static_require", "hybrid"}:
+            steps.append(
+                {
+                    "tool": "update",
+                    "args": {},
+                    "reason": (
+                        "After commit, run update so DB edges align with static/hybrid hints"
+                    ),
+                }
+            )
+        if sources & {"fallback", "working_tree"}:
+            steps.append(
+                {
+                    "action": "verify_in_repo",
+                    "reason": (
+                        "fallback/working_tree matches are stem heuristics—confirm paths in tree"
+                    ),
+                }
+            )
+        return steps
     return []
 
 
@@ -224,6 +247,32 @@ def _hints_ownership(result):
 
 
 def _hints_coupling(result):
+    """Handle tool_coupling dict (co_change_partners + import_partners) or legacy list."""
+    if isinstance(result, dict) and "co_change_partners" in result:
+        steps = [
+            {"tool": "risk_map", "args": {},
+             "reason": "Check risk scores for coupled files"},
+        ]
+        partners = result.get("co_change_partners") or []
+        if partners:
+            top = partners[0]
+            partner = top.get("file_b") or top.get("file_a") or ""
+            if partner:
+                steps.append(
+                    {"tool": "impact", "args": {"files": [partner]},
+                     "reason": f"Check test coverage for coupled file {partner}"}
+                )
+        elif result.get("import_partners"):
+            steps.append(
+                {
+                    "action": "note_structural_coupling",
+                    "reason": (
+                        "No co-change partners; import_partners / import_coupling are "
+                        "the reliable signal in solo-repo or shallow history"
+                    ),
+                }
+            )
+        return steps
     if isinstance(result, list) and result:
         top = result[0]
         partner = top.get("file_b") or top.get("file_a", "")

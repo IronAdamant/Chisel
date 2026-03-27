@@ -2,6 +2,8 @@
 
 Short guide for **LLM agents** using Chisel (MCP or CLI). Solo maintainer, multiple sessions — one `.chisel/` database per project; use **`--project-dir`** when the cwd is not the repo root.
 
+**Security / trust:** Chisel defaults to **stdlib-only** analysis (minimal supply-chain surface). See **`LLM_CONTRACT.md`** for status codes, how to read `_meta`, and **`source`** trust ordering on `suggest_tests`.
+
 ## 1. First-time or after big structural changes
 
 1. Run **`analyze`** (full scan) — or **`start_job`** with `kind: "analyze"` and poll **`job_status`** if the MCP client might time out on large repos.
@@ -26,7 +28,9 @@ Short guide for **LLM agents** using Chisel (MCP or CLI). Solo maintainer, multi
 
 ## 4. `source` on impact / suggest_tests
 
-Each suggestion may include **`source`**: `direct` | `co_change` | `import_graph` | `fallback` | `working_tree`. Prefer **`direct`** when choosing tests; **`import_graph`** means coverage via another module (e.g. facade).
+Each suggestion may include **`source`**: `direct` | `co_change` | `import_graph` | `static_require` | `hybrid` | `fallback` | `working_tree`. Prefer **`direct`** or **`hybrid`**; **`import_graph`** means coverage via another module (e.g. facade); **`static_require`** is from import/require resolution without a DB edge; **`fallback`** / **`working_tree`** are stem heuristics—verify in the repo.
+
+Full table: **`LLM_CONTRACT.md`**.
 
 ## 5. Risk and triage
 

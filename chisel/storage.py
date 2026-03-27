@@ -277,6 +277,24 @@ class Storage:
             (f"%/{stem}.%", f"{stem}.%", "%.test.%", "%.spec.%"),
         )
 
+    def get_distinct_code_file_paths(self):
+        """All project-relative paths that have at least one code unit."""
+        rows = self._fetchall("SELECT DISTINCT file_path FROM code_units")
+        return {r["file_path"] for r in rows}
+
+    def get_resolvable_code_file_paths(self):
+        """Paths usable as static import targets: code_units ∪ churn_stats.
+
+        Some analyzed files have no extractable units but still appear in
+        churn_stats after analyze (e.g. a tiny ES module).
+        """
+        rows = self._fetchall(
+            """SELECT DISTINCT file_path FROM code_units
+               UNION
+               SELECT DISTINCT file_path FROM churn_stats""",
+        )
+        return {r["file_path"] for r in rows}
+
     def delete_code_units_by_file(self, file_path):
         self._execute("DELETE FROM code_units WHERE file_path = ?", (file_path,))
 

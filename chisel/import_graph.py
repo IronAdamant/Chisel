@@ -81,6 +81,14 @@ def _resolve_import_targets(importer, dep, module_path, all_paths: set[str]):
         # Path-style non-relative imports (e.g. 'src/utils', 'lib/foo') also
         # fall through — the stem-based fallback at the bottom handles them.
 
+    if importer.endswith(".go") and module_path:
+        # import "example.com/foo/bar" → match bar.go by final path segment
+        base = module_path.rstrip("/").rsplit("/", 1)[-1]
+        for p in all_paths:
+            if p.endswith(".go") and os.path.basename(p).split(".")[0] == base:
+                yield p
+        return
+
     # Fallback: unique name match (last resort)
     name = dep.get("name")
     if not name:
