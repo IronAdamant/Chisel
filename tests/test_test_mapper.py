@@ -777,8 +777,6 @@ class TestJsPathEdgeBuilding:
         # Path resolution returns None for non-relative imports,
         # but name matching may still link "express" if a code unit has that name.
         # The key point: no FALSE edges from path resolution.
-        path_edges = [e for e in edges if e["edge_type"] == "import"
-                      and "express" in e["code_id"]]
         # The name "express" from require('express') could match via name-only
         # fallback — that's acceptable, it's the call-based matching.
         # Just verify path resolution didn't fire for a non-relative path.

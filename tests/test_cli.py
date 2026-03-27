@@ -345,7 +345,7 @@ class TestHandlerOutputFormats:
         mock_cls.return_value = engine
 
         args = _make_args(file="app.py", min_count=3)
-        result = cmd_coupling(args)
+        cmd_coupling(args)
 
         output = capsys.readouterr().out
         assert "utils.py" in output
