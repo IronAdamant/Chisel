@@ -1,0 +1,35 @@
+# Example: run Chisel in CI on your repository (copy to .github/workflows/)
+# Requires: Python 3.11+, git checkout of your project
+# Install: pip install chisel-test-impact
+# Adjust paths and branches as needed.
+
+name: Chisel
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  chisel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Chisel
+        run: pip install chisel-test-impact
+
+      - name: Analyze project
+        run: chisel analyze --project-dir .
+
+      - name: Stats
+        run: chisel stats --project-dir . --json
+
+      # Optional: fail if any local change would affect tests (requires a clean tree or tune diff)
+      # - name: Diff impact
+      #   run: chisel diff-impact --project-dir .

@@ -63,9 +63,10 @@ _TOOL_SCHEMAS = {
         "description": (
             "Suggest tests to run for a file, ranked by relevance. Combines direct "
             "test edges, git co-change, and static import-graph reachability (e.g. "
-            "facade tests covering inner modules). Use to find tests that may exercise "
-            "a file even without direct edges. Returns empty for untracked/new files "
-            "unless fallback_to_all or working_tree is set."
+            "facade tests covering inner modules). Each item may include "
+            "source: direct | co_change | import_graph | fallback | working_tree. "
+            "Returns empty for untracked/new files unless fallback_to_all or "
+            "working_tree is set."
         ),
         "parameters": {
             "type": "object",
@@ -359,6 +360,50 @@ _TOOL_SCHEMAS = {
             "required": [],
         },
     },
+    "start_job": {
+        "name": "start_job",
+        "description": (
+            "Run full analyze or incremental update in a background thread; poll "
+            "job_status with the returned job_id. Use when MCP clients would time out "
+            "on long analyze/update (zero extra dependencies — stdlib threading only)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["analyze", "update"],
+                    "description": "analyze = full scan; update = incremental.",
+                },
+                "directory": {
+                    "type": "string",
+                    "description": "Optional subdirectory scope (analyze only).",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Force full re-analysis (analyze only).",
+                },
+            },
+            "required": ["kind"],
+        },
+    },
+    "job_status": {
+        "name": "job_status",
+        "description": (
+            "Poll a job started with start_job. Returns status running | completed "
+            "| failed | not_found; completed includes result dict; failed includes error."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "Job id returned by start_job.",
+                },
+            },
+            "required": ["job_id"],
+        },
+    },
     # --- file_locks (advisory locking for multi-agent coordination) ---
     "acquire_file_lock": {
         "name": "acquire_file_lock",
@@ -486,7 +531,10 @@ _TOOL_DISPATCH = {
     "churn": ("tool_churn", ["file_path", "unit_name"]),
     "ownership": ("tool_ownership", ["file_path"]),
     "coupling": ("tool_coupling", ["file_path", "min_count"]),
-    "risk_map": ("tool_risk_map", ["directory", "exclude_tests", "proximity_adjustment"]),
+    "risk_map": (
+        "tool_risk_map",
+        ["directory", "exclude_tests", "proximity_adjustment", "coverage_mode"],
+    ),
     "stale_tests": ("tool_stale_tests", []),
     "history": ("tool_history", ["file_path"]),
     "who_reviews": ("tool_who_reviews", ["file_path"]),
@@ -496,6 +544,8 @@ _TOOL_DISPATCH = {
     "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
     "triage": ("tool_triage", ["directory", "top_n", "exclude_tests"]),
     "stats": ("tool_stats", []),
+    "start_job": ("tool_start_job", ["kind", "directory", "force"]),
+    "job_status": ("tool_job_status", ["job_id"]),
     # --- file_locks ---
     "acquire_file_lock": ("tool_acquire_file_lock", ["file_path", "agent_id", "ttl", "purpose"]),
     "release_file_lock": ("tool_release_file_lock", ["file_path", "agent_id"]),
@@ -513,6 +563,7 @@ _LIMIT_PROP = {
 for _name, _schema in _TOOL_SCHEMAS.items():
     if _name not in (
         "analyze", "update", "record_result", "stats", "triage",
+        "start_job", "job_status",
         "acquire_file_lock", "release_file_lock", "refresh_file_lock",
         "check_file_lock",
     ):

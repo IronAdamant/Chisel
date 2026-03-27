@@ -292,6 +292,37 @@ def _hints_record_result(result):
 # Dispatch table — all 16 tools now have hints
 # ------------------------------------------------------------------ #
 
+def _hints_start_job(result):
+    if isinstance(result, dict) and result.get("job_id"):
+        return [
+            {
+                "tool": "job_status",
+                "args": {"job_id": result["job_id"]},
+                "reason": "Poll until status is completed or failed",
+            },
+        ]
+    return []
+
+
+def _hints_job_status(result):
+    if not isinstance(result, dict):
+        return []
+    if result.get("status") == "running":
+        return [
+            {
+                "tool": "job_status",
+                "args": {"job_id": result["job_id"]},
+                "reason": "Job still running — poll again",
+            },
+        ]
+    if result.get("status") == "completed" and result.get("result"):
+        return [
+            {"tool": "stats", "args": {}, "reason": "Verify database after background job"},
+            {"tool": "diff_impact", "args": {}, "reason": "See test impact of local changes"},
+        ]
+    return []
+
+
 _TOOL_HINTS = {
     "analyze": _hints_analyze,
     "update": _hints_update,
@@ -309,4 +340,6 @@ _TOOL_HINTS = {
     "history": _hints_history,
     "stats": _hints_stats,
     "record_result": _hints_record_result,
+    "start_job": _hints_start_job,
+    "job_status": _hints_job_status,
 }

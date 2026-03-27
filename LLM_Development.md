@@ -4,6 +4,26 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## 2026-03-27 -- v0.6.5: CUSTOM_EXTRACTORS + CHISEL_BOOTSTRAP
+
+### Summary
+- **`chisel/bootstrap.py`** + **`CHISEL_BOOTSTRAP`** env var so users load `register_extractor()` without forking CLI; tree-sitter remains user-installed.
+- **`docs/CUSTOM_EXTRACTORS.md`**, **`examples/chisel_bootstrap_example.py`**, **`tests/test_bootstrap.py`**.
+- Documentation parity across README, CONTRIBUTING, CLAUDE, ARCHITECTURE, wiki `spec-project`, AGENT_PLAYBOOK, ZERO_DEPS, COMPLETE_PROJECT_DOCUMENTATION.
+
+---
+
+## 2026-03-27 (later) -- Agent UX: background jobs, provenance, CI, zero-dep docs
+
+### Summary
+- **`start_job` / `job_status`**: stdlib-only background `analyze`/`update` via `threading` + `bg_jobs` SQLite table; CLI `start-job` / `job-status`.
+- **Impact / `suggest_tests`**: `source` field (`direct` \| `co_change` \| `import_graph` \| `fallback` \| `working_tree`).
+- **`risk_map` MCP**: `coverage_mode` wired in `_TOOL_DISPATCH`.
+- **CI**: `scripts/check_version.py`, `scripts/benchmark_chisel.py`; **`docs/AGENT_PLAYBOOK.md`**, **`docs/ZERO_DEPS.md`**, **`examples/github-actions/chisel.yml`**.
+- Ruff: removed dead `cycles` / `lang` assignments.
+
+---
+
 ## 2026-03-27 -- Product re-orientation (agentic + multi-agent solo)
 
 ### Summary

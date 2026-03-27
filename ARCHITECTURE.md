@@ -1,6 +1,6 @@
 # Chisel — Architecture
 
-**Version:** 0.6.4 | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
+**Version:** 0.6.5 | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
 
 Test impact analysis and code intelligence **for LLM agents**. The design target is **solo-maintained repos** where **multiple agent sessions or processes** (MCP clients, terminals, CI) may run `analyze` / read tools concurrently — hence **ProcessLock**, **WAL SQLite**, and **normalized paths** as core mechanics, not optional extras.
 
@@ -62,8 +62,9 @@ ChiselEngine (engine.py) — main orchestrator
   │     └── Commit-activity hints (who_reviews; heuristic, not team routing)
   ├── AST Utils (ast_utils.py)
   │     ├── Multi-language extraction (12 languages)
-  │     ├── Pluggable extractor registry (tree-sitter/LSP hooks)
+  │     ├── Pluggable extractor registry (`register_extractor`; user deps optional)
   │     └── Brace matching with multi-line block comment tracking
+  ├── Bootstrap (bootstrap.py) — `CHISEL_BOOTSTRAP` imports user plugin module
   ├── Storage (storage.py, SQLite WAL)
   │     ├── 10 tables, single persistent connection
   │     ├── Batch query methods for N+1 elimination
@@ -162,6 +163,7 @@ Chisel/
 │   ├── engine.py             # orchestrator
 │   ├── storage.py            # SQLite persistence
 │   ├── ast_utils.py          # multi-language AST extraction + plugin registry
+│   ├── bootstrap.py          # CHISEL_BOOTSTRAP optional user module
 │   ├── git_analyzer.py       # git log/blame parsing
 │   ├── metrics.py            # churn, ownership, co-change computation
 │   ├── test_mapper.py        # test discovery, deps, edge building

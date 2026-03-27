@@ -5,6 +5,19 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5] - 2026-03-27
+
+### Added
+
+- **`CHISEL_BOOTSTRAP`**: optional dotted import path loaded at `ChiselEngine` startup (`chisel/bootstrap.py`) so users can call `register_extractor()` without forking the CLI. Tree-sitter / other parsers remain **user-installed** — Chisel stays stdlib-only.
+- **`docs/CUSTOM_EXTRACTORS.md`**: full guide for `register_extractor`, bootstrap env, and optional third-party parsers.
+- **`examples/chisel_bootstrap_example.py`**: commented template for copy-paste.
+- `tests/test_bootstrap.py` for bootstrap loading.
+
+### Documentation
+
+- Cross-links from README, CONTRIBUTING, CLAUDE, `docs/ZERO_DEPS.md`, COMPLETE_PROJECT_DOCUMENTATION, ARCHITECTURE.
+
 ## [0.6.4] - 2026-03-27
 
 ### Added

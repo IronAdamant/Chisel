@@ -1,6 +1,7 @@
 """Tests for chisel.engine — integration + unit tests for private methods."""
 
 import os
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -215,6 +216,24 @@ class TestToolMethods:
         assert result["status"] == "no_changes"
         assert "ref" in result
         assert "message" in result
+
+    def test_tool_start_job_update_completes(self, engine):
+        engine.analyze()
+        start = engine.tool_start_job("update")
+        assert start.get("job_id")
+        assert start.get("status") == "running"
+        job_id = start["job_id"]
+        for _ in range(200):
+            st = engine.tool_job_status(job_id)
+            assert st.get("job_id") == job_id
+            if st.get("status") == "completed":
+                assert "result" in st
+                assert "files_updated" in st["result"]
+                return
+            if st.get("status") == "failed":
+                raise AssertionError(st.get("error"))
+            time.sleep(0.02)
+        raise AssertionError("background job did not complete")
 
     def test_tool_diff_impact_git_error_when_not_git_repo(self, tmp_path):
         proj = tmp_path / "nogit"

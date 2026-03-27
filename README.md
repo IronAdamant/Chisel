@@ -12,6 +12,8 @@ Chisel maps tests to code, code to git history, and answers: **what to run, what
 - **Multi-agent usage**: parallel agent runs, background tasks, or sequential sessions that share one project. Chisel keeps **one consistent graph** (project-local `.chisel/` storage, cross-process locks) so agents don’t corrupt analysis mid-write.
 - **Primary interface**: MCP tools and structured responses (`next_steps`, diagnostic statuses), not dashboards for managers.
 
+**Docs:** [Agent playbook](docs/AGENT_PLAYBOOK.md) (recommended tool loop, `start_job` / `job_status`, `source` field) · [Zero-dependency policy](docs/ZERO_DEPS.md) · [Custom extractors](docs/CUSTOM_EXTRACTORS.md) (`register_extractor`, `CHISEL_BOOTSTRAP` — bring your own tree-sitter in *your* venv).
+
 ## The Problem
 
 An LLM agent changes `engine.py:store_document()`. It then either:
@@ -122,6 +124,8 @@ Core query and write tools below; the MCP server also exposes **advisory file-lo
 | Tool | What it does |
 |------|-------------|
 | `analyze` | Full project scan — code units, tests, git history, edges |
+| `start_job` | Run `analyze` or `update` in a **background thread**; poll `job_status` (avoids MCP timeouts) |
+| `job_status` | Poll a job id from `start_job` until `completed` or `failed` |
 | `update` | Incremental re-analysis of changed files only |
 | `impact` | Which tests cover these files/functions? |
 | `diff_impact` | Auto-detect changes from `git diff`, return impacted tests |
@@ -148,6 +152,7 @@ Core query and write tools below; the MCP server also exposes **advisory file-lo
 - **MCP servers** — both stdio and HTTP for LLM agent integration
 - **Risk scoring** — weighted formula: churn, coupling, coverage gaps, author concentration, test instability
 - **Branch-aware** — `diff_impact` auto-detects feature branch vs main
+- **Optional custom extractors** — `register_extractor()` + `CHISEL_BOOTSTRAP` for your own tree-sitter/LSP stack (user-installed; core stays stdlib-only)
 
 ## Ecosystem
 

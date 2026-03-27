@@ -170,6 +170,7 @@ class TestSuggestTests:
             assert "test_id" in s
             assert "relevance" in s
             assert "reason" in s
+            assert "source" in s
 
 
 class TestSuggestTestsFailureBoost:

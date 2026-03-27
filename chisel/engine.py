@@ -1,7 +1,10 @@
 """ChiselEngine — main orchestrator tying together all subsystems."""
 
+import json
 import os
+import threading
 import time
+import uuid
 
 from chisel.ast_utils import (
     _EXTENSION_MAP,
@@ -10,6 +13,7 @@ from chisel.ast_utils import (
     extract_code_units,
     path_has_code_extension,
 )
+from chisel.bootstrap import load_user_bootstrap
 from chisel.git_analyzer import GitAnalyzer
 from chisel.import_graph import build_import_edges
 from chisel.impact import (
@@ -90,6 +94,7 @@ class ChiselEngine:
     """
 
     def __init__(self, project_dir, storage_dir=None):
+        load_user_bootstrap()
         self.project_dir = detect_project_root(str(project_dir))
         resolved_storage = resolve_storage_dir(self.project_dir, storage_dir)
         self.storage = Storage(base_dir=resolved_storage)
@@ -98,6 +103,8 @@ class ChiselEngine:
         self.impact = ImpactAnalyzer(self.storage)
         self.lock = RWLock()
         self._process_lock = ProcessLock(resolved_storage)
+        self._bg_jobs_lock = threading.Lock()
+        self._bg_job_in_progress = False
 
     # ------------------------------------------------------------------ #
     # Full analysis
@@ -213,6 +220,80 @@ class ChiselEngine:
     def tool_analyze(self, directory=None, force=False):
         """MCP tool: full analysis."""
         return self.analyze(directory=directory, force=force)
+
+    def tool_start_job(self, kind, directory=None, force=False):
+        """MCP tool: run ``analyze`` or ``update`` in a background thread.
+
+        Poll ``job_status`` until ``status`` is ``completed`` or ``failed``.
+        Avoids MCP client timeouts on large repos (zero extra dependencies).
+        """
+        if kind not in ("analyze", "update"):
+            return {
+                "status": "error",
+                "message": f"kind must be 'analyze' or 'update', got {kind!r}",
+            }
+        with self._bg_jobs_lock:
+            if self._bg_job_in_progress:
+                return {
+                    "status": "busy",
+                    "message": (
+                        "Another background analyze or update is already running "
+                        "in this engine"
+                    ),
+                    "hint": "Poll job_status with the existing job_id, or wait.",
+                }
+            self._bg_job_in_progress = True
+        job_id = uuid.uuid4().hex
+        self.storage.insert_bg_job(job_id, kind, "running")
+
+        def run():
+            try:
+                if kind == "analyze":
+                    out = self.analyze(directory=directory, force=force)
+                else:
+                    out = self.update()
+                self.storage.update_bg_job(
+                    job_id, "completed", result_json=json.dumps(out, default=str),
+                )
+            except Exception as exc:
+                self.storage.update_bg_job(
+                    job_id, "failed", error_message=str(exc),
+                )
+            finally:
+                with self._bg_jobs_lock:
+                    self._bg_job_in_progress = False
+
+        threading.Thread(
+            target=run, name=f"chisel-bg-{kind}", daemon=True,
+        ).start()
+        return {
+            "job_id": job_id,
+            "status": "running",
+            "kind": kind,
+            "hint": "Poll job_status with job_id until completed or failed.",
+        }
+
+    def tool_job_status(self, job_id):
+        """MCP tool: poll a job started with ``tool_start_job``."""
+        row = self.storage.get_bg_job(job_id)
+        if not row:
+            return {
+                "status": "not_found",
+                "job_id": job_id,
+                "message": "No job with this id",
+            }
+        out = {
+            "job_id": row["id"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        if row["error_message"]:
+            out["error"] = row["error_message"]
+        if row["result_json"]:
+            out["result"] = json.loads(row["result_json"])
+        return out
 
     def tool_impact(self, files, functions=None):
         """MCP tool: get impacted tests for changed files."""
@@ -908,6 +989,7 @@ class ChiselEngine:
                     "name": name,
                     "relevance": score,
                     "reason": "working-tree: stem-matched test (file not yet committed)",
+                    "source": "working_tree",
                 })
 
         scored.sort(key=lambda x: x["relevance"], reverse=True)

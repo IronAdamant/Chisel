@@ -60,7 +60,6 @@ def build_import_edges(
 
 def _resolve_import_targets(importer, dep, module_path, all_paths: set[str]):
     """Yield project-relative paths in *all_paths* that *dep* resolves to."""
-    lang = importer.replace("\\", "/").split(".")[-1].lower()
     # Heuristic: use path logic for Python and JS/TS
     if importer.endswith(".py"):
         if module_path:

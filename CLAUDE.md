@@ -53,7 +53,7 @@ chisel/
 - **JS path resolution**: `_resolve_js_module_path(test_file, module_path)` resolves relative imports against the test file's directory. `_matches_js_import_path(code_file, resolved)` strips JS/TS extensions and handles `index.js` barrel imports. `_strip_js_ext()` shared helper. `_JS_EXTENSIONS` frozenset in `test_mapper.py`.
 - **AST regex improvements**: C#/Java support nested generics `<A<B>>` and annotations/attributes `@Override`/`[Test]`. Kotlin supports extension functions `fun String.foo()`. C++ supports template functions and destructors `~Foo()`. Swift supports `@objc`-style attributes. Dart supports factory constructors and getters/setters.
 - **Jest/Mocha/Vitest test block extraction**: `_JS_JEST_BLOCK_RE` in `ast_utils.py` matches `describe('name', ...)`, `it('name', ...)`, `test('name', ...)` (plus `.only`/`.skip`/`.todo` modifiers) as code units with `unit_type` "test_suite" or "test_case". `_TEST_UNIT_TYPES` in `test_mapper.py` ensures these are recognized as test units regardless of `_is_test_name()`. This enables test edge building for JS/TS projects — the `require()`/`import` dep extraction already worked but was unreachable without test units.
-- **Pluggable extractors**: `register_extractor(lang, fn)` in `ast_utils.py` lets users override built-in regex extractors with tree-sitter or LSP-backed ones. `_custom_extractors` checked before `_EXTRACTORS` in `extract_code_units()`. Zero-dep — the registry is just hooks.
+- **Pluggable extractors**: `register_extractor(lang, fn)` in `ast_utils.py` lets users override built-in regex extractors with tree-sitter or LSP-backed ones (installed **outside** Chisel). `_custom_extractors` checked before `_EXTRACTORS` in `extract_code_units()`. **`CHISEL_BOOTSTRAP`** (see `chisel/bootstrap.py`) imports a user module at `ChiselEngine` startup so agents can load registrations without forking CLI. Docs: `docs/CUSTOM_EXTRACTORS.md`.
 - **Batch SQL queries**: `storage.py` provides `get_*_batch()` methods for edges, code units, co-changes, churn, and blame. `impact.get_risk_map()` uses these to compute all risk scores in ~5 queries total instead of N*5. `_chunked()` helper splits large batches to stay under SQLite's variable limit.
 - **Process-level read locks**: All read tool methods in `engine.py` acquire `_process_lock.shared()` (outer) + `lock.read_lock()` (inner). Writes acquire `_process_lock.exclusive()` + `lock.write_lock()`. This allows concurrent reads from multiple processes while blocking during writes.
 - **Unit-churn scaling**: `_UNIT_CHURN_FILE_LIMIT = 2000` in `engine.py`. Repos with more than 2000 code files skip per-function `git log -L` churn (each function spawns a subprocess). File-level churn is always computed. Validated on Grafana (21k files, 62k units in ~3 min).
@@ -95,9 +95,9 @@ mcp_stdio.py → engine.py, mcp_server.py, schemas.py
 next_steps.py → (no internal deps)
 ```
 
-## 22 MCP Tools
+## 24 MCP Tools
 
-`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`, `diff_impact`, `update`, `test_gaps`, `record_result`, `stats`, `triage`, plus 6 advisory file lock tools
+`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`, `diff_impact`, `update`, `test_gaps`, `record_result`, `stats`, `triage`, `start_job`, `job_status`, plus 6 advisory file lock tools
 
 Each wired through: engine.tool_*() → CLI subcommand, HTTP POST /call, stdio MCP.
 

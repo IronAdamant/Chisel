@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence for **LLM agents** in **solo-maintainer** workflows, with **multi-process / multi-agent** safety (shared `.chisel/` storage, locks). Zero external dependencies.
 
-**Version:** 0.6.4
+**Version:** 0.6.5
 **PyPI:** `chisel-test-impact`
 **License:** MIT
 **Python:** >= 3.11
@@ -14,7 +14,13 @@ Test impact analysis and code intelligence for **LLM agents** in **solo-maintain
 | `pyproject.toml` | Build config, version, scripts, dev deps | setuptools >= 68.0 | -- |
 | `LICENSE` | MIT license text | -- | -- |
 | `.gitignore` | Git ignore rules for caches, DBs, virtualenvs | -- | -- |
-| `.github/workflows/ci.yml` | GitHub Actions CI workflow (lint + test, Python 3.11-3.14) | -- | -- |
+| `.github/workflows/ci.yml` | GitHub Actions CI (version check, benchmark, lint, test, Python 3.11-3.14) | -- | -- |
+| `docs/AGENT_PLAYBOOK.md` | Short MCP/agent workflow: analyze, diff_impact, start_job, source field | -- | -- |
+| `docs/ZERO_DEPS.md` | Strict stdlib-only policy; optional extras; tree-sitter vs register_extractor | -- | -- |
+| `docs/CUSTOM_EXTRACTORS.md` | `register_extractor`, `CHISEL_BOOTSTRAP`, user-installed tree-sitter / LSP | -- | -- |
+| `examples/github-actions/chisel.yml` | Sample workflow for consumers to copy into their repos | -- | -- |
+| `scripts/check_version.py` | CI: assert pyproject version matches `chisel.__version__` | stdlib | -- |
+| `scripts/benchmark_chisel.py` | CI: timing smoke on minimal git repo (env thresholds) | stdlib, chisel | -- |
 | `.github/workflows/publish.yml` | PyPI publish on tag push (OIDC trusted publishing) | -- | -- |
 | `CLAUDE.md` | Claude Code agent instructions for this project | -- | -- |
 | `ARCHITECTURE.md` | Data model, SQL schemas, design decisions | -- | [spec-project](wiki-local/spec-project.md) |
@@ -30,6 +36,7 @@ Test impact analysis and code intelligence for **LLM agents** in **solo-maintain
 |------|---------|--------------|-----------|
 | `chisel/__init__.py` | Package init, exports `__version__` | -- | -- |
 | `chisel/ast_utils.py` | Multi-language AST extraction (12 languages), pluggable extractor registry, `CodeUnit` dataclass, `_SKIP_DIRS` constant, `compute_file_hash`, `detect_language` | `ast`, `hashlib`, `re`, `dataclasses`, `functools`, `pathlib` | [glossary: code unit](wiki-local/glossary.md) |
+| `chisel/bootstrap.py` | Optional `CHISEL_BOOTSTRAP` module import (user tree-sitter / custom extractors) | `importlib`, `os` | [CUSTOM_EXTRACTORS](../docs/CUSTOM_EXTRACTORS.md) |
 | `chisel/storage.py` | SQLite persistence layer (WAL mode, 10 tables, single persistent connection), all CRUD operations | `sqlite3`, `datetime`, `pathlib` | [glossary: blame cache](wiki-local/glossary.md) |
 | `chisel/git_analyzer.py` | Git log/blame parsing via subprocess, branch/diff queries, function-level log | `re`, `subprocess`, `datetime` | [glossary: churn score](wiki-local/glossary.md) |
 | `chisel/metrics.py` | Pure computation: churn scoring, ownership aggregation, co-change detection | `collections`, `datetime`, `itertools` | [glossary: churn score](wiki-local/glossary.md) |

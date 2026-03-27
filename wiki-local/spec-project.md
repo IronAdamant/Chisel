@@ -59,9 +59,18 @@ Chisel is a test impact analysis and code intelligence tool **for LLM agents**, 
 - **Ruby**: `function`, `class`, `module`
 - **Dart**: `function` (factory, getters/setters), `class`, `mixin`, `extension`
 
+## Pluggable extractors (user-supplied parsers)
+
+Built-in extraction is **stdlib-only** (regex / `ast`). For **tree-sitter**, **LSP**, or other backends, users install dependencies **outside** Chisel and call **`register_extractor(language, fn)`** from `ast_utils`. Optional env **`CHISEL_BOOTSTRAP`** names a Python module to import at `ChiselEngine` startup so registrations run before **`analyze`**. See **`docs/CUSTOM_EXTRACTORS.md`** in the repository.
+
 ## MCP Tool Specifications
 
-**22 tools** are defined in `schemas.py`: **16 core** query/write tools plus **6 advisory file-lock** tools for multi-agent coordination. They are reachable via CLI (where exposed), HTTP `POST /call`, and stdio MCP. Each maps to an `engine.tool_*()` method.
+**24 tools** are defined in `schemas.py`: **18 core** query/write tools (including **`start_job`** / **`job_status`** for background analyze/update) plus **6 advisory file-lock** tools for multi-agent coordination. They are reachable via CLI (where exposed), HTTP `POST /call`, and stdio MCP. Each maps to an `engine.tool_*()` method.
+
+### start_job / job_status
+
+- **start_job**: `kind` = `analyze` \| `update`; optional `directory`, `force` (analyze). Runs work in a **stdlib `threading`** background thread; returns `job_id` immediately. Poll **`job_status`** until `completed` or `failed`. Only one background job per engine instance at a time; otherwise returns `status: busy`.
+- **job_status**: `job_id` — returns `status`, timestamps, `result` (JSON) or `error`.
 
 ### analyze
 

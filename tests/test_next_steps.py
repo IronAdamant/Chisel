@@ -120,6 +120,22 @@ class TestRiskMapHints:
         assert _has_reason(hints, "coupling=0.0")
 
 
+class TestStartJobHints:
+    def test_start_job_suggests_job_status(self):
+        hints = compute_next_steps(
+            "start_job",
+            {"job_id": "abc123", "status": "running", "kind": "analyze"},
+        )
+        assert _has_tool(hints, "job_status")
+
+    def test_job_status_running_polls_again(self):
+        hints = compute_next_steps(
+            "job_status",
+            {"job_id": "x", "kind": "analyze", "status": "running"},
+        )
+        assert _has_tool(hints, "job_status")
+
+
 class TestDiffImpactHints:
     def test_with_impacted_tests(self):
         result = [{"test_id": "test_foo", "reason": "direct"}]

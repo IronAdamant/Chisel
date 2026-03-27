@@ -196,7 +196,8 @@ class ImpactAnalyzer:
                 use full-file impact (no function-level diff available).
 
         Returns:
-            List of dicts: {test_id, file_path, name, reason, score}
+            List of dicts: {test_id, file_path, name, reason, score, source}
+            ``source`` is ``direct`` | ``co_change`` | ``import_graph``.
         """
         impacted = {}
         untracked = untracked_files or set()
@@ -216,6 +217,7 @@ class ImpactAnalyzer:
                         "name": hit["name"],
                         "reason": f"direct edge to {hit['code_name']} ({hit['edge_type']})",
                         "score": new_score,
+                        "source": "direct",
                     }
 
         query_min = self.storage.get_co_change_query_min()
@@ -237,6 +239,7 @@ class ImpactAnalyzer:
                                 f" ({cc['co_commit_count']} commits)"
                             ),
                             "score": new_score,
+                            "source": "co_change",
                         }
 
         # Transitive hits via static import graph (facade / barrel patterns)
@@ -262,6 +265,7 @@ class ImpactAnalyzer:
                             "name": hit["name"],
                             "reason": reason,
                             "score": new_score,
+                            "source": "import_graph",
                         }
 
         result = list(impacted.values())
@@ -414,7 +418,7 @@ class ImpactAnalyzer:
                 return all known test files ranked by stem-match relevance.
 
         Returns:
-            List of dicts: {test_id, file_path, name, relevance, reason}
+            List of dicts: {test_id, file_path, name, relevance, reason, source}
         """
         impacted = self.get_impacted_tests([file_path])
 
@@ -437,6 +441,7 @@ class ImpactAnalyzer:
                 "name": item["name"],
                 "relevance": relevance,
                 "reason": item["reason"],
+                "source": item.get("source", "direct"),
             })
 
         result.sort(key=lambda x: x["relevance"], reverse=True)
@@ -471,6 +476,7 @@ class ImpactAnalyzer:
                     "name": name,
                     "relevance": score,
                     "reason": "fallback: stem-matched test file",
+                    "source": "fallback",
                 })
 
         scored.sort(key=lambda x: x["relevance"], reverse=True)
@@ -564,7 +570,6 @@ class ImpactAnalyzer:
         co_changes_batch = self.storage.get_co_changes_batch(files, min_count=query_min)
         branch_cc_batch = self.storage.get_branch_co_changes_batch(files, min_count=1)
         import_neighbors_batch = self.storage.get_import_neighbors_batch(files)
-        cycles = _find_circular_dependencies(set(files), import_neighbors_batch)
         code_units_batch = self.storage.get_code_units_by_files_batch(files)
 
         all_code_ids = [

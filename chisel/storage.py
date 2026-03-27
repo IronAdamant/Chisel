@@ -190,6 +190,17 @@ class Storage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_file_locks_agent
                     ON file_locks(agent_id);
+
+                CREATE TABLE IF NOT EXISTS bg_jobs (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    result_json TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_bg_jobs_status ON bg_jobs(status);
             """)
 
     # --- Query helpers ---
@@ -724,6 +735,32 @@ class Storage:
                ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
             (key, str(value)),
         )
+
+    # --- bg_jobs (in-process background analyze/update; stdlib threading only) ---
+
+    def insert_bg_job(self, job_id, kind, status="running"):
+        """Insert a new background job row."""
+        now = self._now()
+        self._execute(
+            """INSERT INTO bg_jobs (id, kind, status, result_json, error_message,
+                                    created_at, updated_at)
+               VALUES (?, ?, ?, NULL, NULL, ?, ?)""",
+            (job_id, kind, status, now, now),
+        )
+
+    def update_bg_job(self, job_id, status, result_json=None, error_message=None):
+        """Update job status and optional result or error."""
+        self._execute(
+            """UPDATE bg_jobs SET status = ?, result_json = ?, error_message = ?,
+                                  updated_at = ?
+               WHERE id = ?""",
+            (status, result_json, error_message, self._now(), job_id),
+        )
+
+    def get_bg_job(self, job_id):
+        """Return job row as dict, or None if missing."""
+        row = self._fetchone("SELECT * FROM bg_jobs WHERE id = ?", (job_id,))
+        return dict(row) if row else None
 
     # --- file_locks ---
 

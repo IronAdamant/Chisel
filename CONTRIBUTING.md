@@ -94,6 +94,13 @@ To add a new tool, wire it through these layers:
 
 Keep **multi-agent safety** in mind: long-running writes (`analyze`, `update`) must stay under the process exclusive lock; readers should not block writers longer than necessary.
 
+### Release checklist
+
+1. Bump **`pyproject.toml`** `[project].version` and **`chisel/__init__.py`** `__version__` together (CI runs `python scripts/check_version.py`).
+2. Add a **`CHANGELOG.md`** section for the release.
+3. Tag **`vX.Y.Z`** and push — PyPI publishes via `.github/workflows/publish.yml` (trusted publishing).
+4. Create a **GitHub Release** with notes from the changelog.
+
 ### Adding a Custom Extractor
 
 Users can register custom AST extractors (e.g., tree-sitter-backed) without modifying Chisel:
@@ -109,6 +116,8 @@ register_extractor("python", my_python_extractor)
 ```
 
 Custom extractors override the built-in regex ones for the registered language.
+
+See **`docs/CUSTOM_EXTRACTORS.md`** for **`CHISEL_BOOTSTRAP`** and third-party parsers (tree-sitter, etc.) in **user** environments — Chisel stays stdlib-only.
 
 ## Commit Messages
 

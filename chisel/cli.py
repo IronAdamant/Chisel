@@ -146,6 +146,26 @@ def create_parser():
     sub.add_parser("stats", parents=[shared],
                    help="Show database summary counts")
 
+    # start-job (background analyze/update — same as MCP start_job)
+    p_sjob = sub.add_parser("start-job", parents=[shared],
+                            help="Run analyze or update in a background thread")
+    p_sjob.add_argument(
+        "kind", choices=["analyze", "update"],
+        help="analyze or update",
+    )
+    p_sjob.add_argument(
+        "directory", nargs="?", default=None,
+        help="Subdirectory to analyze (analyze only)",
+    )
+    p_sjob.add_argument(
+        "--force", action="store_true",
+        help="Force full re-analysis (analyze only)",
+    )
+
+    p_jstat = sub.add_parser("job-status", parents=[shared],
+                             help="Poll a background job from start-job")
+    p_jstat.add_argument("job_id", help="Job id returned by start-job")
+
     # triage
     p_triage = sub.add_parser("triage", parents=[shared],
                                help="Combined risk + gap + stale triage")
@@ -468,6 +488,19 @@ def cmd_stats(args):
                      _fmt_kv("Chisel database stats:"), use_limit=False)
 
 
+def cmd_start_job(args):
+    kwargs = {"kind": args.kind, "force": args.force}
+    if args.kind == "analyze":
+        kwargs["directory"] = args.directory
+    return _run_tool(args, "tool_start_job", kwargs,
+                     _fmt_kv("Background job:"), use_limit=False)
+
+
+def cmd_job_status(args):
+    return _run_tool(args, "tool_job_status", {"job_id": args.job_id},
+                     _fmt_kv("Job status:"), use_limit=False)
+
+
 # --- file_locks ---
 
 def cmd_acquire_lock(args):
@@ -600,6 +633,8 @@ _COMMANDS = {
     "record-result": cmd_record_result,
     "triage": cmd_triage,
     "stats": cmd_stats,
+    "start-job": cmd_start_job,
+    "job-status": cmd_job_status,
     "serve": cmd_serve,
     "serve-mcp": cmd_serve_mcp,
     # --- file_locks ---
