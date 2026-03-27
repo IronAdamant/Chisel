@@ -225,7 +225,7 @@ def _limit(result, args):
 def _is_no_data(result):
     """Check if *result* is a status response (no-data, no-changes, etc.)."""
     return isinstance(result, dict) and result.get("status") in (
-        "no_data", "no_changes", "no_edges",
+        "no_data", "no_changes", "no_edges", "git_error",
     )
 
 
@@ -239,6 +239,10 @@ def _run_tool(args, method, kwargs, formatter, use_limit=True):
             _print_json(result)
         elif _is_no_data(result):
             print(result["message"])
+            if result.get("hint"):
+                print(result["hint"])
+            if result.get("project_dir"):
+                print(f"Project directory: {result['project_dir']}")
         else:
             formatter(result, args)
         return result

@@ -1,10 +1,16 @@
 # Chisel
 
-Test impact analysis and code intelligence for LLM agents.
+Test impact analysis and code intelligence **built for LLM agents** — especially when **several agents or sessions** touch the same repo (solo developer, multi-agent workflow).
 
-Chisel maps tests to code, code to git history, and answers: **"what to run, what's risky, who touched it."**
+Chisel maps tests to code, code to git history, and answers: **what to run, what’s risky, and where attention should go** — including blame-based lineage when you need audit context (not “team roster” features).
 
 ![Chisel analyzing a real project — risk map, churn, ownership, test gaps, and agent interpretation](docs/chisel-demo.png)
+
+## Who this is for
+
+- **Solo developers** using Cursor, Claude Code, or other MCP clients — not a substitute for human code review queues.
+- **Multi-agent usage**: parallel agent runs, background tasks, or sequential sessions that share one project. Chisel keeps **one consistent graph** (project-local `.chisel/` storage, cross-process locks) so agents don’t corrupt analysis mid-write.
+- **Primary interface**: MCP tools and structured responses (`next_steps`, diagnostic statuses), not dashboards for managers.
 
 ## The Problem
 
@@ -12,7 +18,7 @@ An LLM agent changes `engine.py:store_document()`. It then either:
 - Runs **all** 287 tests (slow, wasteful), or
 - Guesses with `-k "test_store"` (misses regressions)
 
-When multiple agents (or agents + humans) work on the same codebase, changes in one area silently break another. Chisel gives agents the intelligence to understand the blast radius of their changes before they commit.
+When **multiple agent runs** (or agents plus you) work on the same codebase, changes in one area can break another. Chisel gives each agent **test impact, import-aware suggestions, and risk signals** so they narrow what to run and where regressions may hide — before you merge or ship.
 
 ## Install
 
@@ -51,7 +57,7 @@ Or run the HTTP server for any MCP-compatible client:
 chisel serve --port 8377
 ```
 
-Once connected, Claude Code can use all 15 tools directly — `analyze`, `diff_impact`, `suggest_tests`, `risk_map`, and more. Run `analyze` first to build the project graph, then `diff_impact` before each commit to know exactly which tests to run.
+Once connected, agents can call the full tool surface — `analyze`, `diff_impact`, `suggest_tests`, `risk_map`, `triage`, and more. Run `analyze` first to build the project graph, then `diff_impact` after edits to narrow which tests to run. For long analyses on large repos, prefer `chisel analyze` / `chisel update` in a terminal so MCP clients don’t time out.
 
 ## Use with Cursor / Other MCP Clients
 
@@ -109,7 +115,9 @@ chisel test-gaps
 chisel stats
 ```
 
-## 15 Tools
+## MCP tools (core)
+
+Core query and write tools below; the MCP server also exposes **advisory file-lock** helpers for multi-process coordination. See `schemas.py` / `chisel serve` for the full list.
 
 | Tool | What it does |
 |------|-------------|
@@ -117,17 +125,18 @@ chisel stats
 | `update` | Incremental re-analysis of changed files only |
 | `impact` | Which tests cover these files/functions? |
 | `diff_impact` | Auto-detect changes from `git diff`, return impacted tests |
-| `suggest_tests` | Rank tests by relevance + historical failure rate |
+| `suggest_tests` | Rank tests by relevance (edges, co-change, import graph) + failure rate |
 | `churn` | How often does this file/function change? |
-| `ownership` | Who wrote this code? (blame-based) |
-| `who_reviews` | Who maintains this code? (commit-activity-based) |
-| `coupling` | What files always change together? |
+| `ownership` | Blame-based authors (useful for audit / “who wrote this line”) |
+| `who_reviews` | Recent commit activity on the file (heuristic “hot spots”, not org chart) |
+| `coupling` | Co-change partners + **import-graph** neighbors and numeric scores |
 | `risk_map` | Risk scores for all files (churn + coupling + coverage gaps) |
 | `stale_tests` | Tests pointing at code that no longer exists |
 | `test_gaps` | Code units with zero test coverage, sorted by risk |
 | `history` | Commit history for a specific file |
 | `record_result` | Record test pass/fail for future prioritization |
 | `stats` | Database summary counts |
+| `triage` | Composite: top risk + gaps + stale tests in one call |
 
 ## Features
 
@@ -142,19 +151,19 @@ chisel stats
 
 ## Ecosystem
 
-Chisel works standalone or alongside [Stele](https://github.com/IronAdamant/Stele) for multi-agent code coordination. Chisel handles test intelligence; Stele handles document-level context and conflict prevention.
+Chisel is designed to sit **in the agent loop** (MCP): impact → tests → record results → refresh analysis. It works standalone or alongside tools like [Stele](https://github.com/IronAdamant/Stele) for semantic code context — Chisel stays focused on **test graph, git signals, and static imports** for blast-radius reasoning.
 
 ## Design Notes
 
 ### Coupling: co-change vs. import-graph
 
-Chisel's `coupling` tool has two coupling sources:
+Chisel's `coupling` tool exposes two coupling sources:
 
-1. **Co-change coupling** (`co_change_partners`) — files that frequently appear in the same git commits. This signal requires **multiple agents or multiple human collaborators** making separate commits. In solo-agent workflows, there is no co-change signal and this returns 0.0.
+1. **Co-change coupling** (`co_change_partners`) — files that often appear in the same git commits. Stronger when **history has many small commits** (including a solo dev committing often, or multiple agents landing separate commits). Sparse history → thin co-change signal.
 
-2. **Import-graph coupling** (`import_partners`) — static `import`/`require` edges between source files. This works in any project and provides structural coupling data even when co-change is absent.
+2. **Import-graph coupling** (`import_partners`, plus numeric `import_coupling` / `effective_coupling`) — static `import`/`require` edges. **Always available** after analysis and is the main structural signal for single-author repos.
 
-When co-change is 0.0, import coupling still provides meaningful structural data. The `risk_map` tool uses the maximum of the two coupling sources.
+`risk_map` and impact tools combine both; import graph also powers **transitive test suggestions** (e.g. facade tests covering inner modules).
 
 ### Coverage Gap: Graduated Scoring
 

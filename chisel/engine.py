@@ -12,7 +12,11 @@ from chisel.ast_utils import (
 )
 from chisel.git_analyzer import GitAnalyzer
 from chisel.import_graph import build_import_edges
-from chisel.impact import ImpactAnalyzer
+from chisel.impact import (
+    _COCHANGE_COUPLING_CAP,
+    _IMPORT_COUPLING_CAP,
+    ImpactAnalyzer,
+)
 from chisel.metrics import compute_churn, compute_co_changes, coupling_threshold as _coupling_threshold
 from chisel.project import ProcessLock, detect_project_root, normalize_path, resolve_storage_dir
 from chisel.risk_meta import apply_risk_reweighting, build_risk_meta
@@ -51,6 +55,20 @@ _NO_DATA_RESPONSE = {
     "message": "No analysis data. Run 'chisel analyze' on this project first.",
     "hint": "chisel analyze",
 }
+
+
+def _git_tool_error(project_dir, message):
+    """Structured failure when git subprocess fails (wrong cwd, not a repo, etc.)."""
+    return {
+        "status": "git_error",
+        "message": message,
+        "project_dir": project_dir,
+        "hint": (
+            "Use the repository root as the project directory: "
+            "`chisel ... --project-dir /path/to/repo` or start the MCP server "
+            "with cwd set to the git checkout."
+        ),
+    }
 
 
 class ChiselEngine:
@@ -261,9 +279,24 @@ class ChiselEngine:
                 effective = max(min_count, query_min)
                 co_change_partners = self.storage.get_co_changes(file_path, min_count=effective)
                 import_neighbors = self.storage.get_import_neighbors_batch([file_path]).get(file_path, [])
+                co_len = len(co_change_partners)
+                imp_len = len(import_neighbors)
+                co_norm = min(co_len / float(_COCHANGE_COUPLING_CAP), 1.0)
+                import_norm = min(imp_len / float(_IMPORT_COUPLING_CAP), 1.0)
+                if co_norm > 0:
+                    effective_coupling = max(
+                        co_norm, co_norm + 0.25 * import_norm,
+                    )
+                else:
+                    effective_coupling = import_norm
                 return {
                     "co_change_partners": co_change_partners,
                     "import_partners": [{"file": path} for path in import_neighbors],
+                    "co_change_breadth": co_len,
+                    "import_breadth": imp_len,
+                    "cochange_coupling": round(co_norm, 4),
+                    "import_coupling": round(import_norm, 4),
+                    "effective_coupling": round(effective_coupling, 4),
                 }
 
     def tool_risk_map(self, directory=None, exclude_tests=True,
@@ -376,8 +409,11 @@ class ChiselEngine:
                     return empty
         if ref is None:
             ref = self._detect_diff_base()
-        diff_files = self.git.get_changed_files(ref)
-        untracked_raw = self.git.get_untracked_files()
+        try:
+            diff_files = self.git.get_changed_files(ref)
+            untracked_raw = self.git.get_untracked_files()
+        except RuntimeError as exc:
+            return _git_tool_error(self.project_dir, str(exc))
         untracked_code = {
             p for p in untracked_raw
             if path_has_code_extension(p)

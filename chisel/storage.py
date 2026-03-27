@@ -462,6 +462,22 @@ class Storage:
                     result[b].add(a)
         return {fp: sorted(neighbors) for fp, neighbors in result.items()}
 
+    def get_importers(self, imported_file):
+        """Return files that statically import *imported_file* (reverse edges)."""
+        rows = self._fetchall(
+            "SELECT DISTINCT importer_file FROM import_edges WHERE imported_file = ?",
+            (imported_file,),
+        )
+        return [r["importer_file"] for r in rows]
+
+    def get_imported_files(self, importer_file):
+        """Return files that *importer_file* imports (forward edges)."""
+        rows = self._fetchall(
+            "SELECT DISTINCT imported_file FROM import_edges WHERE importer_file = ?",
+            (importer_file,),
+        )
+        return [r["imported_file"] for r in rows]
+
     # --- branch_co_changes (merge-base..HEAD only, rebuilt each analyze) ---
 
     def clear_branch_co_changes(self):

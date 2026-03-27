@@ -102,6 +102,16 @@ def _hints_risk_map(result):
 
 
 def _hints_diff_impact(result):
+    if isinstance(result, dict) and result.get("status") == "git_error":
+        return [
+            {
+                "action": "fix_git_context",
+                "reason": (
+                    "Point Chisel at the git repository root (--project-dir) or run "
+                    "from that directory so git diff can run."
+                ),
+            },
+        ]
     # Diagnostic dict when no changes detected
     if isinstance(result, dict) and result.get("status") == "no_changes":
         return [

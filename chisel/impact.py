@@ -16,6 +16,11 @@ _PROXIMITY_CAP_HOPS = 5
 
 _QUANTIZE_STEPS = 10
 
+# Static import-graph test impact: multiplier and hop decay (see get_impacted_tests).
+_IMPORT_GRAPH_TEST_WEIGHT = 0.45
+_IMPORT_HOP_DECAY = 0.88
+_MAX_IMPORT_CLOSURE_HOPS = 32
+
 
 def _quantize_gap(value, steps=4):
     """Quantize coverage_gap to fixed steps for graduated risk levels."""
@@ -147,6 +152,31 @@ class ImpactAnalyzer:
     def __init__(self, storage):
         self.storage = storage
 
+    def _import_graph_undirected_neighbors(self, file_path):
+        """One-hop neighbors on the static import graph (both directions)."""
+        im = self.storage.get_importers(file_path)
+        out = self.storage.get_imported_files(file_path)
+        return set(im) | set(out)
+
+    def _import_static_closure(self, start):
+        """Shortest-hop distances from *start* over undirected import edges.
+
+        Used to find tests that cover modules reachable from *start* via
+        imports (e.g. inner module only exercised through a facade test).
+        """
+        visited = {start: 0}
+        q = deque([start])
+        while q:
+            u = q.popleft()
+            du = visited[u]
+            if du >= _MAX_IMPORT_CLOSURE_HOPS:
+                continue
+            for v in self._import_graph_undirected_neighbors(u):
+                if v not in visited:
+                    visited[v] = du + 1
+                    q.append(v)
+        return visited
+
     # ------------------------------------------------------------------ #
     # Impacted tests
     # ------------------------------------------------------------------ #
@@ -155,7 +185,8 @@ class ImpactAnalyzer:
                            untracked_files=None):
         """Find tests affected by the given file/function changes.
 
-        Uses both direct test edges and transitive co-change coupling.
+        Uses direct test edges, transitive co-change coupling, and static
+        import-graph reachability (tests that cover modules connected via imports).
 
         Args:
             changed_files: List of changed file paths.
@@ -205,6 +236,31 @@ class ImpactAnalyzer:
                                 f"co-change coupling: {file_path} <-> {coupled_file}"
                                 f" ({cc['co_commit_count']} commits)"
                             ),
+                            "score": new_score,
+                        }
+
+        # Transitive hits via static import graph (facade / barrel patterns)
+        for file_path in changed_files:
+            if file_path in untracked:
+                continue
+            closure = self._import_static_closure(file_path)
+            for other, hops in closure.items():
+                if other == file_path:
+                    continue
+                hits = self.storage.get_direct_impacted_tests(other, None)
+                decay = _IMPORT_HOP_DECAY ** hops
+                for hit in hits:
+                    new_score = hit["weight"] * _IMPORT_GRAPH_TEST_WEIGHT * decay
+                    reason = (
+                        f"import graph: tests cover {other} "
+                        f"({hops} hop{'s' if hops != 1 else ''} from {file_path})"
+                    )
+                    if hit["test_id"] not in impacted or new_score > impacted[hit["test_id"]]["score"]:
+                        impacted[hit["test_id"]] = {
+                            "test_id": hit["test_id"],
+                            "file_path": hit["file_path"],
+                            "name": hit["name"],
+                            "reason": reason,
                             "score": new_score,
                         }
 
@@ -293,6 +349,7 @@ class ImpactAnalyzer:
         else:
             coverage = tested_count / max(len(code_units), 1)
         coverage_gap = _quantize_gap(1.0 - coverage)
+        coverage_fraction = round(coverage, 4)
 
         # Multi-dimensional coverage signals
         total_edges = sum(edge_type_counts.values())
@@ -334,6 +391,7 @@ class ImpactAnalyzer:
                 "cochange_global": round(cochange_global_norm, 4),
                 "cochange_branch": round(cochange_branch_norm, 4),
                 "coverage_gap": round(coverage_gap, 4),
+                "coverage_fraction": coverage_fraction,
                 "coverage_depth": coverage_depth,
                 "edge_type_quality": edge_type_quality,
                 "author_concentration": round(author_conc, 4),
@@ -348,7 +406,8 @@ class ImpactAnalyzer:
     def suggest_tests(self, file_path, fallback_to_all=False):
         """Suggest tests to run for a changed file, ordered by relevance.
 
-        Uses recorded test results to boost tests with higher failure rates.
+        Uses ``get_impacted_tests`` (direct edges, co-change, import graph) and
+        boosts by recorded test failure rates.
 
         Args:
             fallback_to_all: If True and no test edges exist for this file,
@@ -604,6 +663,7 @@ class ImpactAnalyzer:
             else:
                 coverage = tested_count / max(len(code_units), 1)
             coverage_gap = _quantize_gap(1.0 - coverage)
+            coverage_fraction = round(coverage, 4)
 
             # Multi-dimensional coverage signals
             total_edges = sum(edge_type_counts.values())
@@ -645,6 +705,7 @@ class ImpactAnalyzer:
                     "cochange_global": round(cochange_global_norm, 4),
                     "cochange_branch": round(cochange_branch_norm, 4),
                     "coverage_gap": round(coverage_gap, 4),
+                    "coverage_fraction": coverage_fraction,
                     "coverage_depth": coverage_depth,
                     "edge_type_quality": edge_type_quality,
                     "author_concentration": round(author_conc, 4),

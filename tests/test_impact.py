@@ -87,6 +87,21 @@ class TestGetImpactedTests:
         result = analyzer.get_impacted_tests(["nonexistent.py"])
         assert result == []
 
+    def test_transitive_via_import_graph(self, storage, analyzer):
+        """Inner file has no test edges; facade imports it and has tests."""
+        storage.upsert_code_unit("deep.py:core:func", "deep.py", "core", "func", 1, 5)
+        storage.upsert_code_unit("facade.py:run:func", "facade.py", "run", "func", 1, 10)
+        storage.upsert_test_unit("test_facade.py:test_e2e", "test_facade.py", "test_e2e", "pytest")
+        storage.upsert_test_edge(
+            "test_facade.py:test_e2e", "facade.py:run:func", "import", 1.0,
+        )
+        storage.upsert_import_edge("facade.py", "deep.py")
+
+        result = analyzer.get_impacted_tests(["deep.py"])
+        ids = [r["test_id"] for r in result]
+        assert "test_facade.py:test_e2e" in ids
+        assert any("import graph" in r["reason"] for r in result)
+
     def test_sorted_by_score(self, storage, analyzer):
         _seed_basic_data(storage)
         result = analyzer.get_impacted_tests(["app.py"])
@@ -112,6 +127,7 @@ class TestRiskScore:
         assert "cochange_global" in bd
         assert "cochange_branch" in bd
         assert "coverage_gap" in bd
+        assert "coverage_fraction" in bd
         assert "coverage_depth" in bd
         assert "edge_type_quality" in bd
         assert "author_concentration" in bd

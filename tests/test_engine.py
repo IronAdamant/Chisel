@@ -130,6 +130,9 @@ class TestToolMethods:
         assert isinstance(result, dict)
         assert "co_change_partners" in result
         assert "import_partners" in result
+        assert "import_coupling" in result
+        assert "effective_coupling" in result
+        assert "import_breadth" in result
 
     def test_tool_risk_map(self, engine):
         engine.analyze()
@@ -212,6 +215,19 @@ class TestToolMethods:
         assert result["status"] == "no_changes"
         assert "ref" in result
         assert "message" in result
+
+    def test_tool_diff_impact_git_error_when_not_git_repo(self, tmp_path):
+        proj = tmp_path / "nogit"
+        proj.mkdir()
+        (proj / "app.py").write_text("def x():\n    pass\n")
+        storage_dir = tmp_path / "chisel_st"
+        with ChiselEngine(str(proj), storage_dir=storage_dir) as engine:
+            engine.analyze(force=True)
+            result = engine.tool_diff_impact()
+        assert isinstance(result, dict)
+        assert result["status"] == "git_error"
+        assert "project_dir" in result
+        assert "git" in result["message"].lower() or "failed" in result["message"].lower()
 
     def test_tool_diff_impact_with_changes(self, engine, git_project):
         engine.analyze()

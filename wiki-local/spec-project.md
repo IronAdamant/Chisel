@@ -2,27 +2,29 @@
 
 ## Overview
 
-Chisel is a test impact analysis and code intelligence tool designed for LLM agents. It maps tests to code, code to git history, and answers: "what to run, what's risky, who touched it."
+Chisel is a test impact analysis and code intelligence tool **for LLM agents**, aimed at **solo-maintained** repositories where **multiple agent sessions or processes** may run analysis and queries concurrently. It maps tests to code, code to git history and static imports, and answers: **what to run, what is risky, where coverage is thin**, and **git/blame context** when debugging — not org-chart or team-assignment workflows.
 
 ## Goals
 
-1. **Targeted test selection**: Given a set of changed files or functions, identify the minimal set of tests that need to run to catch regressions.
-2. **Risk visibility**: Surface which files are high-risk based on churn, coupling breadth, test coverage gaps, and author concentration.
-3. **Ownership and review intelligence**: Identify who wrote the code (blame-based ownership) and who is best positioned to review changes (commit-activity-based).
-4. **Change coupling detection**: Identify files that frequently change together, revealing hidden architectural dependencies.
-5. **Stale test detection**: Find tests that reference code units that no longer exist.
-6. **Zero dependencies**: Run anywhere Python 3.11+ is available with no pip installs beyond Chisel itself.
-7. **LLM agent integration**: Expose all capabilities as MCP tools via HTTP and stdio servers.
+1. **Targeted test selection**: Given changed files or functions, identify tests that should run to catch regressions — using direct test edges, git co-change (when history supports it), and **static import-graph reachability** (e.g. inner modules exercised only via a facade test).
+2. **Risk visibility**: Surface high-risk files using churn, coupling (co-change and/or **import graph**), graduated coverage gaps, author concentration, and test instability.
+3. **Git-derived lineage (not team routing)**: `ownership` (blame) and `who_reviews` (recent commit activity) expose **audit and heuristic “hot spot” signals** for agents; they do not assign human reviewers in a solo workflow.
+4. **Change coupling detection**: Co-change pairs from git history **plus** import neighbors from static `import`/`require` edges (`coupling` returns both lists and numeric scores).
+5. **Stale test detection**: Find tests whose edges point at code units that no longer exist.
+6. **Zero dependencies**: Run anywhere Python 3.11+ is available with no pip installs beyond Chisel itself (stdlib only for core).
+7. **LLM agent integration**: Expose capabilities as **MCP tools** (HTTP and stdio), with structured **`next_steps`** hints on responses where applicable.
 8. **Incremental analysis**: Track file content hashes and only re-process changed files.
+9. **Multi-process safety**: One project-local database (`.chisel/`) coordinated with **ProcessLock** + SQLite WAL so concurrent agents and CLI runs do not corrupt storage.
 
 ## Non-Goals
 
 - **Test execution**: Chisel does not run tests. It tells you which tests to run.
-- **Full static analysis**: Chisel uses lightweight AST extraction, not a type checker or full semantic analysis engine. Cross-file resolution depends on name matching, not type inference.
+- **Full static analysis**: Chisel uses lightweight AST extraction, not a type checker or full semantic analysis engine. Cross-file resolution depends on name matching and import paths, not type inference.
 - **Language Server Protocol**: Chisel is not an LSP server. It provides batch analysis and MCP tool access.
 - **Real-time file watching**: Chisel does not watch the filesystem for changes. Analysis is triggered explicitly via `chisel analyze` or the MCP `analyze` tool.
 - **Multi-repo support**: Each Chisel instance operates on a single git repository.
 - **Full branch comparison**: While `diff_impact` is branch-aware (auto-detects feature branch vs main for diffs), Chisel does not maintain separate analysis databases per branch.
+- **Organizational reviewer assignment**: No integration with IDEs or HR systems for “who must review” — `who_reviews` is a heuristic from git activity only.
 
 ## Supported Languages
 
@@ -59,7 +61,7 @@ Chisel is a test impact analysis and code intelligence tool designed for LLM age
 
 ## MCP Tool Specifications
 
-All 15 tools are accessible through three interfaces: CLI subcommands, HTTP POST /call, and stdio MCP. Each tool maps to an `engine.tool_*()` method.
+**22 tools** are defined in `schemas.py`: **16 core** query/write tools plus **6 advisory file-lock** tools for multi-agent coordination. They are reachable via CLI (where exposed), HTTP `POST /call`, and stdio MCP. Each maps to an `engine.tool_*()` method.
 
 ### analyze
 
@@ -71,13 +73,13 @@ All 15 tools are accessible through three interfaces: CLI subcommands, HTTP POST
 
 - **Input**: `files` (required array of strings), `functions` (optional array of strings)
 - **Output**: List of dicts: `{test_id, file_path, name, reason, score}`
-- **Behavior**: Finds tests affected by the given changes. Uses direct test edges (test imports/calls the changed code) and transitive co-change coupling (files that frequently change together). Transitive hits are scored at 0.5x weight. Results sorted by score descending.
+- **Behavior**: Finds tests affected by the given changes. Uses (1) **direct** test edges, (2) **co-change** coupling to other files and their tests (0.5x weight), (3) **import-graph** reachability: tests covering any file in the undirected import closure around each changed file (decayed weight by hop distance). Results sorted by score descending.
 
 ### suggest_tests
 
-- **Input**: `file_path` (required string), `diff` (optional string, reserved for future use)
+- **Input**: `file_path` (required string), `fallback_to_all` (optional boolean), `working_tree` (optional boolean)
 - **Output**: List of dicts: `{test_id, file_path, name, relevance, reason}`
-- **Behavior**: Wrapper around `impact` for a single file. Returns tests ordered by relevance.
+- **Behavior**: Uses the same impact pipeline as `impact` for a single file, then adjusts relevance with recorded test failure rates. If `fallback_to_all` and no edges match, returns stem-ranked test files. If `working_tree`, attempts stem-matching for uncommitted files with no DB edges.
 
 ### churn
 
@@ -95,14 +97,14 @@ All 15 tools are accessible through three interfaces: CLI subcommands, HTTP POST
 ### coupling
 
 - **Input**: `file_path` (required string), `min_count` (optional integer, default 3)
-- **Output**: List of dicts: `{file_a, file_b, co_commit_count, last_co_commit}`
-- **Behavior**: Returns files that frequently appear in the same commits as the given file. Pairs are sorted by co-commit count descending. Only pairs meeting the minimum threshold are returned.
+- **Output**: Dict with `co_change_partners` (rows from storage), `import_partners` (list of `{"file": "<path>"}`), `co_change_breadth`, `import_breadth`, `cochange_coupling`, `import_coupling`, `effective_coupling` (numeric 0–1 signals for agents when co-change is empty in solo/low-commit repos).
+- **Behavior**: Returns git co-change pairs meeting the adaptive threshold **and** static import neighbors (either direction). Risk scoring elsewhere combines both; import coupling is first-class when co-change is sparse.
 
 ### risk_map
 
-- **Input**: `directory` (optional string)
-- **Output**: List of dicts: `{file_path, unit_name, risk_score, breakdown}`
-- **Behavior**: Computes risk scores for all tracked files, optionally scoped to a directory. Sorted by risk score descending.
+- **Input**: `directory`, `exclude_tests`, `proximity_adjustment`, `coverage_mode` (`unit` | `line`) — see `schemas.py`
+- **Output**: Dict: `{files: [...], _meta: {...}}` per file includes `breakdown` with `coverage_fraction` (partial coverage) and quantized `coverage_gap`, plus optional `coupling_partners` / `import_partners` inline.
+- **Behavior**: Batch-computed risk scores; `_meta` documents uniform components and coupling thresholds. Sorted by risk score descending within `files`.
 - **Risk formula**: `0.35 * churn + 0.25 * coupling_breadth + 0.2 * (1 - test_coverage) + 0.1 * author_concentration + 0.1 * test_instability`
   - Churn: normalized to 0-1 (5.0 raw score = 1.0)
   - Coupling breadth: normalized to 0-1 (10+ coupled files = 1.0)
@@ -131,8 +133,8 @@ All 15 tools are accessible through three interfaces: CLI subcommands, HTTP POST
 ### diff_impact
 
 - **Input**: `ref` (optional string)
-- **Output**: List of dicts: `{test_id, file_path, name, reason, score}`
-- **Behavior**: Auto-detects changed files and functions from `git diff` and returns impacted tests. Branch-aware: on a feature branch diffs against main/master; on main diffs against HEAD (unstaged changes). Optionally accepts a custom git ref to diff against.
+- **Output**: List of impacted tests **or** a diagnostic dict: `no_changes` (no diff / no untracked code), **`git_error`** (git missing, wrong cwd, not a repo — includes `message`, `project_dir`, `hint`; never a silent empty list).
+- **Behavior**: Merges `git diff --name-only` with untracked code files, then runs the same impact logic as `impact` (including import-graph transitive tests). Branch-aware unless `ref` is supplied.
 
 ### update
 
@@ -155,8 +157,18 @@ All 15 tools are accessible through three interfaces: CLI subcommands, HTTP POST
 ### stats
 
 - **Input**: None
-- **Output**: Dict: `{code_units, test_units, test_edges, commits, commit_files, blame_cache, co_changes, churn_stats, file_hashes, test_results}`
-- **Behavior**: Returns summary counts for all 10 database tables in a single query.
+- **Output**: Dict of per-table counts and diagnostic fields (e.g. `coupling_threshold`, `co_change_query_min`).
+- **Behavior**: Returns summary counts for persisted tables (including import edges and related metadata) in a single query.
+
+### triage
+
+- **Input**: `directory`, `top_n`, `exclude_tests` (see `schemas.py`)
+- **Output**: Dict combining top-risk files, filtered `test_gaps`, `stale_tests`, and a `summary` (edge counts, thresholds).
+- **Behavior**: Single read-locked call for agent reconnaissance before refactors.
+
+### Advisory file locks (`acquire_file_lock`, `release_file_lock`, `refresh_file_lock`, `check_file_lock`, `check_locks`, `list_file_locks`)
+
+- **Purpose**: Optional coordination so multiple agents can discover conflicts before editing the same path. Advisory only — not OS-enforced locks on file content.
 
 ## Test Edge Weighting
 
@@ -175,7 +187,7 @@ This reduces false positive edges in projects where multiple modules export iden
 - Default: `http://127.0.0.1:8377`
 - `GET /tools` -- returns JSON array of tool schemas
 - `GET /health` -- returns `{"status": "ok"}`
-- `POST /call` -- body: `{"tool": "<name>", "arguments": {<kwargs>}}`, returns `{"result": <data>}`
+- `POST /call` -- body: `{"tool": "<name>", "arguments": {<kwargs>}}`, returns `{"result": <data>, "next_steps": [...]}` (structured follow-up hints for agents)
 - Uses `ThreadingMixIn` for concurrent request handling
 
 ### stdio MCP Server (`chisel-mcp` or `chisel serve-mcp`)
@@ -193,18 +205,20 @@ This reduces false positive edges in projects where multiple modules export iden
 | `update` | (none) | Incremental re-analysis of changed files |
 | `impact` | `<files...>`, `--functions` | Show impacted tests |
 | `diff-impact` | `[--ref]` | Auto-detect changes, show impacted tests |
-| `suggest-tests` | `<file>` | Suggest tests to run |
+| `suggest-tests` | `<file>`, `--fallback`, `--working-tree` | Suggest tests to run |
 | `churn` | `<file>`, `--unit` | Show churn statistics |
 | `ownership` | `<file>` | Show blame-based ownership |
-| `who-reviews` | `<file>` | Suggest reviewers |
-| `coupling` | `<file>`, `--min-count` | Show co-change partners |
-| `risk-map` | `[directory]` | Risk score heatmap |
+| `who-reviews` | `<file>` | Recent commit activity (heuristic) |
+| `coupling` | `<file>`, `--min-count` | Co-change + import partners |
+| `risk-map` | `[directory]`, flags for tests/proximity/coverage | Risk score heatmap |
 | `stale-tests` | (none) | Detect stale tests |
-| `test-gaps` | `[file]`, `[--directory]`, `[--no-exclude-tests]` | Find untested code units |
+| `test-gaps` | `[file]`, `[--directory]`, `[--no-exclude-tests]`, `--working-tree` | Find untested code units |
 | `history` | `<file>` | Commit history for a file |
 | `record-result` | `<test_id>`, `--passed`\|`--failed` (required), `[--duration-ms]` | Record test outcome |
 | `stats` | (none) | Database summary counts |
+| `triage` | `[directory]`, `--top-n`, etc. | Combined risk + gaps + stale |
 | `serve` | `--port`, `--host` | Start HTTP MCP server |
 | `serve-mcp` | (none) | Start stdio MCP server |
+| `acquire-lock`, `release-lock`, `refresh-lock`, `check-lock`, `check-locks`, `list-locks` | per subcommand | Advisory multi-agent file locks |
 
-All subcommands accept `--project-dir`, `--storage-dir`, `--json`, and `--limit` flags.
+All subcommands accept `--project-dir`, `--storage-dir`, `--json`, and `--limit` flags (where applicable).

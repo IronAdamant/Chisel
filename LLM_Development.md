@@ -4,6 +4,16 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## 2026-03-27 -- Product re-orientation (agentic + multi-agent solo)
+
+### Summary
+Re-oriented README, CLAUDE.md, ARCHITECTURE.md, and COMPLETE_PROJECT_DOCUMENTATION.md toward **LLM agents** and **solo developers** running **multiple agent sessions** — emphasizing MCP-first usage, multi-process safety (locks, shared storage), and reframing git-derived “ownership” / “reviewer” tools as audit/heuristic signals rather than team workflows. Updated ecosystem and coupling copy to center import-graph and structured tool results.
+
+### Follow-up
+Aligned **`wiki-local/spec-project.md`** (tool specs, 22 tools, import-graph impact, `triage`, locks, `next_steps`, `git_error`) and **`CONTRIBUTING.md`** (agent/solo preamble, architecture table, MCP/tool wiring guidance) to the same positioning.
+
+---
+
 ## v0.6.2 -- 2026-03-22 -- Scale Validation on Grafana (21k files)
 
 ### Summary

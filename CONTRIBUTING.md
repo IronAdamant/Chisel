@@ -1,5 +1,7 @@
 # Contributing to Chisel
 
+Chisel is built for **LLM agents** and **solo developers** running **multiple agent sessions** on one repo. Contributions should preserve: **stdlib-only runtime**, **structured MCP responses** (status dicts, `next_steps` where applicable), **multi-process safety** (locks around storage), and **import-graph + test edges** as primary signals when git co-change is thin.
+
 ## Prerequisites
 
 - Python 3.11 or later
@@ -18,7 +20,7 @@ This installs Chisel in editable mode along with dev dependencies (pytest, pytes
 ## Running Tests
 
 ```bash
-pytest tests/ -v --tb=short     # full suite (567 tests)
+pytest tests/ -v --tb=short     # full suite
 pytest tests/test_engine.py     # single module
 pytest -k "test_risk"           # by name pattern
 ```
@@ -37,25 +39,26 @@ Configuration lives in `pyproject.toml` under `[tool.ruff]`.
 
 ## Architecture Overview
 
-See `CLAUDE.md` for the full module map and dependency graph, and `ARCHITECTURE.md` for detailed design documentation.
+See `CLAUDE.md` for the full module map and dependency graph, `ARCHITECTURE.md` for the data model, and `wiki-local/spec-project.md` for MCP tool contracts.
 
 The core modules are:
 
 | Module | Role |
 |---|---|
-| `engine.py` | Orchestrator; owns all subsystems |
+| `engine.py` | Orchestrator; owns all subsystems; `tool_*()` for MCP |
 | `storage.py` | SQLite persistence (WAL mode, single persistent connection, batch queries) |
 | `ast_utils.py` | Multi-language AST extraction (12 languages) + pluggable extractor registry |
 | `git_analyzer.py` | Git log/blame parsing via subprocess |
 | `metrics.py` | Pure computation: churn scoring, ownership, co-change detection |
 | `test_mapper.py` | Test discovery, framework detection, dependency extraction, edge building |
-| `impact.py` | Impact analysis, risk scoring, stale test detection, reviewer suggestions |
-| `project.py` | Project root detection, path normalization, cross-platform ProcessLock |
-| `schemas.py` | JSON Schema definitions for all 15 tools + dispatch table |
-| `cli.py` | argparse CLI (17 subcommands) |
-| `mcp_server.py` | HTTP MCP server |
+| `impact.py` | Impact analysis (direct + co-change + import-graph tests), risk scoring, stale tests, git-derived ownership/review hints |
+| `project.py` | Project root, path normalization, **ProcessLock** (multi-process / multi-agent) |
+| `schemas.py` | JSON Schema + dispatch for **22 MCP tools** (core + advisory file locks) |
+| `next_steps.py` | Contextual follow-up hints for agent clients |
+| `cli.py` | argparse CLI (core tools + serve + lock subcommands) |
+| `mcp_server.py` | HTTP MCP server (`dispatch_tool`, `next_steps`) |
 | `mcp_stdio.py` | stdio MCP server |
-| `rwlock.py` | Read-write lock for concurrent access |
+| `rwlock.py` | In-process read/write lock (pairs with ProcessLock) |
 
 ## Guidelines
 
@@ -82,12 +85,14 @@ Do not add runtime dependencies.
 
 ### Adding a New MCP Tool
 
-To add a new tool, wire it through four layers:
+To add a new tool, wire it through these layers:
 
-1. **Engine method**: Add `tool_<name>(self, ...)` in `engine.py`. Wrap with `self._process_lock.shared()` + `self.lock.read_lock()` for reads, or `exclusive()` + `write_lock()` for writes.
-2. **Schema + dispatch**: Add the tool schema to `_TOOL_SCHEMAS` and the dispatch entry to `_TOOL_DISPATCH` in `schemas.py`. Both HTTP and stdio servers import these automatically.
-3. **CLI handler**: Add a subcommand in `cli.py` that calls the engine method and formats output.
-4. **Tests**: Add tests in `tests/` — at minimum an engine integration test and a CLI mock test.
+1. **Engine method**: Add `tool_<name>(self, ...)` in `engine.py`. Wrap with `self._process_lock.shared()` + `self.lock.read_lock()` for reads, or `exclusive()` + `write_lock()` for writes. Prefer **explicit statuses** (`no_data`, `git_error`, etc.) over ambiguous empty lists for agents.
+2. **Schema + dispatch**: Add the tool schema to `_TOOL_SCHEMAS` and the dispatch entry to `_TOOL_DISPATCH` in `schemas.py`. Use **prescriptive** descriptions (“Use when…”). Both HTTP and stdio servers import these automatically; HTTP responses include **`next_steps`** — add a handler in `next_steps.py` if the new tool should suggest follow-ups.
+3. **CLI handler**: Add a subcommand in `cli.py` when the tool should be human-invokable from the terminal (optional for agent-only tools).
+4. **Tests**: Add tests in `tests/` — at minimum an engine integration test; add CLI tests if you added a subcommand.
+
+Keep **multi-agent safety** in mind: long-running writes (`analyze`, `update`) must stay under the process exclusive lock; readers should not block writers longer than necessary.
 
 ### Adding a Custom Extractor
 

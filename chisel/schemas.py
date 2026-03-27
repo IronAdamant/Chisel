@@ -15,7 +15,9 @@ _TOOL_SCHEMAS = {
             "Full project analysis. Use on first run or after major structural "
             "changes (new files, renames, deleted code). Scans source files, "
             "extracts code units, discovers tests, parses git history, builds "
-            "test-to-code edges. For incremental changes, use 'update' instead."
+            "test-to-code edges. For incremental changes, use 'update' instead. "
+            "Large repos: run `chisel analyze --force` in a terminal (not only via MCP) "
+            "so long runs are not mistaken for a hung tool."
         ),
         "parameters": {
             "type": "object",
@@ -58,7 +60,13 @@ _TOOL_SCHEMAS = {
     },
     "suggest_tests": {
         "name": "suggest_tests",
-        "description": "Suggest tests to run for a file, ranked by relevance. Use to find existing test coverage for a specific file. Returns empty for untracked/new files unless fallback_to_all or working_tree is set.",
+        "description": (
+            "Suggest tests to run for a file, ranked by relevance. Combines direct "
+            "test edges, git co-change, and static import-graph reachability (e.g. "
+            "facade tests covering inner modules). Use to find tests that may exercise "
+            "a file even without direct edges. Returns empty for untracked/new files "
+            "unless fallback_to_all or working_tree is set."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -120,7 +128,13 @@ _TOOL_SCHEMAS = {
     },
     "coupling": {
         "name": "coupling",
-        "description": "Get files that frequently change together (co-change coupling) or share static import edges (structural coupling). Use when risk_map shows coupling > 0, or before refactoring to find hidden dependencies. Returns both git co-change partners and import neighbors. Threshold scales with project maturity (see 'stats' for current value).",
+        "description": (
+            "Get files that frequently change together (co-change coupling) or share "
+            "static import edges (structural coupling). Returns co_change_partners, "
+            "import_partners, and numeric import_coupling / effective_coupling scores "
+            "(import graph is first-class even when co-change is empty in solo repos). "
+            "Threshold scales with project maturity (see 'stats' for current value)."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -246,8 +260,9 @@ _TOOL_SCHEMAS = {
         "description": (
             "Use after editing code to find which tests to run. Auto-detects "
             "changed files/functions from git diff. On feature branches diffs "
-            "against main; on main diffs HEAD. Returns diagnostic with "
-            "suggestions when no changes detected."
+            "against main; on main diffs HEAD. Returns diagnostic when no changes "
+            "detected. If git fails (wrong cwd, not a repo), returns status=git_error "
+            "with message and project_dir — never silent empty lists."
         ),
         "parameters": {
             "type": "object",
@@ -262,7 +277,12 @@ _TOOL_SCHEMAS = {
     },
     "update": {
         "name": "update",
-        "description": "Incremental re-analysis — only changed files and new commits. Use instead of full 'analyze' after small edits.",
+        "description": (
+            "Incremental re-analysis — only changed files and new commits. Use instead "
+            "of full 'analyze' after small edits. For large repos or slow MCP clients, "
+            "prefer `chisel update` / `chisel analyze` in a terminal so the run cannot "
+            "time out in silence."
+        ),
         "parameters": {
             "type": "object",
             "properties": {},

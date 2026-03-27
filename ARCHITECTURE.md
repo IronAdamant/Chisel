@@ -2,7 +2,9 @@
 
 **Version:** 0.6.3 | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
 
-Test impact analysis and code intelligence for LLM agents. Maps tests to code, code to git history, and answers: "what to run, what's risky, who touched it."
+Test impact analysis and code intelligence **for LLM agents**. The design target is **solo-maintained repos** where **multiple agent sessions or processes** (MCP clients, terminals, CI) may run `analyze` / read tools concurrently — hence **ProcessLock**, **WAL SQLite**, and **normalized paths** as core mechanics, not optional extras.
+
+Questions Chisel answers for agents: **what tests matter for a change**, **where risk concentrates**, **what’s untested or stale**, and **git/blame context** when debugging — not headcount or org workflows.
 
 ## Core Data Model
 
@@ -54,10 +56,10 @@ ChiselEngine (engine.py) — main orchestrator
   │     ├── Ownership aggregation from blame blocks
   │     └── Co-change coupling detection
   ├── ImpactAnalyzer (impact.py)
-  │     ├── Impacted tests (direct + transitive via coupling)
+  │     ├── Impacted tests (direct + co-change + import-graph reachability)
   │     ├── Risk scoring (5-component weighted formula)
   │     ├── Stale test detection (orphaned edge refs)
-  │     └── Reviewer suggestions (commit-activity-based)
+  │     └── Commit-activity hints (who_reviews; heuristic, not team routing)
   ├── AST Utils (ast_utils.py)
   │     ├── Multi-language extraction (12 languages)
   │     ├── Pluggable extractor registry (tree-sitter/LSP hooks)

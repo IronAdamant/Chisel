@@ -138,6 +138,16 @@ class TestDiffImpactHints:
         diff_hint = next(h for h in hints if h.get("tool") == "diff_impact")
         assert diff_hint["args"]["ref"] == "HEAD~1"
 
+    def test_git_error_diagnostic(self):
+        result = {
+            "status": "git_error",
+            "message": "git diff failed",
+            "project_dir": "/tmp/x",
+            "hint": "fix cwd",
+        }
+        hints = compute_next_steps("diff_impact", result)
+        assert any(h.get("action") == "fix_git_context" for h in hints)
+
 
 class TestTestGapsHints:
     def test_with_gaps(self):

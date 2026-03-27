@@ -2,6 +2,14 @@
 
 Test impact analysis and code intelligence for LLM agents. Zero external dependencies.
 
+## Audience (how to read this project)
+
+- **Primary user**: autonomous and semi-autonomous **coding agents** (MCP, CLI invoked by agents), not a stand-alone dashboard for engineering managers.
+- **Typical human**: **solo developer** orchestrating multiple agent sessions, parallel tasks, or long-running analyses — *not* “hand off to another engineer” workflows. Tools like `ownership` / `who_reviews` expose **git-derived context** (blame, commit activity) for debugging and risk heuristics; they are not org-chart features.
+- **Multi-agent safety** (see `project.py`, `ProcessLock`, `RWLock`) exists so **several processes** (agents, terminals, CI) can share one `.chisel/` database without corrupting reads/writes — treat this as a **first-class product requirement**, not an edge case.
+
+When editing behavior or docs, prefer: **structured tool results**, **explicit statuses** (`no_data`, `no_changes`, `git_error`), **import-graph + test edges** over relying on git co-change alone, and **clear hints** when MCP would otherwise time out or mis-resolve `project_dir`.
+
 ## Architecture
 
 ```
@@ -34,9 +42,9 @@ chisel/
 - **Blame caching**: Cached by file content hash, invalidated on change.
 - **Incremental updates**: File content hashes tracked in `file_hashes` table.
 - **Persistent connection**: Storage uses a single SQLite connection (`check_same_thread=False`) with RWLock for thread safety.
-- **Multi-agent safety**: `project.py` provides: (1) `detect_project_root()` canonicalizes via git common dir so worktrees share identity, (2) `normalize_path()` ensures consistent relative paths, (3) `resolve_storage_dir()` defaults to project-local `.chisel/` (priority: explicit > env > project-local > ~/.chisel/), (4) `ProcessLock` for cross-process coordination — shared locks for reads, exclusive for writes. Cross-platform: `fcntl.flock` on Unix, `LockFileEx` on Windows.
+- **Multi-agent / multi-process safety** (solo dev + parallel agents): `project.py` provides: (1) `detect_project_root()` canonicalizes via git common dir so worktrees share identity, (2) `normalize_path()` ensures consistent relative paths, (3) `resolve_storage_dir()` defaults to project-local `.chisel/` (priority: explicit > env > project-local > ~/.chisel/), (4) `ProcessLock` for cross-process coordination — shared locks for reads, exclusive for writes — so concurrent agent runs and CLI `analyze`/`update` do not interleave destructive storage operations. Cross-platform: `fcntl.flock` on Unix, `LockFileEx` on Windows.
 - **SQLite concurrency**: 30s `busy_timeout` + exponential-backoff retry on `_execute` for cross-process SQLITE_BUSY.
-- **Ownership vs Reviewers**: `ownership` = blame-based (who wrote the code, `role: "original_author"`). `who_reviews` = commit-activity-based (who maintains it, `role: "suggested_reviewer"`).
+- **Ownership vs Reviewers**: `ownership` = blame-based (`role: "original_author"`). `who_reviews` = commit-activity-based (`role: "suggested_reviewer"`). Both are **git-derived signals** for agents (lineage, hot spots); they are not substitutes for team assignment in a solo workflow.
 - **Shared constants**: `_SKIP_DIRS` and `_EXTENSION_MAP` live in `ast_utils.py`. `_CODE_EXTENSIONS` in `engine.py` is derived from `_EXTENSION_MAP`. `_SKIP_DIRS` includes `coverage`, `.next`, `.nuxt` to exclude build/test output artifacts.
 - **Shared dispatch**: `dispatch_tool()` in `mcp_server.py` is used by both HTTP and stdio servers. Tool schemas and dispatch tables live in `schemas.py`.
 - **Edge weighting**: Test edges carry a weight (0.4-1.0) based on file proximity. `_compute_proximity_weight()` in `test_mapper.py`.
