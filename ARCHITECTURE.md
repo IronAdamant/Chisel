@@ -1,6 +1,6 @@
 # Chisel — Architecture
 
-**Version:** 0.6.3 | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
+**Version:** 0.6.4 | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
 
 Test impact analysis and code intelligence **for LLM agents**. The design target is **solo-maintained repos** where **multiple agent sessions or processes** (MCP clients, terminals, CI) may run `analyze` / read tools concurrently — hence **ProcessLock**, **WAL SQLite**, and **normalized paths** as core mechanics, not optional extras.
 

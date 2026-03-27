@@ -5,6 +5,20 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-03-27
+
+### Added
+
+- **Import-graph test impact**: `get_impacted_tests` / `suggest_tests` walk undirected static import edges to suggest tests that cover **reachable** modules (e.g. facade tests for inner modules). `storage.py`: `get_importers()`, `get_imported_files()`.
+- **`tool_coupling`**: Numeric `cochange_coupling`, `import_coupling`, `effective_coupling`, plus breadth counts — import coupling stays visible in solo / low-commit repos.
+- **Risk breakdown**: `coverage_fraction` alongside quantized `coverage_gap` in `compute_risk_score` and `get_risk_map`.
+- **`diff_impact`**: On git failure, returns `status: "git_error"` with `message`, `project_dir`, and `hint` (never a silent empty list). CLI prints hint; `next_steps` suggests fixing project directory.
+
+### Changed
+
+- **Docs**: README, CLAUDE, ARCHITECTURE, COMPLETE_PROJECT_DOCUMENTATION, `wiki-local/spec-project.md`, CONTRIBUTING — agent-first, solo maintainer, multi-agent session positioning; MCP tool specs updated (22 tools, `triage`, locks, `next_steps`).
+- **`schemas.py`**: Tool descriptions for `analyze`, `update`, `suggest_tests`, `coupling`, `diff_impact`.
+
 ## [0.6.3] - 2026-03-24
 
 ### Added
