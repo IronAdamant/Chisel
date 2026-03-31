@@ -725,6 +725,28 @@ class ChiselEngine:
                             stats["branch_coupling_commits"] = int(bc)
                         except ValueError:
                             pass
+                    # Shadow graph summary: edge type breakdown for dynamic require visibility
+                    edge_counts = self.storage.get_edge_type_counts()
+                    if edge_counts:
+                        stats["shadow_graph"] = {
+                            "total_edges": sum(edge_counts.values()),
+                            "call_edges": edge_counts.get("call", 0),
+                            "import_edges": edge_counts.get("import", 0),
+                            "dynamic_import_edges": (
+                                edge_counts.get("dynamic_import", 0)
+                                + edge_counts.get("eval_import", 0)
+                            ),
+                            "eval_import_edges": edge_counts.get("eval_import", 0),
+                            "tainted_import_edges": edge_counts.get("tainted_import", 0),
+                            "unknown_shadow_ratio": round(
+                                (
+                                    edge_counts.get("dynamic_import", 0)
+                                    + edge_counts.get("eval_import", 0)
+                                )
+                                / max(sum(edge_counts.values()), 1),
+                                4,
+                            ),
+                        }
                 return stats
 
     # ------------------------------------------------------------------ #

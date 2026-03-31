@@ -114,12 +114,14 @@ Built-in extraction is **stdlib-only** (regex / `ast`). For **tree-sitter**, **L
 - **Input**: `directory`, `exclude_tests`, `proximity_adjustment`, `coverage_mode` (`unit` | `line`) — see `schemas.py`
 - **Output**: Dict: `{files: [...], _meta: {...}}` per file includes `breakdown` with `coverage_fraction` (partial coverage) and quantized `coverage_gap`, plus optional `coupling_partners` / `import_partners` inline.
 - **Behavior**: Batch-computed risk scores; `_meta` documents uniform components and coupling thresholds. Sorted by risk score descending within `files`.
-- **Risk formula**: `0.35 * churn + 0.25 * coupling_breadth + 0.2 * (1 - test_coverage) + 0.1 * author_concentration + 0.1 * test_instability`
+- **Risk formula**: `0.35 * churn + 0.25 * coupling + 0.15 * coverage_gap + 0.10 * coverage_depth + 0.10 * author_concentration + 0.05 * test_instability + hidden_risk_factor`
   - Churn: normalized to 0-1 (5.0 raw score = 1.0)
-  - Coupling breadth: normalized to 0-1 (10+ coupled files = 1.0)
-  - Test coverage: fraction of code units with at least one test edge
+  - Coupling: `max(git co-change breadth, static import-graph breadth)` normalized to 0-1
+  - Coverage gap: graduated, quantized to 0.25 steps (0.0/0.25/0.5/0.75/1.0)
+  - Coverage depth: `min(distinct_covering_tests/5, 1.0)` — more distinct test files covering a file reduces risk
   - Author concentration: Herfindahl index of blame line ownership (0 = many authors, 1 = single author)
   - Test instability: average failure rate of covering tests (0 = stable, 1 = always fails)
+  - Hidden risk factor: `min(dynamic_edge_count/20, 1.0) * 0.15` — additive uplift from dynamic/eval import density
 
 ### stale_tests
 
@@ -186,6 +188,7 @@ Test edges carry a `weight` (0.4-1.0) based on confidence:
 - **File proximity**: Tests in the same directory as the code get weight 1.0. Sibling directories get 0.8, shared ancestor 0.6, distant files 0.4.
 - **Python import-path matching**: When a test imports `from myapp.utils import foo`, Chisel matches specifically to `myapp/utils.py:foo` rather than any `foo` in any file, then applies proximity weighting.
 - **Non-Python languages**: Fall back to name-based matching with proximity weighting.
+- **Dynamic `require()` detection**: For JS/TS, dynamic patterns (`require(variable)`, template literals, string concatenation, conditionals, `eval`) are recorded as `dynamic_import` / `eval_import` dep types with their own `confidence` scores (0.0–1.0). **Variable taint tracking** (`const MODULE = './foo'; require(MODULE)`) resolves known variable bindings and upgrades them to `tainted_import` (confidence=1.0). Unknown variables remain `dynamic_import` (confidence=0.3). These patterns represent the **shadow graph** — dependencies invisible to static path resolution. `coupling` and `suggest_tests` do not follow dynamic requires; agents should treat low-confidence dynamic imports as potential blind spots in risk analysis.
 
 This reduces false positive edges in projects where multiple modules export identically-named functions.
 

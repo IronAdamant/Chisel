@@ -5,6 +5,31 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-03-31
+
+### Added
+
+- **Variable taint tracking for JS/TS**: Regex-based tracking of `const/let/var X = './path'` assignments resolves `require(variable)` calls. Known variables upgrade to `tainted_import` (confidence=1.0); unknown variables remain `dynamic_import` (confidence=0.3). `test_mapper.py`: `_JS_VAR_ASSIGN_RE`, `_JS_SIMPLE_ASSIGN_RE`, updated `_extract_js_deps()`.
+- **`shadow_graph` in `stats`**: `tool_stats()` now returns a `shadow_graph` dict with `total_edges`, `call_edges`, `import_edges`, `dynamic_import_edges`, `eval_import_edges`, `tainted_import_edges`, and `unknown_shadow_ratio`. `storage.py`: `get_edge_type_counts()`.
+- **Per-file dynamic risk fields in `risk_map`**: Each entry now includes `shadow_edge_count`, `dynamic_edge_count`, `unknown_require_count` (via `new Function()` pattern scan in JS/TS files), and `hidden_risk_factor`. `impact.py`: updated `compute_risk_score()` and `get_risk_map()`.
+- **`coverage_depth` in risk formula**: New 6th component — `min(distinct_covering_tests/5, 1.0)` — with weight 0.10. `test_instability` weight reduced from 0.10 to 0.05. Risk formula: `0.35*churn + 0.25*coupling + 0.15*coverage_gap + 0.10*coverage_depth + 0.10*author_concentration + 0.05*test_instability + hidden_risk_factor`.
+- **`hidden_risk_factor`**: Additive uplift (0–0.15) from dynamic/eval import edge density: `min(dynamic_edge_count/20, 1.0) * 0.15`. Computed separately from the 6-component reweighting system.
+- **Confidence-weighted edges**: Edge weights now blend `proximity * sqrt(confidence)` so low-confidence dynamic requires contribute proportionally less to impact scores. `test_mapper.py`: `build_test_edges()`.
+- **`unknown_require_count`**: Count of `new Function(` patterns in JS/TS source files, indicating potential `eval`-based module loading. Surface-level heuristic for risk assessment.
+- **3 new glossary entries**: "Dynamic require() detection", "Shadow graph", "Require confidence score" (`wiki-local/glossary.md`).
+
+### Changed
+
+- **`_BASE_RISK_WEIGHTS`** (`risk_meta.py`): Updated to 6-component weights reflecting new formula.
+- **`docs/CUSTOM_EXTRACTORS.md`**: Completely rewritten with comprehensive JS/TS tree-sitter extractor showing scope-aware variable tracking and `tainted_import` resolution.
+- **`docs/LLM_CONTRACT.md`**: Dynamic require table now includes `tainted_import`; added `risk_map dynamic-risk fields` section documenting `hidden_risk_factor`, `shadow_edge_count`, `dynamic_edge_count`.
+- **`wiki-local/spec-project.md`**: Updated risk formula, test edge weighting section now mentions variable taint tracking and shadow graph.
+- **`CLAUDE.md`**: Updated risk formula bullet with correct weights, `coverage_depth`, and `hidden_risk_factor`.
+
+### Fixed
+
+- **`risk_map` reweighting**: Now correctly handles 6 components (was 5) when 3+ are uniform across files.
+
 ## [0.6.5] - 2026-03-27
 
 ### Added

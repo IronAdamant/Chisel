@@ -604,6 +604,20 @@ class Storage:
                WHERE cu.id IS NULL""",
         )
 
+    def get_edge_type_counts(self):
+        """Count test edges grouped by edge_type.
+
+        Returns:
+            Dict mapping edge_type string to count.
+            Keys include: call, import, dynamic_import, eval_import, tainted_import.
+        """
+        rows = self._fetchall(
+            """SELECT edge_type, COUNT(*) AS cnt
+               FROM test_edges
+               GROUP BY edge_type""",
+        )
+        return {r["edge_type"]: r["cnt"] for r in rows}
+
     def get_direct_impacted_tests(self, file_path, changed_functions=None):
         """Find tests with edges to code units in a file, via a single JOIN."""
         base_sql = """SELECT tu.id AS test_id, tu.file_path,

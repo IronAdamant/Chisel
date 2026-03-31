@@ -5,9 +5,10 @@ from chisel.metrics import coupling_threshold
 _BASE_RISK_WEIGHTS = {
     "churn": 0.35,
     "coupling": 0.25,
-    "coverage_gap": 0.2,
-    "author_concentration": 0.1,
-    "test_instability": 0.1,
+    "coverage_gap": 0.15,
+    "coverage_depth": 0.10,
+    "author_concentration": 0.10,
+    "test_instability": 0.05,
 }
 
 _COMPONENTS = tuple(_BASE_RISK_WEIGHTS.keys())

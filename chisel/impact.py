@@ -1,11 +1,15 @@
 """Impact analysis, risk scoring, stale test detection, and reviewer suggestions."""
 
+import os
 import re
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
 from chisel.metrics import _parse_iso_date, compute_ownership
 from chisel.static_test_imports import StaticImportIndex
+
+# Regex to detect eval/new Function patterns in source files (eval_import dep source)
+_JS_EVAL_RE = re.compile(r"new\s+Function\s*\(")
 
 # Co-change coupling: breadth of partners (normalized by this count).
 _COCHANGE_COUPLING_CAP = 10
@@ -326,8 +330,12 @@ class ImpactAnalyzer:
                            coverage_mode="unit"):
         """Compute a risk score for a file or function.
 
-        Formula: 0.35*churn + 0.25*coupling + 0.2*coverage_gap
-                 + 0.1*author_concentration + 0.1*test_instability
+        Formula: 0.35*churn + 0.25*coupling + 0.15*coverage_gap
+                 + 0.10*coverage_depth + 0.10*author_concentration
+                 + 0.05*test_instability + hidden_risk_factor
+        where coverage_depth = min(distinct_covering_tests/5, 1.0)
+        and hidden_risk_factor = min(dynamic_edge_count/20, 1.0) * 0.15
+        from dynamic_import/eval_import edge counts.
 
         Args:
             failure_rates: Optional pre-fetched dict of {test_id: rate}.
@@ -383,7 +391,7 @@ class ImpactAnalyzer:
         tested_lines = 0
         total_lines = 0
         covering_test_ids = set()
-        edge_type_counts = {"call": 0, "import": 0}
+        edge_type_counts = {"call": 0, "import": 0, "dynamic_import": 0, "eval_import": 0, "tainted_import": 0}
         for cu in code_units:
             unit_lines = cu["line_end"] - cu["line_start"] + 1
             total_lines += unit_lines
@@ -422,17 +430,30 @@ class ImpactAnalyzer:
             covering_test_ids, failure_rates, duration_cv,
         )
 
+        # Hidden risk from dynamic/eval imports (shadow graph)
+        dynamic_edge_count = (
+            edge_type_counts.get("dynamic_import", 0)
+            + edge_type_counts.get("eval_import", 0)
+        )
+        shadow_edge_count = total_edges - edge_type_counts.get("call", 0)
+        hidden_risk_factor = min(dynamic_edge_count / 20.0, 1.0) * 0.15
         risk = (
             0.35 * churn_norm
             + 0.25 * coupling_norm
-            + 0.2 * coverage_gap
-            + 0.1 * author_conc
-            + 0.1 * instability
+            + 0.15 * coverage_gap
+            + 0.10 * coverage_depth
+            + 0.10 * author_conc
+            + 0.05 * instability
+            + hidden_risk_factor
         )
         return {
             "file_path": file_path,
             "unit_name": unit_name,
             "risk_score": round(risk, 4),
+            "shadow_edge_count": shadow_edge_count,
+            "dynamic_edge_count": dynamic_edge_count,
+            "unknown_require_count": edge_type_counts.get("eval_import", 0),
+            "hidden_risk_factor": round(hidden_risk_factor, 4),
             "breakdown": {
                 "churn": round(churn_norm, 4),
                 "coupling": round(coupling_norm, 4),
@@ -446,6 +467,7 @@ class ImpactAnalyzer:
                 "edge_type_quality": edge_type_quality,
                 "author_concentration": round(author_conc, 4),
                 "test_instability": round(instability, 4),
+                "hidden_risk": round(hidden_risk_factor, 4),
             },
         }
 
@@ -750,7 +772,7 @@ class ImpactAnalyzer:
             tested_lines = 0
             total_lines = 0
             covering_test_ids = set()
-            edge_type_counts = {"call": 0, "import": 0}
+            edge_type_counts = {"call": 0, "import": 0, "dynamic_import": 0, "eval_import": 0, "tainted_import": 0}
             for cu in code_units:
                 unit_lines = cu["line_end"] - cu["line_start"] + 1
                 total_lines += unit_lines
@@ -787,17 +809,46 @@ class ImpactAnalyzer:
                 covering_test_ids, failure_rates, duration_cv_by_test,
             )
 
+            # Hidden risk from dynamic/eval imports (shadow graph)
+            # Files with many dynamic_import/eval_import edges have unknown deps
+            dynamic_edge_count = (
+                edge_type_counts.get("dynamic_import", 0)
+                + edge_type_counts.get("eval_import", 0)
+            )
+            shadow_edge_count = total_edges - edge_type_counts.get("call", 0)
+            hidden_risk_factor = min(dynamic_edge_count / 20.0, 1.0) * 0.15
+
+            # unknown_require_count: eval/new Function patterns in source file.
+            # Only applies to JS/TS files where eval patterns are relevant.
+            # These deps produce zero edges (confidence=0) and are invisible to
+            # impact analysis — count them directly from source to surface hidden risk.
+            eval_pattern_count = 0
+            if fp.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")):
+                try:
+                    abs_path = os.path.join(self.project_dir, fp)
+                    with open(abs_path, encoding="utf-8", errors="replace") as fh:
+                        content = fh.read()
+                    eval_pattern_count = len(_JS_EVAL_RE.findall(content))
+                except OSError:
+                    pass
             risk = (
                 0.35 * churn_norm
                 + 0.25 * coupling_norm
-                + 0.2 * coverage_gap
-                + 0.1 * author_conc
-                + 0.1 * instability
+                + 0.15 * coverage_gap
+                + 0.10 * coverage_depth
+                + 0.10 * author_conc
+                + 0.05 * instability
+                + hidden_risk_factor
             )
+
             risk_map.append({
                 "file_path": fp,
                 "unit_name": None,
                 "risk_score": round(risk, 4),
+                "shadow_edge_count": shadow_edge_count,
+                "dynamic_edge_count": dynamic_edge_count,
+                "unknown_require_count": eval_pattern_count,
+                "hidden_risk_factor": round(hidden_risk_factor, 4),
                 "coupling_partners": coupling_partners,
                 "import_partners": import_partners,
                 "breakdown": {
@@ -813,6 +864,7 @@ class ImpactAnalyzer:
                     "edge_type_quality": edge_type_quality,
                     "author_concentration": round(author_conc, 4),
                     "test_instability": round(instability, 4),
+                    "hidden_risk": round(hidden_risk_factor, 4),
                 },
             })
 

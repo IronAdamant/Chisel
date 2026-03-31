@@ -47,7 +47,7 @@ The role assigned to entries returned by the `ownership` tool. Determined by `gi
 A test edge whose `code_id` points to a code unit that no longer exists in the `code_units` table. This is possible because SQLite foreign key enforcement is intentionally disabled. Orphaned references are the mechanism by which stale test detection works.
 
 **Risk score**
-A composite metric indicating how risky it is to change a file. Formula: `0.35 * churn + 0.25 * coupling + 0.2 * coverage_gap + 0.1 * author_concentration + 0.1 * test_instability`. Each component is normalized to the 0-1 range. Higher values indicate higher risk. Computed by `ImpactAnalyzer.compute_risk_score()`.
+A composite metric indicating how risky it is to change a file. Formula: `0.35 * churn + 0.25 * coupling + 0.15 * coverage_gap + 0.10 * coverage_depth + 0.10 * author_concentration + 0.05 * test_instability + hidden_risk_factor`. Each of the first 6 components is normalized to the 0-1 range. `hidden_risk_factor` (0–0.15) is added separately from dynamic/eval import edge density. Higher values indicate higher risk. Computed by `ImpactAnalyzer.compute_risk_score()`.
 
 **RWLock (read-write lock)**
 A concurrency primitive in `rwlock.py` that allows multiple concurrent readers or one exclusive writer. Used by `ChiselEngine` to protect storage access: `tool_*()` read methods acquire a read lock, while `analyze()` and `update()` acquire a write lock.
@@ -72,3 +72,12 @@ The `_TOOL_DISPATCH` dict in `schemas.py` that maps each tool name to its engine
 
 **WAL mode (Write-Ahead Logging)**
 The SQLite journal mode used by Chisel's storage. Enables concurrent readers alongside a single writer without blocking. Set once at connection creation with `PRAGMA journal_mode=WAL`. Combined with `PRAGMA synchronous=NORMAL` for a balance of durability and performance.
+
+**Dynamic require() detection**
+A set of regex patterns in `test_mapper.py` that detect `require()` calls invisible to standard static analysis. Categories include: `variable` (e.g., `require(variableName)`), `template` (e.g., `` require(`./${module}`) ``), `concat` (e.g., `require('./' + name)`), `conditional` (e.g., `require(cond ? './prod' : './dev')`), and `eval` (e.g., `new Function('require', code)`). Each pattern returns a `confidence` score; the `dep_type` is `dynamic_import` or `eval_import`. This enables Chisel to surface shadow graph dependencies that would otherwise be invisible to `coupling`, `suggest_tests`, and `risk_map`.
+
+**Shadow graph**
+The subgraph of module dependencies that exist at runtime but are invisible to Chisel's static analysis. Includes dynamically loaded modules via `require(variable)`, template literals, string concatenation, conditionals, and `eval`/`new Function`. The shadow graph is not stored separately but emerges from the `dynamic_import` / `eval_import` dep types returned by `_extract_js_deps()`. Risk scoring can account for hidden dependencies by treating low-confidence requires as potential blind spots.
+
+**Require confidence score**
+A numeric value (0.0–1.0) indicating how reliably Chisel can determine the actual module path from a `require()` call. `static` (1.0): literal string path. `tainted` (1.0): variable reference where the variable was assigned a path via `const M = './foo'; require(M)` — variable taint tracking resolves the actual path. `template` (0.4): template literal with interpolation. `variable` (0.3): variable reference with unknown binding. `concat` (0.2): string concatenation. `conditional` (0.3): ternary branch. `eval` (0.0): loaded via `eval()` or `new Function()` — completely invisible to static analysis. Confidence is blended into edge weights as `proximity * sqrt(confidence)`. Used by risk analysis to account for unknown dependencies in dynamically loaded modules.

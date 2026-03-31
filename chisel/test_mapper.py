@@ -231,11 +231,15 @@ class TestMapper:
                         proximity = _compute_proximity_weight(
                             file_path, code_file,
                         )
+                        # Blend dep confidence into weight: confidence^0.5 softens the penalty
+                        # e.g., 0.3 confidence → sqrt(0.3) ≈ 0.55 multiplier
+                        confidence = dep.get("confidence", 1.0)
+                        weight = proximity * (confidence ** 0.5)
                         edges.append({
                             "test_id": tu["id"],
                             "code_id": cid,
                             "edge_type": dep["dep_type"],
-                            "weight": proximity,
+                            "weight": weight,
                         })
         return edges
 
@@ -416,8 +420,54 @@ _JS_CJS_DESTRUCTURED_RE = re.compile(
     r"(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*['\"]([^'\"]+)['\"]\s*\)",
 )
 
+# Dynamic require with variable: require(variableName)
+_JS_REQUIRE_VARIABLE_RE = re.compile(
+    r"require\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)",
+)
+
+# Dynamic require with template literal: require(`./${module}`)
+_JS_REQUIRE_TEMPLATE_RE = re.compile(
+    r"require\s*\(\s*`([^`]+)`\s*\)",
+)
+
+# Dynamic require with string concatenation: require('./' + name) or require(path + '/foo')
+_JS_REQUIRE_CONCAT_RE = re.compile(
+    r"require\s*\(\s*['\"]([^'\"]*?)['\"]\s*\+",
+)
+
+# Dynamic require with conditional: require(condition ? './prod' : './dev')
+_JS_REQUIRE_CONDITIONAL_RE = re.compile(
+    r"require\s*\(\s*\S+\s*\?\s*['\"]([^'\"]+)['\"]\s*:\s*['\"]([^'\"]+)['\"]",
+)
+
+# Eval/new Function with require: new Function('require', code)(require) or new Function(..., 'require', ...)
+_JS_EVAL_WITH_REQUIRE_RE = re.compile(
+    r"new\s+Function\s*\(",
+)
+
+# Variable assignment tracking for taint analysis:
+# const/let/var MODULE = './path' or MODULE = './path'
+_JS_VAR_ASSIGN_RE = re.compile(
+    r"(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*['\"]([^'\"]+)['\"]",
+)
+# Simple assignment: MODULE = './path' (not preceded by another identifier char)
+_JS_SIMPLE_ASSIGN_RE = re.compile(
+    r"(?<![A-Za-z_$])([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*['\"]([^'\"]+)['\"]",
+)
+
 # JS/TS file extensions for path matching.
 _JS_EXTENSIONS = frozenset({".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"})
+
+# Confidence levels for require detection (per DynamicRequireChainTracer findings)
+_REQUIRE_CONFIDENCE = {
+    "static": 1.0,       # require('./literal') - full confidence
+    "tainted": 1.0,      # require(var) where var was assigned a path - resolved
+    "template": 0.4,     # require(`./${var}`) - template literal
+    "variable": 0.3,     # require(variable) - variable reference (unknown var)
+    "concat": 0.2,       # require('./' + var) - string concat
+    "conditional": 0.3,  # require(cond ? './a' : './b') - ternary
+    "eval": 0.0,         # require via eval/new Function - invisible
+}
 
 
 def _extract_js_deps(content):
@@ -465,6 +515,85 @@ def _extract_js_deps(content):
             name = name.strip().split(" as ")[0].strip()
             if name:
                 deps.append({"name": name, "dep_type": "import"})
+
+    # --- Dynamic require() detection (DynamicRequireChainTracer) ---
+    # Build variable taint map first so we can resolve known variable assignments
+    taint_map = {}  # var_name -> assigned_path
+    for m in _JS_VAR_ASSIGN_RE.finditer(content):
+        taint_map[m.group(1)] = m.group(2)
+    for m in _JS_SIMPLE_ASSIGN_RE.finditer(content):
+        # Only add if not already in map (const/let/var takes precedence)
+        if m.group(1) not in taint_map:
+            taint_map[m.group(1)] = m.group(2)
+
+    # require(variable) - variable path reference (tainted if variable was assigned a path)
+    for m in _JS_REQUIRE_VARIABLE_RE.finditer(content):
+        var_name = m.group(1)
+        # Only flag if not already matched as static require
+        if var_name not in _JS_KEYWORDS:
+            if var_name in taint_map:
+                # Tainted: we know what path the variable held
+                resolved_path = taint_map[var_name]
+                deps.append({
+                    "name": f"require({var_name})",
+                    "dep_type": "tainted_import",
+                    "module_path": resolved_path,
+                    "require_type": "variable",
+                    "confidence": _REQUIRE_CONFIDENCE["static"],  # Resolved → full confidence
+                    "taint_source": f"{var_name}={resolved_path}",
+                })
+            else:
+                # Unknown variable - truly dynamic
+                deps.append({
+                    "name": f"require({var_name})",
+                    "dep_type": "dynamic_import",
+                    "module_path": var_name,
+                    "require_type": "variable",
+                    "confidence": _REQUIRE_CONFIDENCE["variable"],
+                })
+
+    # require(`./${module}`) - template literal
+    for m in _JS_REQUIRE_TEMPLATE_RE.finditer(content):
+        template = m.group(1)
+        deps.append({
+            "name": f"require(`{template}`)",
+            "dep_type": "dynamic_import",
+            "module_path": template,
+            "require_type": "template",
+            "confidence": _REQUIRE_CONFIDENCE["template"],
+        })
+
+    # require('./' + name) - string concatenation
+    for m in _JS_REQUIRE_CONCAT_RE.finditer(content):
+        prefix = m.group(1)
+        deps.append({
+            "name": f"require('{prefix}' + ...)",
+            "dep_type": "dynamic_import",
+            "module_path": prefix,
+            "require_type": "concat",
+            "confidence": _REQUIRE_CONFIDENCE["concat"],
+        })
+
+    # require(cond ? './prod' : './dev') - conditional requires
+    for m in _JS_REQUIRE_CONDITIONAL_RE.finditer(content):
+        true_path = m.group(1)
+        false_path = m.group(2)
+        deps.append({
+            "name": f"require(cond ? '{true_path}' : '{false_path}')",
+            "dep_type": "dynamic_import",
+            "module_path": f"{true_path}|{false_path}",
+            "require_type": "conditional",
+            "confidence": _REQUIRE_CONFIDENCE["conditional"],
+        })
+
+    # new Function(...) with require - eval-based loading (CRITICAL risk)
+    for m in _JS_EVAL_WITH_REQUIRE_RE.finditer(content):
+        deps.append({
+            "name": "new Function(...)",
+            "dep_type": "eval_import",
+            "require_type": "eval",
+            "confidence": _REQUIRE_CONFIDENCE["eval"],
+        })
 
     for m in _JS_CALL_RE.finditer(content):
         name = m.group(1)
