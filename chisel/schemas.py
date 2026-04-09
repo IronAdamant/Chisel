@@ -147,8 +147,10 @@ _TOOL_SCHEMAS = {
         "description": (
             "Get files that frequently change together (co-change coupling) or share "
             "static import edges (structural coupling). Returns co_change_partners, "
-            "import_partners, and numeric import_coupling / effective_coupling scores "
-            "(import graph is first-class even when co-change is empty in solo repos). "
+            "import_partners, and numeric import_coupling / effective_coupling scores. "
+            "Import coupling is reliable in all projects; co-change coupling requires "
+            "multi-author commit history with many small commits — solo projects or "
+            "bulk-commit workflows will show 0.0 co-change (use import_partners instead). "
             "Threshold scales with project maturity (see 'stats' for current value). "
             + HEURISTIC_TRUST_NOTE
         ),
@@ -277,11 +279,13 @@ _TOOL_SCHEMAS = {
         "name": "diff_impact",
         "description": (
             "Use after editing code to find which tests to run. Auto-detects "
-            "changed files/functions from git diff. On feature branches diffs "
-            "against main; on main diffs HEAD. Returns diagnostic when no changes "
-            "detected. If git fails (wrong cwd, not a repo), returns status=git_error "
-            "with error (not_a_git_repo or git_command_failed), cwd, message, and "
-            "project_dir — never silent empty lists. "
+            "changed files/functions from git diff and includes untracked code files. "
+            "On feature branches diffs against main; on main diffs HEAD. Untracked "
+            "files with no DB edges fall back to stem-matching (source=working_tree). "
+            "Returns diagnostic when no changes detected. If git fails (wrong cwd, "
+            "not a repo), returns status=git_error with error (not_a_git_repo or "
+            "git_command_failed), cwd, message, and project_dir — never silent empty "
+            "lists. "
             + HEURISTIC_TRUST_NOTE
         ),
         "parameters": {

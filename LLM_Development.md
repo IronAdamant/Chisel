@@ -4,6 +4,22 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## 2026-04-10 -- Review Ten fixes: suggest_tests output cap, diff_impact stem-matching, coupling docs
+
+### Summary
+Addressed findings from RecipeLab Review Ten (TestPyramidAnalyzer challenge):
+
+- **Bug fix — `suggest_tests` output explosion**: `working_tree=True` produced 600K+ characters of output in large projects (40+ new files). Added `_WORKING_TREE_SUGGEST_LIMIT = 30` constant in `engine.py` — results are now capped at 30 entries when `working_tree=True`, preventing unusable output. The `limit` parameter still overrides via dispatch-layer post-processing.
+- **Enhancement — `diff_impact` stem-matching for untracked files**: Untracked files were detected by `diff_impact` but produced no test hits when they had no DB edges. Added stem-matching fallback: untracked files with no direct/co-change/import-graph hits now match tests by filename stem similarity (`source: "working_tree"`, score scaled by 0.4). Only matches with relevance >= 0.5 are included.
+- **Documentation — coupling limitations**: Updated `schemas.py` coupling tool description and `CLAUDE.md` to explicitly state that co-change coupling requires multi-author commit history with many small commits, and solo projects should rely on `import_partners`.
+
+### Files changed
+- `chisel/engine.py` — `_WORKING_TREE_SUGGEST_LIMIT` constant, cap in `tool_suggest_tests`, stem-match fallback in `tool_diff_impact`
+- `chisel/schemas.py` — Updated `coupling` and `diff_impact` tool descriptions
+- `CLAUDE.md` — Updated `diff_impact`, `suggest_tests`, `coupling`, and working-tree mode docs
+
+---
+
 ## 2026-03-27 -- v0.6.5: CUSTOM_EXTRACTORS + CHISEL_BOOTSTRAP
 
 ### Summary

@@ -32,6 +32,10 @@ from chisel.test_mapper import TestMapper
 # Derived from ast_utils._EXTENSION_MAP to avoid duplication.
 _CODE_EXTENSIONS = frozenset(_EXTENSION_MAP)
 
+# Default cap on suggest_tests results when working_tree=True to prevent
+# output explosion (600K+ chars observed in Review Ten with 40+ new files).
+_WORKING_TREE_SUGGEST_LIMIT = 30
+
 
 def _test_to_source_stem(test_file_path):
     """Extract the source filename stem from a test file path.
@@ -338,6 +342,8 @@ class ChiselEngine:
                 if working_tree and not result:
                     # File may be untracked — try stem-matching against known test files
                     result = self._working_tree_suggest(file_path)
+                if working_tree and len(result) > _WORKING_TREE_SUGGEST_LIMIT:
+                    result = result[:_WORKING_TREE_SUGGEST_LIMIT]
                 return result
 
     def tool_churn(self, file_path, unit_name=None):
@@ -535,11 +541,37 @@ class ChiselEngine:
                 pass
         with self._process_lock.shared():
             with self.lock.read_lock():
-                return self.impact.get_impacted_tests(
+                result = self.impact.get_impacted_tests(
                     changed_files,
                     functions or None,
                     untracked_files=untracked_code,
                 )
+                # Stem-match fallback for untracked files with no DB edges
+                if untracked_code:
+                    covered = {item["test_id"] for item in result}
+                    for uf in untracked_code:
+                        has_hit = any(
+                            uf in item.get("reason", "")
+                            for item in result
+                        )
+                        if has_hit:
+                            continue
+                        stem_hits = self._working_tree_suggest(uf)
+                        for sh in stem_hits:
+                            if sh.get("relevance", 0) < 0.5:
+                                continue
+                            tid = sh["test_id"]
+                            if tid not in covered:
+                                covered.add(tid)
+                                result.append({
+                                    "test_id": tid,
+                                    "file_path": sh["file_path"],
+                                    "name": sh["name"],
+                                    "reason": f"stem-match for untracked file {uf}",
+                                    "score": sh["relevance"] * 0.4,
+                                    "source": "working_tree",
+                                })
+                return result
 
     def tool_update(self):
         """MCP tool: incremental re-analysis of changed files."""
