@@ -80,6 +80,22 @@ chisel analyze src/                               # analyze subdirectory only
 chisel serve --port 8377                          # HTTP MCP server
 ```
 
+## Publishing to PyPI
+
+Publishing uses **GitHub Actions trusted publishing** (OIDC, no API tokens). Do **not** use `twine` — there is no `.pypirc` and none is needed.
+
+```bash
+# 1. Bump version in both files:
+#    chisel/__init__.py  (__version__)
+#    pyproject.toml      (version)
+# 2. Commit and push
+# 3. Tag and push the tag — this triggers the publish workflow:
+git tag v0.8.1
+git push origin v0.8.1
+```
+
+The workflow (`.github/workflows/publish.yml`) builds the package and uploads via `pypa/gh-action-pypi-publish` with `id-token: write` permissions.
+
 ## Module Dependency Graph
 
 ```
