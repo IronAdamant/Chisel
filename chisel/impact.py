@@ -71,8 +71,12 @@ def _merge_impacted_and_static(db, static):
     return out
 
 
-def _quantize_gap(value, steps=4):
-    """Quantize coverage_gap to fixed steps for graduated risk levels."""
+def _quantize_gap(value, steps=20):
+    """Quantize coverage_gap to fixed steps for graduated risk levels.
+
+    Uses 20 steps (0.05 increments) for finer granularity than the
+    original 4 steps (0.25 increments).
+    """
     return round(value * steps) / steps
 
 
@@ -797,7 +801,7 @@ class ImpactAnalyzer:
                 edge_type_counts.get("call", 0) / max(total_edges, 1), 4,
             ) if total_edges > 0 else 0.0
 
-            if proximity_adjustment and fp not in tested_files:
+            if proximity_adjustment and coverage_gap > 0.0:
                 mh = hop_dist.get(fp)
                 if mh is not None and mh > 0:
                     coverage_gap = _apply_coverage_proximity(coverage_gap, mh)

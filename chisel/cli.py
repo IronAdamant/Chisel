@@ -113,6 +113,8 @@ def create_parser():
                             help="Auto-detect changes and show impacted tests")
     p_diff.add_argument("--ref", default=None,
                         help="Git ref to diff against (default: auto-detect)")
+    p_diff.add_argument("--working-tree", action="store_true", default=False,
+                        help="Full static import scan for untracked files")
 
     # update
     sub.add_parser("update", parents=[shared],
@@ -420,7 +422,7 @@ def cmd_who_reviews(args):
 
 
 def cmd_diff_impact(args):
-    return _run_tool(args, "tool_diff_impact", {"ref": args.ref},
+    return _run_tool(args, "tool_diff_impact", {"ref": args.ref, "working_tree": args.working_tree},
                      _fmt_list("No impacted tests (or no changes detected).",
                                "Impacted tests from diff:",
                                lambda i: f"{i['test_id']}  ({i['reason']})"))

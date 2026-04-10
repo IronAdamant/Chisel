@@ -26,6 +26,7 @@ from chisel.project import ProcessLock, detect_project_root, normalize_path, res
 from chisel.risk_meta import apply_risk_reweighting, build_risk_meta
 from chisel.rwlock import RWLock
 from chisel.storage import Storage
+from chisel.static_test_imports import StaticImportIndex
 from chisel.test_mapper import TestMapper
 
 
@@ -494,11 +495,17 @@ class ChiselEngine:
                     return empty
                 return self.impact.suggest_reviewers(file_path)
 
-    def tool_diff_impact(self, ref=None):
+    def tool_diff_impact(self, ref=None, working_tree=False):
         """MCP tool: auto-detect changes from git diff and return impacted tests.
 
         If ref is not provided, auto-detects: on a feature branch diffs against
         main/master; on main diffs against HEAD (unstaged changes).
+
+        Args:
+            ref: Git ref to diff against.
+            working_tree: If True, perform full static import scanning for
+                untracked files (matching suggest_tests behavior) instead of
+                only stem-match fallback.
 
         Returns a diagnostic dict (status="no_changes") instead of bare []
         when no diff is found, so LLM agents can reason about why.
@@ -541,11 +548,36 @@ class ChiselEngine:
                 pass
         with self._process_lock.shared():
             with self.lock.read_lock():
+                disk = self._disk_only_test_map() if working_tree else None
+                extra = self._git_untracked_code_paths() if working_tree else None
                 result = self.impact.get_impacted_tests(
                     changed_files,
                     functions or None,
                     untracked_files=untracked_code,
                 )
+                # Static import scan for untracked files when working_tree
+                if working_tree and untracked_code:
+                    idx = StaticImportIndex(
+                        self.project_dir,
+                        self.storage,
+                        disk_test_files=disk,
+                        extra_code_paths=set(extra or ()),
+                    )
+                    covered = {item["test_id"] for item in result}
+                    for uf in untracked_code:
+                        static_hits = idx.find_tests(uf)
+                        for sh in static_hits:
+                            tid = sh["test_id"]
+                            if tid not in covered:
+                                covered.add(tid)
+                                result.append({
+                                    "test_id": tid,
+                                    "file_path": sh["file_path"],
+                                    "name": sh["name"],
+                                    "reason": f"static import of untracked file {uf}",
+                                    "score": sh["score"],
+                                    "source": "working_tree",
+                                })
                 # Stem-match fallback for untracked files with no DB edges
                 if untracked_code:
                     covered = {item["test_id"] for item in result}
@@ -902,8 +934,15 @@ class ChiselEngine:
                                 fc["churn_score"],
                             )
 
+        distinct_authors = len({c["author"] for c in commits if c.get("author")})
         adaptive_min = _coupling_threshold(len(commits))
+        # Single-author projects produce fewer, larger commits — lower the
+        # threshold so a solo developer's own commit patterns still surface
+        # coupling signal instead of returning 0.0 for all file pairs.
+        if distinct_authors <= 1:
+            adaptive_min = max(1, adaptive_min // 2)
         self.storage.set_meta("co_change_query_min", str(adaptive_min))
+        self.storage.set_meta("distinct_authors", str(distinct_authors))
         co_changes = compute_co_changes(commits, min_count=adaptive_min)
         for cc in co_changes:
             self.storage.upsert_co_change(

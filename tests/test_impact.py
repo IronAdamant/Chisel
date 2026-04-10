@@ -275,8 +275,8 @@ class TestRiskMap:
         storage.upsert_churn_stat("m.py", "", churn_score=1.0)
         risk_map = analyzer.get_risk_map()
         entry = next(r for r in risk_map if r["file_path"] == "m.py")
-        # 1 of 3 tested → coverage 0.333, gap 0.667 → quantized to 0.75
-        assert entry["breakdown"]["coverage_gap"] == 0.75
+        # 1 of 3 tested → coverage 0.333, gap 0.667 → quantized to 0.65 (20 steps)
+        assert entry["breakdown"]["coverage_gap"] == 0.65
 
     def test_exclude_tests_filters_test_files(self, storage, analyzer):
         """Test files should be excluded from risk_map by default."""

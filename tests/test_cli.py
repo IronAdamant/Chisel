@@ -778,7 +778,7 @@ class TestMain:
 
         main(["diff-impact", "--project-dir", "/tmp/p"])
 
-        engine.tool_diff_impact.assert_called_once_with(ref=None)
+        engine.tool_diff_impact.assert_called_once_with(ref=None, working_tree=False)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_update(self, mock_cls):

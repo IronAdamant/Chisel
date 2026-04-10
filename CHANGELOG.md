@@ -5,6 +5,19 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-04-10
+
+### Added
+
+- **`diff_impact` `working_tree` parameter**: Performs full static import scanning for untracked files via `StaticImportIndex`, finding tests that import new files by path. CLI: `chisel diff-impact --working-tree`. MCP: `working_tree: true`. Previously only `suggest_tests` supported this.
+
+### Changed
+
+- **Single-author co-change threshold halving**: When all commits have one distinct author, the adaptive coupling threshold is halved (`max(1, threshold // 2)`) so solo developer commit patterns surface coupling signal instead of universal 0.0. Author count stored in `meta.distinct_authors`.
+- **Coverage gap granularity**: `_quantize_gap` increased from 4 steps (0.0/0.25/0.5/0.75/1.0) to 20 steps (0.05 increments) for finer differentiation between partially-tested files.
+- **Proximity adjustment scope**: `proximity_adjustment` now applies to any file with `coverage_gap > 0.0`, not just completely untested files. Partially-tested files imported by tested code receive proportional credit.
+- **Risk reweighting threshold**: `apply_risk_reweighting()` triggers on 2+ uniform components or any zero-valued uniform component (provably absent data). Previously required 3+, meaning single-author projects with coupling=0.0 and test_instability=0.0 never got reweighted, diluting risk scores by ~40%.
+
 ## [0.8.0] - 2026-03-31
 
 ### Added

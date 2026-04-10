@@ -111,7 +111,11 @@ def build_risk_meta(files, stats):
 
 
 def apply_risk_reweighting(risk_map):
-    """When 3+ components are uniform, redistribute their weight onto varying ones.
+    """Redistribute weight from uniform components onto varying ones.
+
+    Triggers when 2+ components are uniform, or when any zero-valued uniform
+    component is detected (provably absent data like co-change=0.0 in
+    single-author projects).
 
     Only updates ``risk_score``; per-component ``breakdown`` is unchanged.
     Returns ``(risk_map, meta_dict)``.
@@ -122,13 +126,18 @@ def apply_risk_reweighting(risk_map):
             "reweighting_skipped_reason": "insufficient_files",
         }
 
-    uniform = []
+    uniform = {}  # comp -> uniform value
     for comp in _COMPONENTS:
         vals = {entry["breakdown"][comp] for entry in risk_map}
         if len(vals) <= 1:
-            uniform.append(comp)
+            uniform[comp] = next(iter(vals)) if vals else 0.0
 
-    if len(uniform) < 3:
+    # Always exclude components that are uniform AND have value 0.0 —
+    # these represent provably absent data (no co-change in single-author,
+    # no test instability when all passing), not merely noisy data.
+    # The original threshold of 3 was too conservative for this case.
+    zero_uniform = [c for c in uniform if uniform[c] == 0.0]
+    if len(uniform) < 2 and not zero_uniform:
         return risk_map, {"reweighted": False}
 
     effective = [c for c in _COMPONENTS if c not in uniform]

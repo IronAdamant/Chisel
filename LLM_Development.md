@@ -4,6 +4,32 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## 2026-04-10 -- Review Twelve fixes: single-author coupling, diff_impact working_tree, coverage granularity, risk reweighting
+
+### Summary
+Addressed all 4 confirmed gaps from RecipeLab Review Twelve (TestAffinityAnalyzer + RecipeComplianceEngine challenge):
+
+- **Fix — Co-change coupling 0.0 for single-author**: Detected `distinct_authors == 1` in `_compute_churn_and_coupling()` and halved the adaptive threshold (`max(1, threshold // 2)`). Solo developers' commit patterns now surface coupling signal instead of universal 0.0. Author count stored in `meta.distinct_authors`.
+- **Feature — `diff_impact` `working_tree` parameter**: Added `working_tree: bool` to `tool_diff_impact()` matching `suggest_tests` behavior. When enabled, builds a `StaticImportIndex` to perform full static import scanning for untracked files, finding tests that import new files by path (not just stem-matching). Updated schema, dispatch table, and CLI.
+- **Fix — Binary coverage_gap**: Increased `_quantize_gap` from 4 steps (0.25 increments) to 20 steps (0.05 increments) for finer granularity. Expanded `proximity_adjustment` to apply to any file with `coverage_gap > 0.0` (not just completely untested files), giving partial credit to files imported by tested code.
+- **Fix — risk_map uniform reweighting threshold**: Changed `apply_risk_reweighting()` to trigger on 2+ uniform components OR any zero-valued uniform component (provably absent data). Previously required 3+ uniform, which meant single-author projects with 2 zero-uniform components (coupling=0.0, test_instability=0.0) never got reweighted, diluting risk scores by ~40%.
+
+### Files changed
+- `chisel/engine.py` — Single-author detection + threshold halving, `tool_diff_impact` `working_tree` param with `StaticImportIndex`, new import
+- `chisel/impact.py` — `_quantize_gap` steps 4→20, proximity adjustment for partial coverage
+- `chisel/risk_meta.py` — Reweighting threshold lowered, zero-value uniform special case, uniform tracking as dict
+- `chisel/schemas.py` — `diff_impact` schema: `working_tree` param + updated description, dispatch table
+- `chisel/cli.py` — `--working-tree` flag for `diff-impact` subcommand
+- `tests/test_cli.py` — Updated diff_impact mock assertion for new param
+- `tests/test_engine.py` — Updated coverage_gap expected value (0.25→0.35)
+- `tests/test_impact.py` — Updated coverage_gap expected value (0.75→0.65)
+- `README.md` — Updated `diff_impact` tool description
+- `CLAUDE.md` — Updated risk formula, co-change ingest, diff_impact, coverage gap, risk_meta docs
+- `COMPLETE_PROJECT_DOCUMENTATION.md` — Updated engine.py and impact.py descriptions
+- `findings/chisel.md` → `findings/chisel_closed.md` — Renamed to indicate closure
+
+---
+
 ## 2026-04-10 -- Review Ten fixes: suggest_tests output cap, diff_impact stem-matching, coupling docs
 
 ### Summary

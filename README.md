@@ -124,7 +124,7 @@ chisel test-gaps
 |------|-------------|
 | `analyze` | Full project scan — builds the code/test/git graph |
 | `update` | Incremental re-analysis of changed files only |
-| `diff_impact` | Detects your changes from `git diff` and returns impacted tests |
+| `diff_impact` | Detects your changes from `git diff` and returns impacted tests. `working_tree=true` enables full static import scanning for untracked files |
 | `suggest_tests` | Ranks tests by relevance for a given file |
 | `impact` | Which tests cover these files or functions? |
 | `risk_map` | Risk scores for all files (churn + coupling + coverage gaps) |

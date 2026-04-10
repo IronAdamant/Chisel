@@ -170,9 +170,9 @@ class TestToolMethods:
         result = engine.tool_risk_map()
         app = next(r for r in result["files"] if r["file_path"] == "app.py")
         # app.py has 3 functions, 2 are tested (process_data, validate_input)
-        # format_output is untested → coverage_gap = 1/3 ≈ 0.33, quantized to 0.25
+        # format_output is untested → coverage_gap = 1/3 ≈ 0.33, quantized to 0.35 (20 steps)
         assert app["breakdown"]["coverage_gap"] < 1.0
-        assert app["breakdown"]["coverage_gap"] == 0.25
+        assert app["breakdown"]["coverage_gap"] == 0.35
 
     def test_tool_stale_tests(self, engine):
         engine.analyze()

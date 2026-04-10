@@ -282,6 +282,9 @@ _TOOL_SCHEMAS = {
             "changed files/functions from git diff and includes untracked code files. "
             "On feature branches diffs against main; on main diffs HEAD. Untracked "
             "files with no DB edges fall back to stem-matching (source=working_tree). "
+            "With working_tree=true, performs full static import scanning for "
+            "untracked files (matching suggest_tests behavior) to find tests that "
+            "import new files by path. "
             "Returns diagnostic when no changes detected. If git fails (wrong cwd, "
             "not a repo), returns status=git_error with error (not_a_git_repo or "
             "git_command_failed), cwd, message, and project_dir — never silent empty "
@@ -294,6 +297,15 @@ _TOOL_SCHEMAS = {
                 "ref": {
                     "type": "string",
                     "description": "Git ref to diff against (default: HEAD for unstaged changes).",
+                },
+                "working_tree": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, perform full static import scanning for "
+                        "untracked files instead of only stem-match fallback. "
+                        "Recommended during active development before files "
+                        "are committed."
+                    ),
                 },
             },
             "required": [],
@@ -570,7 +582,7 @@ _TOOL_DISPATCH = {
     "stale_tests": ("tool_stale_tests", []),
     "history": ("tool_history", ["file_path"]),
     "who_reviews": ("tool_who_reviews", ["file_path"]),
-    "diff_impact": ("tool_diff_impact", ["ref"]),
+    "diff_impact": ("tool_diff_impact", ["ref", "working_tree"]),
     "update": ("tool_update", []),
     "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests", "working_tree"]),
     "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
