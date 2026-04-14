@@ -7,6 +7,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.3] — 2026-04-14
+
+### Fixed
+
+- **Version sync**: `chisel.__version__` was out of sync with `pyproject.toml` in the 0.8.2 release, causing CI failures.
+
 ## [0.8.2] — 2026-04-14
 
 ### Added
