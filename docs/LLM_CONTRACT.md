@@ -68,10 +68,20 @@ Each per-file entry in `risk_map` output includes:
 
 `hidden_risk_factor` and `new_file_boost` are added to the risk score after the 6-component formula. Files with 20+ dynamic edges reach the maximum `0.15` hidden-risk uplift. Use `dynamic_edge_count` to assess how many deps are actually unknown. Use `working_tree=true` to include untracked files in `risk_map` scoring.
 
+## `record_result` — why and when
+
+`test_instability` in `risk_map` and failure-rate boosting in `suggest_tests` are only populated when agents call **`record_result`** after running tests. If you never record results:
+
+- `test_instability` will be uniformly `0.0` for all files.
+- `suggest_tests` cannot boost historically flaky tests.
+
+**Best practice:** After every test run (local or CI), call `record_result(test_id, passed, duration_ms?)` for each test. This makes Chisel's prioritization more accurate over time.
+
 ## MCP vs CLI
 
 - **MCP** wraps results with **`next_steps`** suggestions when using HTTP/stdio servers—use them for follow-up tool calls.
 - Long **`analyze`** runs should use **`start_job`** + **`job_status`** or a terminal to avoid client timeouts.
+- For repos with >300 code files, `analyze` with `force=True` now auto-queues a background job and returns `status: "auto_queued"`.
 
 ## Cursor / host integration (out of band)
 

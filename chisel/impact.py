@@ -350,7 +350,7 @@ class ImpactAnalyzer:
     # ------------------------------------------------------------------ #
 
     def compute_risk_score(self, file_path, unit_name=None, failure_rates=None,
-                           coverage_mode="unit"):
+                           coverage_mode="unit", exclude_new_file_boost=False):
         """Compute a risk score for a file or function.
 
         Formula: 0.35*churn + 0.25*coupling + 0.15*coverage_gap
@@ -366,6 +366,9 @@ class ImpactAnalyzer:
             coverage_mode: "unit" (default) weights each code unit equally;
                            "line" weights by line count so large untested
                            units have proportionally higher coverage_gap.
+            exclude_new_file_boost: If True, do not apply the 0.5 new-file
+                                    boost to files with zero churn and zero
+                                    coverage.
 
         Returns:
             Dict: {file_path, unit_name, risk_score, breakdown}
@@ -459,7 +462,7 @@ class ImpactAnalyzer:
         hidden_risk_factor = min(dynamic_edge_count / 20.0, 1.0) * 0.15
 
         new_file_boost = 0.0
-        if churn_norm == 0.0 and coverage == 0.0:
+        if not exclude_new_file_boost and churn_norm == 0.0 and coverage == 0.0:
             new_file_boost = 0.5
 
         risk = (
@@ -697,7 +700,7 @@ class ImpactAnalyzer:
 
     def get_risk_map(self, directory=None, exclude_tests=True,
                      proximity_adjustment=True, coverage_mode="line",
-                     extra_files=None):
+                     extra_files=None, exclude_new_file_boost=False):
         """Compute risk scores for all tracked files (optionally in a directory).
 
         Uses batch queries to avoid the N+1 pattern: fetches churn, coupling,
@@ -716,6 +719,8 @@ class ImpactAnalyzer:
                 proportionally higher coverage_gap.
             extra_files: Optional list of additional file paths to include
                 (e.g. untracked working-tree files).
+            exclude_new_file_boost: If True, do not apply the 0.5 new-file
+                boost to files with zero churn and zero coverage.
 
         Returns:
             List of dicts: {file_path, risk_score, breakdown}
@@ -896,7 +901,7 @@ class ImpactAnalyzer:
             # New-file risk boost: files with zero commits and zero test
             # coverage are high-risk by definition (invisible to history).
             new_file_boost = 0.0
-            if churn_norm == 0.0 and coverage == 0.0:
+            if not exclude_new_file_boost and churn_norm == 0.0 and coverage == 0.0:
                 new_file_boost = 0.5
 
             # unknown_require_count: eval/new Function patterns in source file.

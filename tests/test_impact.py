@@ -172,6 +172,16 @@ class TestRiskScore:
         risk = analyzer.compute_risk_score("app.py")
         assert risk["breakdown"]["new_file_boost"] == 0.0
 
+    def test_exclude_new_file_boost_computes_risk_score(self, storage, analyzer):
+        """exclude_new_file_boost=True suppresses the 0.5 boost."""
+        storage.upsert_code_unit("new.py:func:func", "new.py", "func", "func", 1, 5)
+        storage.upsert_churn_stat("new.py", "", churn_score=0.0)
+        risk_with = analyzer.compute_risk_score("new.py")
+        risk_without = analyzer.compute_risk_score("new.py", exclude_new_file_boost=True)
+        assert risk_with["breakdown"]["new_file_boost"] == 0.5
+        assert risk_without["breakdown"]["new_file_boost"] == 0.0
+        assert risk_without["risk_score"] < risk_with["risk_score"]
+
 
 class TestSuggestTests:
     def test_suggest_returns_results(self, storage, analyzer):
@@ -323,6 +333,18 @@ class TestRiskMap:
         risk_map = analyzer.get_risk_map(exclude_tests=False)
         files = [r["file_path"] for r in risk_map]
         assert "test_app.py" in files
+
+    def test_risk_map_exclude_new_file_boost(self, storage, analyzer):
+        """exclude_new_file_boost=True suppresses boost in get_risk_map."""
+        storage.upsert_code_unit("new.py:func:func", "new.py", "func", "func", 1, 5)
+        storage.upsert_churn_stat("new.py", "", churn_score=0.0)
+        risk_map_with = analyzer.get_risk_map()
+        risk_map_without = analyzer.get_risk_map(exclude_new_file_boost=True)
+        new_with = next(r for r in risk_map_with if r["file_path"] == "new.py")
+        new_without = next(r for r in risk_map_without if r["file_path"] == "new.py")
+        assert new_with["breakdown"]["new_file_boost"] == 0.5
+        assert new_without["breakdown"]["new_file_boost"] == 0.0
+        assert new_without["risk_score"] < new_with["risk_score"]
 
 
 class TestGetOwnership:

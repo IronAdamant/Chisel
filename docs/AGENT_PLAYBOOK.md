@@ -38,6 +38,7 @@ Full table: **`LLM_CONTRACT.md`**.
 
 - **`triage`** — one call for top-N risk + gaps + stale tests.
 - **`risk_map`** — read **`_meta.uniform_components`** before trusting the composite score.
+- **`exclude_new_file_boost=true`** — use in `risk_map` or `triage` when you want stable long-term rankings without the temporary 0.5 uplift for brand-new files.
 
 ## 6. Copy-paste CI (GitHub)
 

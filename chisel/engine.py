@@ -310,8 +310,27 @@ class ChiselEngine:
             return dict(_NO_DATA_RESPONSE)
         return None
 
+    _AUTO_BG_JOB_THRESHOLD = 300
+
     def tool_analyze(self, directory=None, force=False):
-        """MCP tool: full analysis."""
+        """MCP tool: full analysis.
+
+        For large repositories (>300 code files with force=True), automatically
+        falls back to a background job via start_job to avoid MCP timeouts.
+        """
+        # Quick size check to decide whether to auto-fallback to background job
+        code_files = self._scan_code_files(directory=directory)
+        if force and len(code_files) > self._AUTO_BG_JOB_THRESHOLD:
+            job = self.tool_start_job(kind="analyze", directory=directory, force=force)
+            return {
+                **job,
+                "status": "auto_queued",
+                "message": (
+                    f"Repository has {len(code_files)} code files; "
+                    "synchronous analyze with force=True would likely time out. "
+                    "A background job has been queued automatically."
+                ),
+            }
         result = self.analyze(directory=directory, force=force)
         result.setdefault(
             "hint",
@@ -623,7 +642,7 @@ class ChiselEngine:
 
     def tool_risk_map(self, directory=None, exclude_tests=True,
                       proximity_adjustment=True, coverage_mode="line",
-                      working_tree=False):
+                      working_tree=False, exclude_new_file_boost=False):
         """MCP tool: risk scores for all files.
 
         Returns ``{"files": [...], "_meta": {...}}`` so LLM agents can
@@ -642,6 +661,9 @@ class ChiselEngine:
                 proportionally higher coverage_gap.
             working_tree: If True, include untracked files in the risk map
                 so newly created files are visible.
+            exclude_new_file_boost: If True, suppress the 0.5 new-file boost
+                so long-term risk rankings are not skewed toward recently
+                touched files.
         """
         with self._process_lock.shared():
             with self.lock.read_lock():
@@ -662,6 +684,7 @@ class ChiselEngine:
                 files = self.impact.get_risk_map(
                     directory, exclude_tests, proximity_adjustment, coverage_mode,
                     extra_files=extra,
+                    exclude_new_file_boost=exclude_new_file_boost,
                 )
                 files, rw_meta = apply_risk_reweighting(files)
                 stats = self.storage.get_stats()
@@ -924,7 +947,7 @@ class ChiselEngine:
                 return result
 
     def tool_triage(self, directory=None, top_n=10, exclude_tests=True,
-                    working_tree=False):
+                    working_tree=False, exclude_new_file_boost=False):
         """MCP tool: combined risk_map + test_gaps + stale_tests triage."""
         extra = self._git_untracked_code_paths() if working_tree else None
         disk = self._disk_only_test_map() if working_tree else None
@@ -936,6 +959,7 @@ class ChiselEngine:
                 risk_map = self.impact.get_risk_map(
                     directory, exclude_tests,
                     extra_files=sorted(extra) if extra else None,
+                    exclude_new_file_boost=exclude_new_file_boost,
                 )
                 risk_map = risk_map[:top_n]
                 test_gaps = self.impact.get_test_gaps(

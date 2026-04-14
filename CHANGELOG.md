@@ -7,6 +7,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`analyze` auto-fallback to background job**: `tool_analyze` now scans the repo before starting a full forced analysis. If `force=True` and the repository contains more than 300 code files, it automatically queues a background job via `start_job` and returns `{"status": "auto_queued", "job_id": ..., "kind": "analyze"}` to avoid MCP timeouts on large repos.
+- **`exclude_new_file_boost` parameter**: Both `risk_map` and `triage` now accept `exclude_new_file_boost=True`. When set, the 0.5 additive boost for files with zero churn and zero coverage is suppressed, making long-term risk rankings more stable.
+
+### Changed
+
+- **Documentation**: `README.md`, `docs/LLM_CONTRACT.md`, and `docs/AGENT_PLAYBOOK.md` now include stronger guidance to call `record_result` after test runs so that `test_instability` and failure-rate boosting in `suggest_tests` are populated over time.
+
 ## [0.8.3] — 2026-04-14
 
 ### Fixed

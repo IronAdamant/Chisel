@@ -142,6 +142,22 @@ class TestToolMethods:
         result = engine.tool_analyze()
         assert isinstance(result, dict)
 
+    def test_tool_analyze_auto_fallback_large_repo(self, engine, git_project):
+        """force=True on a repo with >300 code files auto-queues a background job."""
+        engine.analyze()
+        # Create enough .py files to cross the threshold
+        for i in range(305):
+            (git_project / f"dummy_{i}.py").write_text(f"def dummy_{i}(): pass\n")
+        orig_threshold = engine._AUTO_BG_JOB_THRESHOLD
+        try:
+            engine._AUTO_BG_JOB_THRESHOLD = 300
+            result = engine.tool_analyze(force=True)
+            assert result.get("status") == "auto_queued"
+            assert "job_id" in result
+            assert result.get("kind") == "analyze"
+        finally:
+            engine._AUTO_BG_JOB_THRESHOLD = orig_threshold
+
     def test_tool_impact(self, engine):
         engine.analyze()
         result = engine.tool_impact(["app.py"])
@@ -367,6 +383,22 @@ class TestToolMethods:
         assert "test_edge_count" in summary
         assert "test_result_count" in summary
         assert "coupling_threshold" in summary
+
+    def test_tool_risk_map_exclude_new_file_boost(self, engine):
+        engine.analyze()
+        result = engine.tool_risk_map(exclude_new_file_boost=True)
+        assert isinstance(result, dict)
+        assert "files" in result
+        # No file should have a new_file_boost when excluded
+        for f in result["files"]:
+            assert f["breakdown"]["new_file_boost"] == 0.0
+
+    def test_tool_triage_exclude_new_file_boost(self, engine):
+        engine.analyze()
+        result = engine.tool_triage(exclude_new_file_boost=True)
+        assert isinstance(result, dict)
+        for f in result["top_risk_files"]:
+            assert f["breakdown"]["new_file_boost"] == 0.0
 
     def test_tool_risk_map_meta_structure(self, engine):
         engine.analyze()

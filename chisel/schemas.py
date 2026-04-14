@@ -219,6 +219,13 @@ _TOOL_SCHEMAS = {
                         "so newly created files are visible."
                     ),
                 },
+                "exclude_new_file_boost": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, suppress the 0.5 new-file boost so long-term "
+                        "risk rankings are not skewed toward recently touched files."
+                    ),
+                },
             },
             "required": [],
         },
@@ -262,7 +269,7 @@ _TOOL_SCHEMAS = {
     },
     "record_result": {
         "name": "record_result",
-        "description": "Record a test pass/fail outcome. Feeds into suggest_tests (failure rate) and risk_map (test instability). Use after running tests.",
+        "description": "Record a test pass/fail outcome. Feeds into suggest_tests (failure rate) and risk_map (test instability). Call this after every test run so Chisel can boost flaky tests and compute accurate risk scores over time.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -425,6 +432,13 @@ _TOOL_SCHEMAS = {
                     "description": (
                         "If true, forward working_tree to risk_map and test_gaps "
                         "so uncommitted files are included."
+                    ),
+                },
+                "exclude_new_file_boost": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, suppress the 0.5 new-file boost in the risk "
+                        "portion of triage so rankings are more stable over time."
                     ),
                 },
             },
@@ -604,7 +618,7 @@ _TOOL_DISPATCH = {
     "coupling": ("tool_coupling", ["file_path", "min_count"]),
     "risk_map": (
         "tool_risk_map",
-        ["directory", "exclude_tests", "proximity_adjustment", "coverage_mode", "working_tree"],
+        ["directory", "exclude_tests", "proximity_adjustment", "coverage_mode", "working_tree", "exclude_new_file_boost"],
     ),
     "stale_tests": ("tool_stale_tests", []),
     "history": ("tool_history", ["file_path"]),
@@ -613,7 +627,7 @@ _TOOL_DISPATCH = {
     "update": ("tool_update", []),
     "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests", "working_tree", "limit"]),
     "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
-    "triage": ("tool_triage", ["directory", "top_n", "exclude_tests", "working_tree"]),
+    "triage": ("tool_triage", ["directory", "top_n", "exclude_tests", "working_tree", "exclude_new_file_boost"]),
     "stats": ("tool_stats", []),
     "optimize_storage": ("tool_optimize_storage", []),
     "start_job": ("tool_start_job", ["kind", "directory", "force"]),

@@ -61,7 +61,7 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.j
 }
 ```
 
-Run `analyze` first to build the project graph, then `diff_impact` after edits to see which tests to run. For large repos, run `chisel analyze` in a terminal instead of through MCP to avoid timeouts. Working-tree analysis (`--working-tree`) reuses a cached static import index and falls back to fast stem-matching for untracked files to stay within timeout budgets.
+Run `analyze` first to build the project graph, then `diff_impact` after edits to see which tests to run. For large repos, `analyze` with `force=True` automatically falls back to a background job so you don't hit MCP timeouts. Working-tree analysis (`--working-tree`) reuses a cached static import index and falls back to fast stem-matching for untracked files to stay within timeout budgets. After running tests, call `record_result` so Chisel can track failure rates and test instability over time.
 
 ## Use with Cursor, Windsurf, Cline, or other MCP clients
 
@@ -127,9 +127,9 @@ chisel test-gaps
 | `diff_impact` | Detects your changes from `git diff` and returns impacted tests. `working_tree=true` enables full static import scanning for untracked files |
 | `suggest_tests` | Ranks tests by relevance for a given file. Prefers same-directory tests via stem matching |
 | `impact` | Which tests cover these files or functions? |
-| `risk_map` | Risk scores for all files (churn + coupling + coverage gaps). `working_tree=true` includes untracked files and boosts new untested files |
+| `risk_map` | Risk scores for all files (churn + coupling + coverage gaps). `working_tree=true` includes untracked files and boosts new untested files. `exclude_new_file_boost=true` suppresses the temporary boost for stable-code audits |
 | `test_gaps` | Code with zero test coverage, sorted by risk. `working_tree=true` elevates uncommitted files to the top |
-| `triage` | Top risks + gaps + stale tests in one call |
+| `triage` | Top risks + gaps + stale tests in one call. Also supports `exclude_new_file_boost` |
 | `churn` | How often does this file or function change? |
 | `coupling` | Files that change together or import each other |
 | `ownership` | Blame-based — who wrote this code? |
