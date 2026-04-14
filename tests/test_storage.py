@@ -480,3 +480,15 @@ class TestFileLocks:
         assert acquired is True
         assert holder is None
         assert expires_at_1 > time.time() + 100
+
+
+class TestOptimize:
+    def test_optimize_does_not_corrupt_db(self, storage):
+        storage.upsert_code_unit("u1", "src/app.py", "App", "class",
+                                  line_start=1, line_end=10)
+        result = storage.optimize(wal_size_threshold_bytes=0)
+        assert result["optimized"] is True
+        # Ensure data is still readable after optimize / potential VACUUM
+        units = storage.get_code_units_by_file("src/app.py")
+        assert len(units) == 1
+        assert units[0]["name"] == "App"

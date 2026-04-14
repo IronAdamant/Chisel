@@ -36,10 +36,11 @@ def dispatch_tool(engine, tool_name, arguments):
     kwargs = {k: v for k, v in arguments.items() if k in allowed_args and v is not None}
     result = getattr(engine, method_name)(**kwargs)
     if limit is not None:
+        limit = min(int(limit), 1000)
         if isinstance(result, list):
-            result = result[:int(limit)]
+            result = result[:limit]
         elif isinstance(result, dict) and isinstance(result.get("files"), list):
-            result = {**result, "files": result["files"][:int(limit)]}
+            result = {**result, "files": result["files"][:limit]}
     next_steps = compute_next_steps(tool_name, result)
     return result, next_steps
 
@@ -147,18 +148,42 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
 
 # ------------------------------------------------------------------ #
-# Threaded HTTP server
+# Threaded HTTP server (bounded thread pool)
 # ------------------------------------------------------------------ #
 
-class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    """HTTPServer that handles each request in a new thread."""
+class ThreadPoolHTTPServer(HTTPServer):
+    """HTTPServer that handles each request in a bounded thread pool."""
 
-    daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 128
 
-    def __init__(self, server_address, handler_class, engine):
+    def __init__(self, server_address, handler_class, engine, max_workers=32):
         self.engine = engine
+        self._max_workers = max_workers
+        self._executor = None
         super().__init__(server_address, handler_class)
+
+    def serve_forever(self, poll_interval=0.5):
+        from concurrent.futures import ThreadPoolExecutor
+        self._executor = ThreadPoolExecutor(
+            max_workers=self._max_workers, thread_name_prefix="chisel-mcp-"
+        )
+        try:
+            super().serve_forever(poll_interval)
+        finally:
+            self._executor.shutdown(wait=False)
+            self._executor = None
+
+    def process_request(self, request, client_address):
+        self._executor.submit(self.process_request_thread, request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            self.finish_request(request, client_address)
+        except Exception:
+            self.handle_error(request, client_address)
+        finally:
+            self.close_request(request)
 
 
 # ------------------------------------------------------------------ #
@@ -166,7 +191,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 # ------------------------------------------------------------------ #
 
 class ChiselMCPServer:
-    """Convenience wrapper around ThreadedHTTPServer + ChiselEngine.
+    """Convenience wrapper around ThreadPoolHTTPServer + ChiselEngine.
 
     Usage::
 
@@ -187,15 +212,17 @@ class ChiselMCPServer:
 
     # -- Public API ---------------------------------------------------- #
 
-    def start(self, blocking=True):
+    def start(self, blocking=True, max_workers=32):
         """Start the HTTP server.
 
         Args:
             blocking: If True (default), serve forever on the calling thread.
                       If False, spawn a daemon thread and return immediately.
+            max_workers: Maximum size of the request thread pool (default 32).
         """
-        self._httpd = ThreadedHTTPServer(
+        self._httpd = ThreadPoolHTTPServer(
             (self._host, self._port), MCPRequestHandler, self._engine,
+            max_workers=max_workers,
         )
         # Update port in case 0 was passed (OS-assigned)
         self._port = self._httpd.server_address[1]

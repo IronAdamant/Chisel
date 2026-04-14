@@ -11,9 +11,9 @@ from chisel.test_mapper import TestMapper, _compute_proximity_weight
 
 
 class StaticImportIndex:
-    """One-time scan of test files (DB + optional disk-only) to map code paths → tests."""
+    """Map code paths → covering tests using DB-backed static imports + disk overlay."""
 
-    __slots__ = ("_project_dir", "_edges")
+    __slots__ = ("_project_dir", "_by_tgt", "_disk_test_files")
 
     def __init__(
         self,
@@ -23,57 +23,60 @@ class StaticImportIndex:
         extra_code_paths: set[str] | None = None,
     ):
         self._project_dir = str(project_dir)
-        self._edges: list[dict] = []
-        self._build(storage, disk_test_files or {}, extra_code_paths or set())
+        self._by_tgt: dict[str, list[dict]] = {}
+        self._disk_test_files: dict[str, list[str]] = disk_test_files or {}
+        self._build(storage, extra_code_paths or set())
 
-    def _build(
-        self,
-        storage,
-        disk_test_files: dict[str, list[str]],
-        extra_code_paths: set[str],
-    ) -> None:
-        all_paths = set(storage.get_resolvable_code_file_paths()) | set(extra_code_paths)
-        combined: dict[str, list[str]] = dict(storage.get_all_test_files())
-        for rel, names in disk_test_files.items():
-            if rel not in combined:
-                combined[rel] = names
-            else:
-                merged = list(dict.fromkeys(combined[rel] + names))
-                combined[rel] = merged
+    def _build(self, storage, extra_code_paths: set[str]) -> None:
+        # 1. Load DB-persisted static imports as the base index
+        rows = storage._fetchall(
+            "SELECT test_file_path, test_unit_name, target_file_path, gap_eligible FROM static_test_imports",
+        )
+        for row in rows:
+            e = {
+                "tgt": row["target_file_path"].replace("\\", "/"),
+                "test_fp": row["test_file_path"],
+                "name": row["test_unit_name"],
+                "gap_eligible": bool(row["gap_eligible"]),
+                "py_imp": row["test_file_path"].endswith(".py"),
+            }
+            self._by_tgt.setdefault(e["tgt"], []).append(e)
 
-        for test_fp, unit_names in combined.items():
-            abs_path = os.path.join(self._project_dir, test_fp)
-            try:
-                content = Path(abs_path).read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            lang = detect_language(test_fp)
-            py_imp = test_fp.endswith(".py")
-            deps = TestMapper.extract_test_dependencies(test_fp, content)
-            for dep in deps:
-                if dep.get("dep_type") != "import":
+        # 2. Overlay disk-only (untracked) test files
+        if self._disk_test_files:
+            all_paths = set(storage.get_resolvable_code_file_paths()) | extra_code_paths
+            for test_fp, unit_names in self._disk_test_files.items():
+                abs_path = os.path.join(self._project_dir, test_fp)
+                try:
+                    content = Path(abs_path).read_text(encoding="utf-8", errors="replace")
+                except OSError:
                     continue
-                mp = dep.get("module_path")
-                if py_imp:
-                    gap_eligible = False
-                elif lang in ("javascript", "typescript") and mp and mp.startswith("."):
-                    gap_eligible = True
-                elif test_fp.endswith(".go") and mp:
-                    gap_eligible = True
-                else:
-                    gap_eligible = False
-                for tgt in _resolve_import_targets(
-                    test_fp, dep, mp, all_paths,
-                ):
-                    tgt_n = tgt.replace("\\", "/")
-                    for name in unit_names:
-                        self._edges.append({
-                            "tgt": tgt_n,
-                            "test_fp": test_fp,
-                            "name": name,
-                            "gap_eligible": gap_eligible,
-                            "py_imp": py_imp,
-                        })
+                lang = detect_language(test_fp)
+                py_imp = test_fp.endswith(".py")
+                deps = TestMapper.extract_test_dependencies(test_fp, content)
+                for dep in deps:
+                    if dep.get("dep_type") != "import":
+                        continue
+                    mp = dep.get("module_path")
+                    if py_imp:
+                        gap_eligible = False
+                    elif lang in ("javascript", "typescript") and mp and mp.startswith("."):
+                        gap_eligible = True
+                    elif test_fp.endswith(".go") and mp:
+                        gap_eligible = True
+                    else:
+                        gap_eligible = False
+                    for tgt in _resolve_import_targets(test_fp, dep, mp, all_paths):
+                        tgt_n = tgt.replace("\\", "/")
+                        for name in unit_names:
+                            e = {
+                                "tgt": tgt_n,
+                                "test_fp": test_fp,
+                                "name": name,
+                                "gap_eligible": gap_eligible,
+                                "py_imp": py_imp,
+                            }
+                            self._by_tgt.setdefault(tgt_n, []).append(e)
 
     def find_tests(
         self,
@@ -84,10 +87,9 @@ class StaticImportIndex:
     ) -> list[dict]:
         """Tests whose static imports resolve to *code_file_path* (project-relative)."""
         norm = code_file_path.replace("\\", "/")
+        edges = self._by_tgt.get(norm, [])
         by_id: dict[str, dict] = {}
-        for e in self._edges:
-            if e["tgt"] != norm:
-                continue
+        for e in edges:
             if gap_eligible_only and not e["gap_eligible"]:
                 continue
             if not include_python and e["py_imp"]:

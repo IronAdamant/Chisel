@@ -7,8 +7,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-04-14
+
 ### Added
 
+- **`optimize_storage` MCP tool**: Runs `PRAGMA optimize` and conditionally `VACUUM` when the WAL file grows large, reducing fragmentation and stale query plans after months of incremental updates.
+- **Incremental import graph rebuilds**: `_rebuild_import_edges()` now only deletes and rebuilds edges for changed files instead of clearing the entire table. This turns an `O(all_files)` operation into `O(changed_files)` and keeps 1k+ file monorepo updates under 3 seconds.
+- **Directory-scoped `suggest_tests`**: `tool_suggest_tests` accepts a `directory` parameter and returns aggregated suggestions for all code files under that path.
+- **Background job cancellation & events**: Added `cancel_job` tool, `cancel_requested_at` flag on `bg_jobs`, `JobCancelledError`, and a `job_events` table. `analyze()` / `update()` check for cancellation at phase boundaries and record progress events.
+- **Framework fixture test suite**: `tests/test_language_frameworks.py` covers C# (`[Fact]`, `[Theory]`), Java (`@Test`), Rust (`#[test]`, `#[tokio::test]`), Swift (`@Test`), and Go module-aware import resolution.
+- **Query pagination hard bounds**: `limit` is enforced server-side (max 1000) for all list-returning tools.
 - **`risk_map` `working_tree` parameter**: When `working_tree=true`, untracked code files are included in risk scoring. New files with zero commits and zero test coverage receive a `new_file_boost` of 0.5 so they surface in rankings instead of being invisible.
 - **`risk_map` missing-file warning**: When untracked files exist but `working_tree=false`, `_meta.warnings` includes a message indicating how many files were excluded from scoring.
 - **`test_gaps` working-tree elevation**: Gaps from untracked files now sort to the top of the list when `working_tree=true`, preventing the `limit` parameter from cutting them off.
@@ -32,10 +40,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`storage.py` SQLite concurrency stability**: Restored `with self._conn as conn:` wrappers in `_fetchall`, `_fetchone`, `_execute`, and `_executemany` to prevent indefinite implicit-transaction hangs in background job threads.
 - **`risk_map` crash with `working_tree=true`**: Fixed `KeyError: 'heuristic'` when heuristic test edges exist (created by `_backfill_heuristic_edges`) by adding `"heuristic"` to `edge_type_counts` in both `compute_risk_score` and `get_risk_map`.
 - **`suggest_tests` timeout on working-tree files**: Added `StaticImportIndex` caching to `ImpactAnalyzer` and a fast-path in `tool_suggest_tests` that skips the expensive static index build when there are no DB edges for a working-tree file, falling back directly to stem-matching.
 - **`diff_impact` timeout under working-tree load**: `StaticImportIndex` is now reused via cache, and `tool_diff_impact` only performs static import scanning on tracked changed files, using stem-matching for untracked files to avoid timeouts with many uncommitted files.
-
 - **`storage.py` read-only transaction error**: `_fetchone()` and `_execute()` no longer use `with self._conn as conn:` for reads, which caused `sqlite3.OperationalError: cannot commit - no transaction is active` when SQLite implicitly opened no transaction for SELECT queries.
 
 ## [0.8.2] - 2026-04-10

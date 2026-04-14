@@ -345,6 +345,19 @@ _TOOL_SCHEMAS = {
             "required": [],
         },
     },
+    "optimize_storage": {
+        "name": "optimize_storage",
+        "description": (
+            "Run PRAGMA optimize and VACUUM if the WAL file exceeds a threshold. "
+            "Use periodically to reduce fragmentation and stale query plans. "
+            + HEURISTIC_TRUST_NOTE
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
     "test_gaps": {
         "name": "test_gaps",
         "description": (
@@ -585,7 +598,7 @@ _TOOL_SCHEMAS = {
 _TOOL_DISPATCH = {
     "analyze": ("tool_analyze", ["directory", "force"]),
     "impact": ("tool_impact", ["files", "functions"]),
-    "suggest_tests": ("tool_suggest_tests", ["file_path", "fallback_to_all", "working_tree"]),
+    "suggest_tests": ("tool_suggest_tests", ["file_path", "directory", "fallback_to_all", "working_tree"]),
     "churn": ("tool_churn", ["file_path", "unit_name"]),
     "ownership": ("tool_ownership", ["file_path"]),
     "coupling": ("tool_coupling", ["file_path", "min_count"]),
@@ -598,12 +611,14 @@ _TOOL_DISPATCH = {
     "who_reviews": ("tool_who_reviews", ["file_path"]),
     "diff_impact": ("tool_diff_impact", ["ref", "working_tree"]),
     "update": ("tool_update", []),
-    "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests", "working_tree"]),
+    "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests", "working_tree", "limit"]),
     "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
     "triage": ("tool_triage", ["directory", "top_n", "exclude_tests", "working_tree"]),
     "stats": ("tool_stats", []),
+    "optimize_storage": ("tool_optimize_storage", []),
     "start_job": ("tool_start_job", ["kind", "directory", "force"]),
     "job_status": ("tool_job_status", ["job_id"]),
+    "cancel_job": ("tool_cancel_job", ["job_id"]),
     # --- file_locks ---
     "acquire_file_lock": ("tool_acquire_file_lock", ["file_path", "agent_id", "ttl", "purpose"]),
     "release_file_lock": ("tool_release_file_lock", ["file_path", "agent_id"]),

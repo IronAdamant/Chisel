@@ -121,9 +121,19 @@ class TestMapper:
         file_hash = compute_file_hash(file_path)
         units = extract_code_units(file_path, content)
 
+        # For annotation-driven frameworks, collect explicitly annotated names
+        annotated = _annotated_test_names(content, framework)
+
         test_units = []
         for unit in units:
-            if unit.unit_type in _TEST_UNIT_TYPES or _is_test_name(unit.name, framework):
+            if unit.unit_type in _TEST_UNIT_TYPES:
+                keep = True
+            elif framework in ("rust", "junit", "xctest", "swift_test", "csharp_test"):
+                bare = unit.name.rsplit(".", 1)[-1]
+                keep = bare in annotated or _is_test_name(unit.name, framework)
+            else:
+                keep = _is_test_name(unit.name, framework)
+            if keep:
                 tid = f"{rel_path}:{unit.name}"
                 test_units.append({
                     "id": tid,
@@ -147,9 +157,12 @@ class TestMapper:
 
         Returns a list of dependency dicts: {name, dep_type}
         where dep_type is "import" or "call".
+
+        Custom extractors registered via :func:`register_dep_extractor`
+        take priority over built-in ones.
         """
         lang = detect_language(file_path)
-        extractor = _DEP_EXTRACTORS.get(lang)
+        extractor = _custom_dep_extractors.get(lang) or _DEP_EXTRACTORS.get(lang)
         return extractor(content) if extractor else []
 
     # ------------------------------------------------------------------ #
@@ -219,7 +232,25 @@ class TestMapper:
                             for cid, cfile in id_to_file.items():
                                 if _matches_js_import_path(cfile, resolved):
                                     matched_ids.append(cid)
-                # 3. Fall back to name-based matching
+                    # 3. Go import-path matching (resolve full module path to dir)
+                    if not matched_ids and detect_language(file_path) == "go":
+                        resolved = _resolve_go_import_path(
+                            self.project_dir, module_path,
+                        )
+                        if resolved:
+                            resolved_norm = resolved.replace("\\", "/")
+                            for cid, cfile in id_to_file.items():
+                                cfile_norm = cfile.replace("\\", "/")
+                                # Match any file inside the resolved directory
+                                if resolved_norm == ".":
+                                    if "/" not in cfile_norm:
+                                        matched_ids.append(cid)
+                                elif (
+                                    cfile_norm == resolved_norm
+                                    or cfile_norm.startswith(resolved_norm + "/")
+                                ):
+                                    matched_ids.append(cid)
+                # 4. Fall back to name-based matching
                 if not matched_ids:
                     matched_ids = name_to_ids.get(dep["name"], [])
 
@@ -260,7 +291,10 @@ def _is_test_name(name, framework):
         return base.startswith("Test") or base.startswith("Benchmark")
     if framework == "rust":
         return base.startswith("test_")
-    if framework in ("csharp_test", "gtest"):
+    if framework == "csharp_test":
+        # Fallback heuristic for C#: common xUnit/NUnit/MSTest naming
+        return base.startswith("Test") or base.endswith("Test") or base.endswith("Tests")
+    if framework == "gtest":
         return True
     if framework in ("junit", "xctest", "minitest", "phpunit", "dart_test"):
         return base.startswith("test") or base.startswith("Test")
@@ -289,13 +323,71 @@ def _check_playwright(file_path):
 
 def _check_rust_test_content(content):
     """Check if content contains Rust test markers."""
-    return "#[test]" in content or "#[cfg(test)]" in content
+    return (
+        "#[test]" in content
+        or "#[tokio::test]" in content
+        or "#[rstest]" in content
+        or "#[cfg(test)]" in content
+    )
 
 
 def _check_rust_test(file_path):
     """Check if a .rs file contains #[test] or #[cfg(test)]."""
     content = _read_file(file_path)
     return content is not None and _check_rust_test_content(content)
+
+
+# Regex to find Rust functions that are preceded by a test attribute
+_RUST_TEST_FN_RE = re.compile(
+    r"(?:#\[test\]|#\[tokio::test\]|#\[rstest\])\s*\n\s*"
+    r"(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)",
+    re.MULTILINE,
+)
+
+# Regex to find Java/Kotlin methods preceded by @Test
+_JAVA_TEST_METHOD_RE = re.compile(
+    r"@(?:Test|ParameterizedTest|RepeatedTest)\s*\n\s*"
+    r"(?:@[A-Za-z]+\s*\n\s*)*"
+    r"(?:public\s+|private\s+|protected\s+)?"
+    r"(?:static\s+)?"
+    r"(?:<[\w\s,<>?]+>\s+)?"
+    r"(?:[\w\[\]<>]+\s+)?"
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+    re.MULTILINE,
+)
+
+# Regex to find Swift functions preceded by @Test
+_SWIFT_TEST_FN_RE = re.compile(
+    r"@Test\s*\n\s*"
+    r"(?:async\s+)?"
+    r"(?:func\s+)?"
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+    re.MULTILINE,
+)
+
+# Regex to find C# methods preceded by [Fact], [Theory], [Test], [TestMethod]
+_CS_TEST_METHOD_RE = re.compile(
+    r"\[(?:Fact|Theory|Test|TestMethod)\s*(?:\([^)]*\))?\]\s*\n\s*"
+    r"(?:public\s+|private\s+|protected\s+|internal\s+)?"
+    r"(?:static\s+)?"
+    r"(?:async\s+)?"
+    r"(?:[\w<>,.?\[\]]+\s+)?"
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+    re.MULTILINE,
+)
+
+
+def _annotated_test_names(content, framework):
+    """Return a set of function/method names marked with test annotations."""
+    if framework == "rust":
+        return set(_RUST_TEST_FN_RE.findall(content))
+    if framework in ("junit", "xctest"):
+        return set(_JAVA_TEST_METHOD_RE.findall(content))
+    if framework == "swift_test":
+        return set(_SWIFT_TEST_FN_RE.findall(content))
+    if framework == "csharp_test":
+        return set(_CS_TEST_METHOD_RE.findall(content))
+    return set()
 
 
 def _check_cpp_test_content(content):
@@ -420,6 +512,11 @@ _JS_CJS_DESTRUCTURED_RE = re.compile(
     r"(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*['\"]([^'\"]+)['\"]\s*\)",
 )
 
+# ESM dynamic import: import('./module') or await import('./module')
+_JS_DYNAMIC_IMPORT_RE = re.compile(
+    r"(?:await\s+)?import\s*\(\s*['\"]([^'\"]+)['\"]\s*\)",
+)
+
 # Dynamic require with variable: require(variableName)
 _JS_REQUIRE_VARIABLE_RE = re.compile(
     r"require\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)",
@@ -515,6 +612,15 @@ def _extract_js_deps(content):
             name = name.strip().split(" as ")[0].strip()
             if name:
                 deps.append({"name": name, "dep_type": "import"})
+
+    # ESM dynamic imports: import('./module') or await import('./module')
+    for m in _JS_DYNAMIC_IMPORT_RE.finditer(content):
+        mod = m.group(1)
+        deps.append({
+            "name": f"import({mod})",
+            "dep_type": "dynamic_import",
+            "module_path": mod,
+        })
 
     # --- Dynamic require() detection (DynamicRequireChainTracer) ---
     # Build variable taint map first so we can resolve known variable assignments
@@ -613,6 +719,47 @@ _GO_IMPORT_SINGLE_RE = re.compile(r'^import\s+"([^"]+)"', re.MULTILINE)
 _GO_IMPORT_LINE_RE = re.compile(r'"([^"]+)"')
 
 
+def _go_module_name(project_dir: str) -> str | None:
+    """Read the module directive from go.mod if present."""
+    go_mod = Path(project_dir) / "go.mod"
+    if not go_mod.exists():
+        return None
+    try:
+        text = go_mod.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("module "):
+            return line.split(None, 1)[1].split()[0].strip('"')
+    return None
+
+
+_GO_MODULE_CACHE: dict[str, str | None] = {}
+
+
+def _resolve_go_import_path(project_dir: str, import_path: str) -> str | None:
+    """Map a Go import path to a project-relative directory path.
+
+    If the import path belongs to the module declared in go.mod, the
+    module prefix is stripped and the remainder is returned as a relative
+    directory path. External or stdlib imports return None.
+    """
+    cache_key = project_dir
+    mod = _GO_MODULE_CACHE.get(cache_key)
+    if mod is None and cache_key not in _GO_MODULE_CACHE:
+        mod = _go_module_name(project_dir)
+        _GO_MODULE_CACHE[cache_key] = mod
+    if not mod:
+        return None
+    norm = import_path.rstrip("/")
+    if norm.startswith(mod + "/"):
+        return norm[len(mod) + 1 :]
+    if norm == mod:
+        return "."
+    return None
+
+
 def _extract_go_deps(content):
     """Extract imports from Go content."""
     deps = []
@@ -621,12 +768,14 @@ def _extract_go_deps(content):
         for line in block.strip().split("\n"):
             im = _GO_IMPORT_LINE_RE.search(line)
             if im:
-                pkg = im.group(1).rsplit("/", 1)[-1]
-                deps.append({"name": pkg, "dep_type": "import"})
+                full = im.group(1)
+                pkg = full.rsplit("/", 1)[-1]
+                deps.append({"name": pkg, "dep_type": "import", "module_path": full})
 
     for m in _GO_IMPORT_SINGLE_RE.finditer(content):
-        pkg = m.group(1).rsplit("/", 1)[-1]
-        deps.append({"name": pkg, "dep_type": "import"})
+        full = m.group(1)
+        pkg = full.rsplit("/", 1)[-1]
+        deps.append({"name": pkg, "dep_type": "import", "module_path": full})
 
     return _dedupe_deps(deps)
 
@@ -801,6 +950,38 @@ _DEP_EXTRACTORS = {
     "dart": _extract_dart_deps,
 }
 
+_custom_dep_extractors: dict[str, object] = {}
+
+
+def register_dep_extractor(language, extractor):
+    """Register a custom dependency extractor for a language.
+
+    Custom extractors override the built-in regex-based ones, allowing
+    users to supply precise import/require parsing (e.g. tree-sitter)
+    without adding dependencies to Chisel itself.
+
+    Args:
+        language: Language string (e.g. "javascript", "go").
+        extractor: Callable with signature
+                   ``(content: str) -> list[dict]``.
+
+    Raises:
+        TypeError: If *extractor* is not callable.
+    """
+    if not callable(extractor):
+        raise TypeError(f"extractor must be callable, got {type(extractor).__name__}")
+    _custom_dep_extractors[language] = extractor
+
+
+def unregister_dep_extractor(language):
+    """Remove a custom dependency extractor."""
+    del _custom_dep_extractors[language]
+
+
+def get_registered_dep_extractors():
+    """Return a shallow copy of the custom dep extractor registry."""
+    return dict(_custom_dep_extractors)
+
 
 def _compute_proximity_weight(test_path, code_path):
     """Compute edge weight based on file-path proximity (0.4-1.0).
@@ -888,12 +1069,21 @@ def _matches_js_import_path(code_file_path, resolved_import):
 
 
 def _dedupe_deps(deps):
-    """Remove duplicate dependencies, keeping first occurrence."""
-    seen = set()
-    result = []
+    """Remove duplicate dependencies, keeping the richest first occurrence.
+
+    Deduplicates by (name, dep_type) but prefers entries that have a
+    ``module_path``. This ensures distinct imports with the same local
+    name (e.g. ``from a import foo`` and ``from b import foo``) are
+    preserved, while fallback entries without ``module_path`` are dropped
+    when a path-aware entry already exists.
+    """
+    by_key: dict[tuple[str, str], dict] = {}
     for dep in deps:
         key = (dep["name"], dep["dep_type"])
-        if key not in seen:
-            seen.add(key)
-            result.append(dep)
-    return result
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = dep
+        elif not existing.get("module_path") and dep.get("module_path"):
+            # Prefer the later entry if it carries path information
+            by_key[key] = dep
+    return list(by_key.values())

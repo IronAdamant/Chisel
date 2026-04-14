@@ -641,6 +641,7 @@ class ImpactAnalyzer:
         exclude_tests=True,
         disk_test_files=None,
         extra_code_paths=None,
+        limit=None,
     ):
         """Find code units that have no test coverage, prioritized by churn.
 
@@ -653,6 +654,7 @@ class ImpactAnalyzer:
             file_path: Scope to a single file.
             directory: Scope to a directory (file_path takes precedence).
             exclude_tests: If True (default), exclude units from test files.
+            limit: Optional maximum number of results to return.
 
         Returns:
             List of dicts: {id, file_path, name, unit_type, line_start,
@@ -662,6 +664,7 @@ class ImpactAnalyzer:
             file_path=file_path,
             directory=directory if not file_path else None,
             exclude_tests=exclude_tests,
+            limit=limit,
         ))
         if not gaps:
             return gaps
@@ -791,9 +794,11 @@ class ImpactAnalyzer:
                 set(files), tested_files, import_neighbors_batch,
             )
 
-        file_hash_pairs = [
-            (fp, _latest_hash(self.storage, fp)) for fp in files
-        ]
+        file_hashes_batch = self.storage.get_file_hashes_batch(files)
+        file_hash_pairs = []
+        for fp in files:
+            entry = file_hashes_batch.get(fp)
+            file_hash_pairs.append((fp, entry.get("hash") if entry else ""))
         blame_batch = self.storage.get_blame_batch(file_hash_pairs)
 
         risk_map = []

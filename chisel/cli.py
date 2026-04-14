@@ -56,8 +56,11 @@ def create_parser():
 
     # suggest-tests
     p_suggest = sub.add_parser("suggest-tests", parents=[shared],
-                               help="Suggest tests for a file")
-    p_suggest.add_argument("file", help="File path")
+                               help="Suggest tests for a file or directory")
+    p_suggest.add_argument("file", nargs="?", default=None,
+                           help="File path (optional if --directory is given)")
+    p_suggest.add_argument("--directory", default=None,
+                           help="Directory path; returns suggestions for all code files under it")
     p_suggest.add_argument("--fallback", action="store_true",
                            help="Also return all test files if no edges found")
     p_suggest.add_argument("--working-tree", action="store_true",
@@ -167,6 +170,10 @@ def create_parser():
     p_jstat = sub.add_parser("job-status", parents=[shared],
                              help="Poll a background job from start-job")
     p_jstat.add_argument("job_id", help="Job id returned by start-job")
+
+    p_jcancel = sub.add_parser("cancel-job", parents=[shared],
+                               help="Request cancellation of a background job")
+    p_jcancel.add_argument("job_id", help="Job id returned by start-job")
 
     # triage
     p_triage = sub.add_parser("triage", parents=[shared],
@@ -320,11 +327,26 @@ def cmd_impact(args):
 
 
 def cmd_suggest_tests(args):
-    return _run_tool(args, "tool_suggest_tests",
-                     {"file_path": args.file, "fallback_to_all": args.fallback,
-                      "working_tree": args.working_tree},
-                     _fmt_list("No test suggestions.", "Suggested tests:",
-                               lambda i: f"{i['name']}  (score: {i['relevance']})"))
+    kwargs = {"fallback_to_all": args.fallback, "working_tree": args.working_tree}
+    if args.directory:
+        kwargs["directory"] = args.directory
+    else:
+        kwargs["file_path"] = args.file
+
+    def fmt(result, args):
+        if not result:
+            print("No test suggestions.")
+            return
+        if isinstance(result, dict):
+            for fp, items in result.items():
+                print(f"\n{fp}:")
+                for i in items:
+                    print(f"  {i['name']}  (score: {i['relevance']})")
+        else:
+            for i in result:
+                print(f"{i['name']}  (score: {i['relevance']})")
+
+    return _run_tool(args, "tool_suggest_tests", kwargs, fmt)
 
 
 def cmd_churn(args):
@@ -506,6 +528,11 @@ def cmd_job_status(args):
                      _fmt_kv("Job status:"), use_limit=False)
 
 
+def cmd_cancel_job(args):
+    return _run_tool(args, "tool_cancel_job", {"job_id": args.job_id},
+                     _fmt_kv("Cancel job:"), use_limit=False)
+
+
 # --- file_locks ---
 
 def cmd_acquire_lock(args):
@@ -640,6 +667,7 @@ _COMMANDS = {
     "stats": cmd_stats,
     "start-job": cmd_start_job,
     "job-status": cmd_job_status,
+    "cancel-job": cmd_cancel_job,
     "serve": cmd_serve,
     "serve-mcp": cmd_serve_mcp,
     # --- file_locks ---

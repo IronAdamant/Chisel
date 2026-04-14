@@ -62,9 +62,17 @@ def _configure_server(engine):
             result, next_steps = await loop.run_in_executor(
                 None, lambda: dispatch_tool(engine, name, arguments),
             )
+        except ValueError as exc:
+            # Unknown tool or invalid arguments
+            logger.warning("Tool error %s: %s", name, exc)
+            payload = {"status": "error", "message": str(exc)}
+            text = json.dumps(payload, default=str)
+            return [TextContent(type="text", text=text)]
         except Exception as exc:
             logger.exception("Error executing tool %s", name)
-            return [TextContent(type="text", text=f"Error: {exc}")]
+            payload = {"status": "error", "message": str(exc)}
+            text = json.dumps(payload, default=str)
+            return [TextContent(type="text", text=text)]
 
         payload = {"result": result}
         if next_steps:

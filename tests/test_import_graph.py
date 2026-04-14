@@ -51,3 +51,25 @@ class TestBuildImportEdges:
             _resolve_import_targets("widget_test.go", dep, "x/y/widget", all_paths),
         )
         assert "widget.go" in hits
+
+    def test_scan_subset_only_builds_edges_for_scanned_files(self, tmp_project):
+        """When scan_rel_paths is provided, only those files are re-scanned,
+        but resolution still sees all source_rel_paths."""
+        mapper = TestMapper(str(tmp_project))
+        rels = ["provider.py", "consumer.py"]
+        # Scan only consumer.py; provider.py should still resolve
+        edges = build_import_edges(
+            mapper, str(tmp_project), rels, set(), scan_rel_paths={"consumer.py"},
+        )
+        pairs = {(e["importer_file"], e["imported_file"]) for e in edges}
+        assert ("consumer.py", "provider.py") in pairs
+        assert len(edges) == 1
+
+    def test_empty_scan_subset_returns_no_new_edges(self, tmp_project):
+        """When scan_rel_paths is empty, no edges are built."""
+        mapper = TestMapper(str(tmp_project))
+        rels = ["provider.py", "consumer.py"]
+        edges = build_import_edges(
+            mapper, str(tmp_project), rels, set(), scan_rel_paths=set(),
+        )
+        assert edges == []

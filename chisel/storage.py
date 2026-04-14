@@ -1,7 +1,10 @@
 """SQLite persistence layer for Chisel's data model."""
 
+import json
 import logging
+import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,7 +26,8 @@ class Storage:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.base_dir / "chisel.db"
-        self._conn = self._create_connection()
+        self._lock = threading.Lock()
+        self._local = threading.local()
         self._init_database()
 
     def _create_connection(self):
@@ -49,9 +53,22 @@ class Storage:
 
     def close(self):
         """Close the persistent database connection."""
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        if hasattr(self._local, "conn") and self._local.conn is not None:
+            self._local.conn.close()
+            self._local.conn = None
+
+    @property
+    def _conn(self):
+        """Return the SQLite connection for the current thread."""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = self._create_connection()
+            self._local.conn = conn
+        return conn
+
+    def _ensure_main_conn(self):
+        """Deprecated — kept for backward compat; returns current thread conn."""
+        return self._conn
 
     def _init_database(self):
         # executescript auto-commits; no need for a context manager.
@@ -148,6 +165,10 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_blame_cache_hash ON blame_cache(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_churn_stats_file ON churn_stats(file_path);
                 CREATE INDEX IF NOT EXISTS idx_co_changes_file_b ON co_changes(file_b);
+                CREATE INDEX IF NOT EXISTS idx_churn_stats_file_unit ON churn_stats(file_path, unit_name);
+                CREATE INDEX IF NOT EXISTS idx_co_changes_file_a ON co_changes(file_a);
+                CREATE INDEX IF NOT EXISTS idx_blame_cache_lookup ON blame_cache(file_path, content_hash, line_start);
+                CREATE INDEX IF NOT EXISTS idx_commits_date ON commits(date);
 
                 CREATE TABLE IF NOT EXISTS import_edges (
                     importer_file TEXT NOT NULL,
@@ -165,6 +186,7 @@ class Storage:
                     PRIMARY KEY (file_a, file_b)
                 );
                 CREATE INDEX IF NOT EXISTS idx_branch_co_changes_b ON branch_co_changes(file_b);
+                CREATE INDEX IF NOT EXISTS idx_branch_co_changes_a ON branch_co_changes(file_a);
 
                 CREATE TABLE IF NOT EXISTS test_results (
                     test_id TEXT,
@@ -209,6 +231,48 @@ class Storage:
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+        # Schema migration: add cancel_requested_at and started_at to bg_jobs
+        for col in ("cancel_requested_at", "started_at"):
+            try:
+                self._conn.execute(f"ALTER TABLE bg_jobs ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+        # Schema migration: add job_events table
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS job_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events(job_id, created_at)"
+        )
+
+        # Schema migration: add static_test_imports table and file_hashes columns
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS static_test_imports (
+                test_file_path TEXT NOT NULL,
+                test_unit_name TEXT NOT NULL,
+                target_file_path TEXT NOT NULL,
+                gap_eligible INTEGER DEFAULT 0,
+                score REAL DEFAULT 1.0,
+                PRIMARY KEY (test_file_path, test_unit_name, target_file_path)
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_static_test_imports_target "
+            "ON static_test_imports(target_file_path)"
+        )
+        for col_def in ("mtime REAL", "size INTEGER"):
+            try:
+                self._conn.execute(f"ALTER TABLE file_hashes ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
     # --- Query helpers ---
 
     @staticmethod
@@ -218,16 +282,24 @@ class Storage:
     def _fetchall(self, sql, params=()):
         """Execute a query and return all rows as dicts."""
         with self._conn as conn:
-            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+            cur = conn.execute(sql, params)
+            try:
+                return [dict(r) for r in cur.fetchall()]
+            finally:
+                cur.close()
 
     def _fetchone(self, sql, params=()):
         """Execute a query and return a single row as dict, or None."""
         with self._conn as conn:
-            row = conn.execute(sql, params).fetchone()
-            return dict(row) if row else None
+            cur = conn.execute(sql, params)
+            try:
+                row = cur.fetchone()
+                return dict(row) if row else None
+            finally:
+                cur.close()
 
     def _execute(self, sql, params=()):
-        """Execute a write query within a transaction. Returns the cursor.
+        """Execute a write query within a transaction. Returns rowcount.
 
         Retries on SQLITE_BUSY with exponential backoff for cross-process
         safety (e.g., two agents analyzing concurrently).
@@ -236,10 +308,34 @@ class Storage:
         for attempt in range(_BUSY_RETRIES):
             try:
                 with self._conn as conn:
-                    return conn.execute(sql, params)
+                    cur = conn.execute(sql, params)
+                    rc = cur.rowcount
+                    cur.close()
+                    return rc
             except sqlite3.OperationalError as exc:
                 if "database is locked" in str(exc) and attempt < _BUSY_RETRIES - 1:
                     logger.debug("SQLITE_BUSY (attempt %d), retrying in %.1fs", attempt + 1, backoff)
+                    time.sleep(backoff)
+                    backoff *= 2
+                else:
+                    raise
+
+    def _executemany(self, sql, params_seq):
+        """Execute a write query repeatedly within a single transaction.
+
+        Uses ``executemany`` for bulk inserts/upserts. Retries on
+        SQLITE_BUSY with exponential backoff.
+        """
+        backoff = _BUSY_BACKOFF
+        for attempt in range(_BUSY_RETRIES):
+            try:
+                with self._conn as conn:
+                    cur = conn.executemany(sql, params_seq)
+                    cur.close()
+                    return cur
+            except sqlite3.OperationalError as exc:
+                if "database is locked" in str(exc) and attempt < _BUSY_RETRIES - 1:
+                    logger.debug("SQLITE_BUSY (executemany attempt %d), retrying in %.1fs", attempt + 1, backoff)
                     time.sleep(backoff)
                     backoff *= 2
                 else:
@@ -303,6 +399,27 @@ class Storage:
 
     def delete_code_units_by_file(self, file_path):
         self._execute("DELETE FROM code_units WHERE file_path = ?", (file_path,))
+
+    def upsert_code_units_batch(self, rows):
+        """Batch upsert code units.
+
+        *rows* is an iterable of (id, file_path, name, unit_type,
+        line_start, line_end, content_hash) tuples.
+        """
+        if not rows:
+            return
+        now = self._now()
+        self._executemany(
+            """INSERT INTO code_units (id, file_path, name, unit_type,
+               line_start, line_end, content_hash, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+               file_path=excluded.file_path, name=excluded.name,
+               unit_type=excluded.unit_type, line_start=excluded.line_start,
+               line_end=excluded.line_end, content_hash=excluded.content_hash,
+               updated_at=excluded.updated_at""",
+            [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], now) for r in rows],
+        )
 
     # --- test_units ---
 
@@ -370,6 +487,21 @@ class Storage:
             (test_id, code_id, edge_type, weight),
         )
 
+    def upsert_test_edges_batch(self, rows):
+        """Batch upsert test edges.
+
+        *rows* is an iterable of (test_id, code_id, edge_type, weight) tuples.
+        """
+        if not rows:
+            return
+        self._executemany(
+            """INSERT INTO test_edges (test_id, code_id, edge_type, weight)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(test_id, code_id, edge_type) DO UPDATE SET
+               weight=excluded.weight""",
+            list(rows),
+        )
+
     def get_edges_for_test(self, test_id):
         return self._fetchall(
             "SELECT * FROM test_edges WHERE test_id = ?", (test_id,),
@@ -404,6 +536,37 @@ class Storage:
                ON CONFLICT(commit_hash, file_path) DO UPDATE SET
                insertions=excluded.insertions, deletions=excluded.deletions""",
             (commit_hash, file_path, insertions, deletions),
+        )
+
+    def upsert_commits_batch(self, rows):
+        """Batch upsert commits.
+
+        *rows* is an iterable of (hash, author, author_email, date, message) tuples.
+        """
+        if not rows:
+            return
+        self._executemany(
+            """INSERT INTO commits (hash, author, author_email, date, message)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(hash) DO UPDATE SET
+               author=excluded.author, author_email=excluded.author_email,
+               date=excluded.date, message=excluded.message""",
+            list(rows),
+        )
+
+    def upsert_commit_files_batch(self, rows):
+        """Batch upsert commit_files.
+
+        *rows* is an iterable of (commit_hash, file_path, insertions, deletions) tuples.
+        """
+        if not rows:
+            return
+        self._executemany(
+            """INSERT INTO commit_files (commit_hash, file_path, insertions, deletions)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(commit_hash, file_path) DO UPDATE SET
+               insertions=excluded.insertions, deletions=excluded.deletions""",
+            list(rows),
         )
 
     def get_commits_for_file(self, file_path):
@@ -441,6 +604,25 @@ class Storage:
     def invalidate_blame(self, file_path):
         self._execute("DELETE FROM blame_cache WHERE file_path = ?", (file_path,))
 
+    def store_blame_batch(self, rows):
+        """Batch upsert blame cache entries.
+
+        *rows* is an iterable of (file_path, line_start, line_end,
+        commit_hash, author, author_email, date, content_hash) tuples.
+        """
+        if not rows:
+            return
+        self._executemany(
+            """INSERT INTO blame_cache (file_path, line_start, line_end,
+               commit_hash, author, author_email, date, content_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(file_path, line_start) DO UPDATE SET
+               line_end=excluded.line_end, commit_hash=excluded.commit_hash,
+               author=excluded.author, author_email=excluded.author_email,
+               date=excluded.date, content_hash=excluded.content_hash""",
+            list(rows),
+        )
+
     # --- co_changes ---
 
     def upsert_co_change(self, file_a, file_b, co_commit_count, last_co_commit=None):
@@ -452,6 +634,27 @@ class Storage:
                co_commit_count=excluded.co_commit_count,
                last_co_commit=excluded.last_co_commit""",
             (a, b, co_commit_count, last_co_commit),
+        )
+
+    def upsert_co_changes_batch(self, rows):
+        """Batch upsert co-changes.
+
+        *rows* is an iterable of (file_a, file_b, co_commit_count, last_co_commit) tuples.
+        file_a and file_b are sorted before insertion.
+        """
+        if not rows:
+            return
+        sorted_rows = []
+        for a, b, cc, lc in rows:
+            a, b = sorted([a, b])
+            sorted_rows.append((a, b, cc, lc))
+        self._executemany(
+            """INSERT INTO co_changes (file_a, file_b, co_commit_count, last_co_commit)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(file_a, file_b) DO UPDATE SET
+               co_commit_count=excluded.co_commit_count,
+               last_co_commit=excluded.last_co_commit""",
+            sorted_rows,
         )
 
     def get_co_changes(self, file_path, min_count=3):
@@ -468,11 +671,35 @@ class Storage:
         """Remove all static import edges (full rebuild before reinsert)."""
         self._execute("DELETE FROM import_edges")
 
+    def delete_import_edges_for_files(self, file_paths):
+        """Delete all import edges where *importer_file* is in *file_paths*."""
+        if not file_paths:
+            return
+        for chunk in self._chunked(list(file_paths), size=450):
+            placeholders = ",".join("?" for _ in chunk)
+            self._execute(
+                f"DELETE FROM import_edges WHERE importer_file IN ({placeholders})",
+                tuple(chunk),
+            )
+
     def upsert_import_edge(self, importer_file, imported_file):
         self._execute(
             """INSERT OR IGNORE INTO import_edges (importer_file, imported_file)
                VALUES (?, ?)""",
             (importer_file, imported_file),
+        )
+
+    def upsert_import_edges_batch(self, rows):
+        """Batch insert import edges (ignore duplicates).
+
+        *rows* is an iterable of (importer_file, imported_file) tuples.
+        """
+        if not rows:
+            return
+        self._executemany(
+            """INSERT OR IGNORE INTO import_edges (importer_file, imported_file)
+               VALUES (?, ?)""",
+            list(rows),
         )
 
     def get_import_neighbors_batch(self, file_paths):
@@ -483,7 +710,7 @@ class Storage:
         if not file_paths:
             return {}
         result = {fp: set() for fp in file_paths}
-        for chunk in self._chunked(list(file_paths)):
+        for chunk in self._chunked_by_params(list(file_paths), params_per_item=2):
             placeholders = ",".join("?" for _ in chunk)
             sql = f"""SELECT importer_file, imported_file FROM import_edges
                       WHERE importer_file IN ({placeholders})
@@ -529,6 +756,27 @@ class Storage:
             (a, b, co_commit_count, last_co_commit),
         )
 
+    def upsert_branch_co_changes_batch(self, rows):
+        """Batch upsert branch co-changes.
+
+        *rows* is an iterable of (file_a, file_b, co_commit_count, last_co_commit) tuples.
+        file_a and file_b are sorted before insertion.
+        """
+        if not rows:
+            return
+        sorted_rows = []
+        for a, b, cc, lc in rows:
+            a, b = sorted([a, b])
+            sorted_rows.append((a, b, cc, lc))
+        self._executemany(
+            """INSERT INTO branch_co_changes (file_a, file_b, co_commit_count, last_co_commit)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(file_a, file_b) DO UPDATE SET
+               co_commit_count=excluded.co_commit_count,
+               last_co_commit=excluded.last_co_commit""",
+            sorted_rows,
+        )
+
     def get_branch_co_changes(self, file_path, min_count=1):
         return self._fetchall(
             """SELECT * FROM branch_co_changes
@@ -541,7 +789,7 @@ class Storage:
         if not file_paths:
             return {}
         result = {fp: [] for fp in file_paths}
-        for chunk in self._chunked(list(file_paths)):
+        for chunk in self._chunked_by_params(list(file_paths), params_per_item=2):
             placeholders = ",".join("?" for _ in chunk)
             rows = self._fetchall(
                 f"""SELECT * FROM branch_co_changes
@@ -581,6 +829,33 @@ class Storage:
                churn_score=excluded.churn_score""",
             (file_path, unit_name, commit_count, distinct_authors,
              total_insertions, total_deletions, last_changed, churn_score),
+        )
+
+    def upsert_churn_stats_batch(self, rows):
+        """Batch upsert churn stats.
+
+        *rows* is an iterable of (file_path, unit_name, commit_count,
+        distinct_authors, total_insertions, total_deletions, last_changed, churn_score) tuples.
+        """
+        if not rows:
+            return
+        normalized = []
+        for r in rows:
+            unit_name = self._normalize_unit_name(r[1])
+            normalized.append((r[0], unit_name, r[2], r[3], r[4], r[5], r[6], r[7]))
+        self._executemany(
+            """INSERT INTO churn_stats (file_path, unit_name, commit_count,
+               distinct_authors, total_insertions, total_deletions,
+               last_changed, churn_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(file_path, unit_name) DO UPDATE SET
+               commit_count=excluded.commit_count,
+               distinct_authors=excluded.distinct_authors,
+               total_insertions=excluded.total_insertions,
+               total_deletions=excluded.total_deletions,
+               last_changed=excluded.last_changed,
+               churn_score=excluded.churn_score""",
+            normalized,
         )
 
     def get_churn_stat(self, file_path, unit_name=None):
@@ -647,15 +922,37 @@ class Storage:
     def delete_test_units_by_file(self, file_path):
         self._execute("DELETE FROM test_units WHERE file_path = ?", (file_path,))
 
+    def upsert_test_units_batch(self, rows):
+        """Batch upsert test units.
+
+        *rows* is an iterable of (id, file_path, name, framework,
+        line_start, line_end, content_hash) tuples.
+        """
+        if not rows:
+            return
+        now = self._now()
+        self._executemany(
+            """INSERT INTO test_units (id, file_path, name, framework,
+               line_start, line_end, content_hash, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+               file_path=excluded.file_path, name=excluded.name,
+               framework=excluded.framework, line_start=excluded.line_start,
+               line_end=excluded.line_end, content_hash=excluded.content_hash,
+               updated_at=excluded.updated_at""",
+            [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], now) for r in rows],
+        )
+
     def delete_test_edges_by_test(self, test_id):
         self._execute("DELETE FROM test_edges WHERE test_id = ?", (test_id,))
 
     def get_untested_code_units(self, file_path=None, directory=None,
-                               exclude_tests=True):
+                               exclude_tests=True, limit=None):
         """Find code units with no test edges, joined with churn data.
 
         Args:
             exclude_tests: If True, exclude units from test files.
+            limit: Optional maximum number of results to return.
 
         Returns list of dicts sorted by churn_score descending.
         """
@@ -679,7 +976,11 @@ class Storage:
             prefix = directory.rstrip("/") + "/"
             base += " AND cu.file_path LIKE ?"
             params = (prefix + "%",)
-        return self._fetchall(base + " ORDER BY churn_score DESC", params)
+        base += " ORDER BY churn_score DESC"
+        if limit:
+            base += " LIMIT ?"
+            params = params + (int(limit),)
+        return self._fetchall(base, params)
 
     # --- test_results ---
 
@@ -744,11 +1045,10 @@ class Storage:
         Returns:
             Number of orphaned rows deleted.
         """
-        cursor = self._execute(
+        return self._execute(
             """DELETE FROM test_results
                WHERE test_id NOT IN (SELECT id FROM test_units)"""
         )
-        return cursor.rowcount
 
     def has_analysis_data(self):
         """Check whether the database contains any analysis data.
@@ -781,9 +1081,10 @@ class Storage:
         now = self._now()
         self._execute(
             """INSERT INTO bg_jobs (id, kind, status, result_json, error_message,
-                                    progress_pct, created_at, updated_at)
-               VALUES (?, ?, ?, NULL, NULL, 0, ?, ?)""",
-            (job_id, kind, status, now, now),
+                                    progress_pct, created_at, updated_at,
+                                    cancel_requested_at, started_at)
+               VALUES (?, ?, ?, NULL, NULL, 0, ?, ?, NULL, ?)""",
+            (job_id, kind, status, now, now, now),
         )
 
     def update_bg_job(self, job_id, status, result_json=None, error_message=None,
@@ -804,10 +1105,70 @@ class Storage:
                 (status, result_json, error_message, self._now(), job_id),
             )
 
+    def request_bg_job_cancel(self, job_id):
+        """Set the cancel-requested flag on a running job."""
+        self._execute(
+            "UPDATE bg_jobs SET cancel_requested_at = ? WHERE id = ?",
+            (self._now(), job_id),
+        )
+
+    def is_bg_job_cancel_requested(self, job_id):
+        """Return True if a cancel has been requested for *job_id*."""
+        row = self._fetchone(
+            "SELECT cancel_requested_at FROM bg_jobs WHERE id = ?",
+            (job_id,),
+        )
+        return row is not None and row["cancel_requested_at"] is not None
+
     def get_bg_job(self, job_id):
         """Return job row as dict, or None if missing."""
         row = self._fetchone("SELECT * FROM bg_jobs WHERE id = ?", (job_id,))
         return dict(row) if row else None
+
+    def sweep_stale_bg_jobs(self, max_duration_minutes=30):
+        """Mark any 'running' jobs as 'failed' (server restarted or timed out).
+
+        Returns the number of jobs affected.
+        """
+        now = self._now()
+        count = self._execute(
+            """UPDATE bg_jobs SET status = 'failed',
+                                  error_message = 'Server restarted while job was running'
+               WHERE status = 'running' AND started_at IS NULL""",
+        )
+        count += self._execute(
+            f"""UPDATE bg_jobs SET status = 'failed',
+                                   error_message = 'Exceeded maximum duration ({max_duration_minutes}m)'
+                WHERE status = 'running'
+                  AND datetime(started_at, '+{max_duration_minutes} minutes') < datetime(?)""",
+            (now,),
+        )
+        return count
+
+    # --- job_events ---
+
+    def insert_job_event(self, job_id, event_type, payload=None):
+        """Record a progress or lifecycle event for a background job."""
+        self._execute(
+            """INSERT INTO job_events (job_id, event_type, payload_json, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (job_id, event_type, json.dumps(payload) if payload else None, self._now()),
+        )
+
+    def get_job_events(self, job_id, limit=50):
+        """Return recent events for a job, newest first."""
+        rows = self._fetchall(
+            """SELECT event_type, payload_json, created_at FROM job_events
+               WHERE job_id = ? ORDER BY created_at DESC LIMIT ?""",
+            (job_id, limit),
+        )
+        result = []
+        for r in rows:
+            item = {"event_type": r["event_type"], "created_at": r["created_at"]}
+            if r["payload_json"]:
+                item["payload"] = json.loads(r["payload_json"])
+            result.append(item)
+        return result
 
     # --- file_locks ---
 
@@ -934,6 +1295,17 @@ class Storage:
         for i in range(0, len(items), size):
             yield items[i:i + size]
 
+    @staticmethod
+    def _chunked_by_params(items, params_per_item, max_params=950):
+        """Chunk *items* so that total SQL parameters stay under SQLite's limit.
+
+        SQLite defaults to 999 variables per statement. We use 950 to leave
+        headroom for additional trailing parameters (e.g. min_count).
+        """
+        size = max(1, max_params // max(1, params_per_item))
+        for i in range(0, len(items), size):
+            yield items[i:i + size]
+
     def get_edges_for_code_batch(self, code_ids):
         """Batch-fetch test edges for multiple code unit IDs.
 
@@ -997,7 +1369,7 @@ class Storage:
         if not file_paths:
             return {}
         result = {fp: [] for fp in file_paths}
-        for chunk in self._chunked(list(file_paths)):
+        for chunk in self._chunked_by_params(list(file_paths), params_per_item=2):
             placeholders = ",".join("?" for _ in chunk)
             rows = self._fetchall(
                 f"""SELECT * FROM co_changes
@@ -1040,7 +1412,7 @@ class Storage:
         if not file_hash_pairs:
             return {}
         result = {fp: [] for fp, _ in file_hash_pairs}
-        for chunk in self._chunked(list(file_hash_pairs)):
+        for chunk in self._chunked_by_params(list(file_hash_pairs), params_per_item=2):
             conditions = " OR ".join(
                 "(file_path = ? AND content_hash = ?)" for _ in chunk
             )
@@ -1057,13 +1429,31 @@ class Storage:
 
     # --- file_hashes ---
 
-    def set_file_hash(self, file_path, content_hash):
+    def set_file_hash(self, file_path, content_hash, mtime=None, size=None):
         self._execute(
-            """INSERT INTO file_hashes (file_path, content_hash, updated_at)
-               VALUES (?, ?, ?)
+            """INSERT INTO file_hashes (file_path, content_hash, updated_at, mtime, size)
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(file_path) DO UPDATE SET
-               content_hash=excluded.content_hash, updated_at=excluded.updated_at""",
-            (file_path, content_hash, self._now()),
+               content_hash=excluded.content_hash, updated_at=excluded.updated_at,
+               mtime=excluded.mtime, size=excluded.size""",
+            (file_path, content_hash, self._now(), mtime, size),
+        )
+
+    def set_file_hashes_batch(self, rows):
+        """Batch upsert file hashes.
+
+        *rows* is an iterable of (file_path, content_hash, mtime, size) tuples.
+        """
+        if not rows:
+            return
+        now = self._now()
+        self._executemany(
+            """INSERT INTO file_hashes (file_path, content_hash, updated_at, mtime, size)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(file_path) DO UPDATE SET
+               content_hash=excluded.content_hash, updated_at=excluded.updated_at,
+               mtime=excluded.mtime, size=excluded.size""",
+            [(r[0], r[1], now, r[2], r[3]) for r in rows],
         )
 
     def get_file_hash(self, file_path):
@@ -1072,3 +1462,89 @@ class Storage:
             (file_path,),
         )
         return row["content_hash"] if row else None
+
+    def get_file_hashes_batch(self, file_paths):
+        """Batch-fetch file hashes with mtime and size.
+
+        Returns a dict mapping file_path -> {"hash": ..., "mtime": ..., "size": ...}
+        (or None for missing files).
+        """
+        if not file_paths:
+            return {}
+        result = {fp: None for fp in file_paths}
+        for chunk in self._chunked(list(file_paths)):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._fetchall(
+                f"SELECT file_path, content_hash, mtime, size FROM file_hashes WHERE file_path IN ({placeholders})",
+                tuple(chunk),
+            )
+            for row in rows:
+                result[row["file_path"]] = {
+                    "hash": row["content_hash"],
+                    "mtime": row["mtime"],
+                    "size": row["size"],
+                }
+        return result
+
+    # --- static_test_imports ---
+
+    def clear_static_test_imports(self):
+        self._execute("DELETE FROM static_test_imports")
+
+    def upsert_static_test_imports_batch(self, rows):
+        """Batch upsert static test import mappings.
+
+        *rows* is an iterable of (test_file_path, test_unit_name,
+        target_file_path, gap_eligible, score) tuples.
+        """
+        if not rows:
+            return
+        self._executemany(
+            """INSERT INTO static_test_imports
+               (test_file_path, test_unit_name, target_file_path, gap_eligible, score)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(test_file_path, test_unit_name, target_file_path) DO UPDATE SET
+               gap_eligible=excluded.gap_eligible, score=excluded.score""",
+            list(rows),
+        )
+
+    def find_static_tests_for_target(self, target_file_path):
+        """Return static test import rows that resolve to *target_file_path*."""
+        return self._fetchall(
+            """SELECT test_file_path, test_unit_name, gap_eligible, score
+               FROM static_test_imports
+               WHERE target_file_path = ?""",
+            (target_file_path,),
+        )
+
+    # --- maintenance ---
+
+    def wal_checkpoint(self):
+        """Run WAL checkpoint to truncate the WAL file after large writes.
+
+        Falls back to PASSIVE if TRUNCATE is blocked by an active read or
+        prior unfinalized statement.
+        """
+        conn = self._conn
+        conn.commit()
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.OperationalError:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+
+    def optimize(self, wal_size_threshold_bytes=10 * 1024 * 1024):
+        """Run PRAGMA optimize and VACUUM if the WAL file is large.
+
+        Returns a dict with the actions performed.
+        """
+        vacuumed = False
+        with self._conn as conn:
+            conn.execute("PRAGMA optimize")
+        wal_path = str(self.db_path) + "-wal"
+        if os.path.exists(wal_path):
+            wal_size = os.path.getsize(wal_path)
+            if wal_size > wal_size_threshold_bytes:
+                with self._conn as conn:
+                    conn.execute("VACUUM")
+                vacuumed = True
+        return {"optimized": True, "vacuumed": vacuumed}

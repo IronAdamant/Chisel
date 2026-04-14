@@ -99,6 +99,43 @@ class TestUpdate:
         names = [u["name"] for u in units]
         assert "new_func" in names
 
+    def test_incremental_import_edges_preserve_unchanged_files(self, engine, git_project):
+        """Update with no changes should not wipe existing import edges."""
+        helper = git_project / "helper.py"
+        helper.write_text("def helper_func():\n    return 1\n")
+        consumer = git_project / "consumer.py"
+        consumer.write_text("from helper import helper_func\n\ndef use():\n    return helper_func()\n")
+
+        engine.analyze()
+        before = engine.storage.get_imported_files("consumer.py")
+        assert "helper.py" in before
+
+        stats = engine.update()
+        assert stats["files_updated"] == 0
+
+        after = engine.storage.get_imported_files("consumer.py")
+        assert "helper.py" in after
+
+    def test_incremental_import_edges_update_on_change(self, engine, git_project):
+        """Changing a source file updates its import edges without wiping others."""
+        helper = git_project / "helper.py"
+        helper.write_text("def helper_func():\n    return 1\n")
+        other = git_project / "other.py"
+        other.write_text("def other_func():\n    return 2\n")
+        consumer = git_project / "consumer.py"
+        consumer.write_text("from helper import helper_func\n\ndef use():\n    return helper_func()\n")
+
+        engine.analyze()
+        assert "helper.py" in engine.storage.get_imported_files("consumer.py")
+
+        # Now change consumer to import other instead
+        consumer.write_text("from other import other_func\n\ndef use():\n    return other_func()\n")
+        engine.update()
+
+        edges = engine.storage.get_imported_files("consumer.py")
+        assert "other.py" in edges
+        assert "helper.py" not in edges
+
 
 class TestToolMethods:
     def test_tool_analyze(self, engine):
@@ -114,6 +151,21 @@ class TestToolMethods:
         engine.analyze()
         result = engine.tool_suggest_tests("app.py")
         assert isinstance(result, list)
+
+    def test_tool_suggest_tests_directory_mode(self, engine, git_project):
+        engine.analyze()
+        # Add a second source file with a test
+        src_dir = git_project / "src"
+        src_dir.mkdir()
+        (src_dir / "mod.py").write_text("def mod_func():\n    return 1\n")
+        (git_project / "tests" / "test_mod.py").write_text(
+            "from src.mod import mod_func\n\ndef test_mod_func():\n    assert mod_func() == 1\n"
+        )
+        engine.update()
+        result = engine.tool_suggest_tests(directory="src")
+        assert isinstance(result, dict)
+        assert "src/mod.py" in result
+        assert any("test_mod_func" in s["name"] for s in result["src/mod.py"])
 
     def test_tool_suggest_tests_includes_hybrid_when_static_and_db_agree(self, engine):
         engine.analyze()
@@ -975,6 +1027,33 @@ class TestBackgroundJobProgress:
             time.sleep(0.02)
         raise AssertionError("background job did not complete")
 
+    def test_job_status_includes_events(self, engine):
+        engine.analyze()
+        start = engine.tool_start_job("update")
+        job_id = start["job_id"]
+        for _ in range(200):
+            st = engine.tool_job_status(job_id)
+            if st["status"] in ("completed", "failed"):
+                assert "events" in st
+                assert any(e["event_type"] == "phase_end" for e in st["events"])
+                return
+            import time
+            time.sleep(0.02)
+        raise AssertionError("background job did not complete")
+
+    def test_cancel_job_sets_cancel_requested(self, engine):
+        engine.analyze()
+        start = engine.tool_start_job("update")
+        job_id = start["job_id"]
+        result = engine.tool_cancel_job(job_id)
+        assert result["status"] == "ok"
+        st = engine.tool_job_status(job_id)
+        assert st["cancel_requested"] is True
+
+    def test_cancel_nonexistent_job_returns_not_found(self, engine):
+        result = engine.tool_cancel_job("no-such-job")
+        assert result["status"] == "not_found"
+
 
 class TestHeuristicEdgesDuringAnalyze:
     def test_analyze_creates_heuristic_edges_for_missing_scans(self, engine, git_project):
@@ -1030,3 +1109,72 @@ class TestTestToSourceStem:
     def test_empty_stem_returns_none(self):
         # Pathological: file named ".test.js" → stem "" → None
         assert _test_to_source_stem(".test.js") is None
+
+
+class TestIncrementalImportEdgePerformance:
+    def test_update_zero_changes_fast(self, tmp_path, run_git):
+        """Acceptance: update with no changed files finishes in < 50 ms."""
+        project = tmp_path / "fastproject"
+        project.mkdir()
+        src_dir = project / "src"
+        src_dir.mkdir()
+        tests_dir = project / "tests"
+        tests_dir.mkdir()
+
+        run_git(project, "init")
+        run_git(project, "config", "user.name", "Test")
+        run_git(project, "config", "user.email", "test@test.com")
+
+        for i in range(100):
+            (src_dir / f"mod_{i:03d}.py").write_text(f"def func_{i}():\n    return {i}\n")
+
+        (tests_dir / "test_sample.py").write_text("def test_sample():\n    pass\n")
+
+        run_git(project, "add", "-A")
+        run_git(project, "commit", "-m", "initial")
+
+        engine = ChiselEngine(str(project), storage_dir=str(tmp_path / "db"))
+        engine.analyze()
+
+        start = time.perf_counter()
+        stats = engine.update()
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        assert elapsed_ms < 50, f"update took {elapsed_ms:.1f} ms"
+        assert stats["files_updated"] == 0
+
+    def test_incremental_update_with_1k_files_is_fast(self, tmp_path, run_git):
+        """Regression: scaling incremental import edges to 1k+ files."""
+        project = tmp_path / "bigproject"
+        project.mkdir()
+        src_dir = project / "src"
+        src_dir.mkdir()
+        tests_dir = project / "tests"
+        tests_dir.mkdir()
+
+        run_git(project, "init")
+        run_git(project, "config", "user.name", "Test")
+        run_git(project, "config", "user.email", "test@test.com")
+
+        for i in range(1000):
+            (src_dir / f"mod_{i:04d}.py").write_text(f"def func_{i}():\n    return {i}\n")
+
+        test_content = "\n".join([f"from src.mod_{i:04d} import func_{i}" for i in range(10)])
+        test_content += "\n\ndef test_sample():\n    pass\n"
+        (tests_dir / "test_sample.py").write_text(test_content)
+
+        run_git(project, "add", "-A")
+        run_git(project, "commit", "-m", "initial")
+
+        storage_dir = tmp_path / "db"
+        engine = ChiselEngine(str(project), storage_dir=str(storage_dir))
+        engine.analyze()
+
+        # Modify a single file without committing
+        (src_dir / "mod_0500.py").write_text("def func_500():\n    return 5000\n")
+
+        start = time.perf_counter()
+        stats = engine.update()
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        assert stats["files_updated"] == 1
+        # Must complete in < 3 seconds even with 1k files
+        assert elapsed_ms < 3000, f"incremental update took {elapsed_ms:.1f} ms"

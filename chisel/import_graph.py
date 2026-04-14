@@ -18,6 +18,7 @@ def build_import_edges(
     project_dir: str,
     source_rel_paths: list[str],
     test_rel_paths: set[str],
+    scan_rel_paths: set[str] | None = None,
 ) -> list[dict]:
     """Build file-level import edges for non-test source files.
 
@@ -27,9 +28,15 @@ def build_import_edges(
 
     *source_rel_paths* should list all analyzed code file paths; resolution
     only links to paths present in that set.
+
+    *scan_rel_paths* is an optional subset of *source_rel_paths* to actually
+    re-scan. When omitted, all source paths are scanned. This supports
+    incremental rebuilds: old edges for changed files are removed first, then
+    only changed files are re-scanned while resolution still sees all paths.
     """
     all_paths = set(source_rel_paths)
-    candidates = [p for p in source_rel_paths if p not in test_rel_paths]
+    scan_set = set(scan_rel_paths) if scan_rel_paths is not None else all_paths
+    candidates = [p for p in scan_set if p not in test_rel_paths]
     edges: list[dict] = []
     seen: set[tuple[str, str]] = set()
 

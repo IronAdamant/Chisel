@@ -219,7 +219,9 @@ class TestConfigureServerHandlers:
                 return await handler(req)
 
             result = asyncio.run(run())
-            assert "Error:" in result.root.content[0].text
+            text = result.root.content[0].text
+            assert '"status": "error"' in text
+            assert "no_such_tool" in text
         finally:
             engine.close()
 

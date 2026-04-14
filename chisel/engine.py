@@ -6,6 +6,10 @@ import threading
 import time
 import uuid
 
+
+class JobCancelledError(Exception):
+    """Raised when a background analyze/update job is cancelled mid-flight."""
+
 from chisel.ast_utils import (
     _EXTENSION_MAP,
     _SKIP_DIRS,
@@ -118,7 +122,10 @@ class ChiselEngine:
         self._bg_jobs_lock = threading.Lock()
         self._bg_job_in_progress = False
         self._bg_job_progress = {}
+        self._job_event_buffer: dict[str, list[dict]] = {}
         self._check_project_fingerprint()
+        # Mark any jobs left as 'running' from a previous server/process crash
+        self.storage.sweep_stale_bg_jobs()
 
     # ------------------------------------------------------------------ #
     # Full analysis
@@ -139,7 +146,9 @@ class ChiselEngine:
             Dict summarizing the analysis results.
         """
         # Phase 1: collect data (no lock needed — only reads from git/filesystem)
+        self._record_job_event("phase_start", {"phase": "scan", "directory": directory})
         code_files = self._scan_code_files(directory=directory)
+        self._check_job_cancelled()
 
         commits = None
         git_warning = None
@@ -155,23 +164,36 @@ class ChiselEngine:
         # and RWLock (in-process threads).
         with self._process_lock.exclusive():
             with self.lock.write_lock():
+                self._record_job_event("phase_start", {"phase": "find_changed_files"})
                 changed_files = self._find_changed_files(code_files, force=force)
+                self._check_job_cancelled()
 
                 stats = {
                     "code_files_scanned": total_files,
-                    "code_units_found": self._parse_and_store_code_units(changed_files),
+                    "code_units_found": 0,
                     "test_files_found": 0,
                     "test_units_found": 0,
                     "test_edges_built": 0,
                     "commits_parsed": 0,
                 }
+                self._record_job_event("phase_start", {"phase": "parse_and_store_code_units"})
+                stats["code_units_found"] = self._parse_and_store_code_units(changed_files)
+                self._check_job_cancelled()
                 self._set_bg_progress(20)
 
                 if commits is not None:
                     stats["commits_parsed"] = len(commits)
+                    self._record_job_event("phase_start", {"phase": "store_commits", "count": len(commits)})
                     self._store_commits(commits)
+                    if commits:
+                        self.storage.set_meta("last_commit_date", commits[0]["date"])
+                    self._check_job_cancelled()
+                    self._record_job_event("phase_start", {"phase": "churn_and_coupling"})
                     self._compute_churn_and_coupling(commits, code_files)
+                    self._check_job_cancelled()
+                    self._record_job_event("phase_start", {"phase": "blame"})
                     self._store_blame(changed_files)
+                    self._check_job_cancelled()
                 elif git_warning:
                     stats["git_warning"] = (
                         f"Git unavailable ({git_warning}); "
@@ -179,18 +201,26 @@ class ChiselEngine:
                     )
                 self._set_bg_progress(50)
 
+                self._record_job_event("phase_start", {"phase": "discover_and_build_edges"})
                 test_units, tf_count, edge_count = self._discover_and_build_edges(code_files)
                 stats["test_files_found"] = tf_count
                 stats["test_units_found"] = len(test_units)
                 stats["test_edges_built"] = edge_count
+                self._check_job_cancelled()
                 self._set_bg_progress(75)
 
-                self._rebuild_import_edges(code_files)
+                self._record_job_event("phase_start", {"phase": "rebuild_import_edges"})
+                self._rebuild_import_edges(code_files, changed_files)
+                self._check_job_cancelled()
+                self._record_job_event("phase_start", {"phase": "backfill_heuristic_edges"})
                 self._backfill_heuristic_edges()
                 self.storage.set_meta("project_fingerprint", self.project_dir)
                 self._set_bg_progress(100)
 
+                self._record_job_event("phase_start", {"phase": "cleanup"})
                 stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
+                self.storage.wal_checkpoint()
+                self._record_job_event("phase_end", {"phase": "analyze", "stats": stats})
                 return stats
 
     # ------------------------------------------------------------------ #
@@ -204,12 +234,18 @@ class ChiselEngine:
             Dict summarizing what was updated.
         """
         # Scan filesystem outside locks to avoid blocking
+        self._record_job_event("phase_start", {"phase": "scan"})
         code_files = self._scan_code_files()
+        self._check_job_cancelled()
         self._set_bg_progress(0)
         with self._process_lock.exclusive():
             with self.lock.write_lock():
+                self._record_job_event("phase_start", {"phase": "find_changed_files"})
                 changed_files = self._find_changed_files(code_files)
+                self._check_job_cancelled()
+                self._record_job_event("phase_start", {"phase": "parse_and_store_code_units"})
                 code_units_found = self._parse_and_store_code_units(changed_files)
+                self._check_job_cancelled()
                 self._set_bg_progress(30)
 
                 stats = {
@@ -219,17 +255,27 @@ class ChiselEngine:
                 }
 
                 try:
-                    all_commits = self.git.parse_log()
+                    self._record_job_event("phase_start", {"phase": "commits"})
+                    since = self.storage.get_meta("last_commit_date")
+                    all_commits = self.git.parse_log(since=since)
                     new_commits = [
                         c for c in all_commits
                         if self.storage.get_commit(c["hash"]) is None
                     ]
                     self._store_commits(new_commits)
                     stats["new_commits"] = len(new_commits)
+                    if new_commits:
+                        latest_date = new_commits[0]["date"]
+                        self.storage.set_meta("last_commit_date", latest_date)
+                    self._check_job_cancelled()
 
                     if new_commits or changed_files:
+                        self._record_job_event("phase_start", {"phase": "churn_and_coupling"})
                         self._compute_churn_and_coupling(all_commits, code_files)
+                        self._check_job_cancelled()
+                    self._record_job_event("phase_start", {"phase": "blame"})
                     self._store_blame(changed_files)
+                    self._check_job_cancelled()
                 except RuntimeError as exc:
                     stats["git_warning"] = (
                         f"Git unavailable ({exc}); "
@@ -237,13 +283,21 @@ class ChiselEngine:
                     )
                 self._set_bg_progress(60)
 
+                self._record_job_event("phase_start", {"phase": "discover_and_build_edges"})
                 self._discover_and_build_edges(code_files)
-                self._rebuild_import_edges(code_files)
+                self._check_job_cancelled()
+                self._record_job_event("phase_start", {"phase": "rebuild_import_edges"})
+                self._rebuild_import_edges(code_files, changed_files)
+                self._check_job_cancelled()
+                self._record_job_event("phase_start", {"phase": "backfill_heuristic_edges"})
                 self._backfill_heuristic_edges()
                 self.storage.set_meta("project_fingerprint", self.project_dir)
                 self._set_bg_progress(100)
 
+                self._record_job_event("phase_start", {"phase": "cleanup"})
                 stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
+                self.storage.wal_checkpoint()
+                self._record_job_event("phase_end", {"phase": "update", "stats": stats})
                 return stats
 
     # ------------------------------------------------------------------ #
@@ -302,6 +356,11 @@ class ChiselEngine:
                     job_id, "completed", result_json=json.dumps(out, default=str),
                     progress_pct=100,
                 )
+            except JobCancelledError as exc:
+                self.storage.update_bg_job(
+                    job_id, "failed", error_message=str(exc),
+                    progress_pct=100,
+                )
             except Exception as exc:
                 self.storage.update_bg_job(
                     job_id, "failed", error_message=str(exc),
@@ -311,6 +370,11 @@ class ChiselEngine:
                 with self._bg_jobs_lock:
                     self._bg_job_in_progress = False
                     self._active_bg_job_id = None
+                    mem_events = self._job_event_buffer.pop(job_id, [])
+                for ev in mem_events:
+                    self.storage.insert_job_event(
+                        job_id, ev["event_type"], ev.get("payload"),
+                    )
 
         threading.Thread(
             target=run, name=f"chisel-bg-{kind}", daemon=True,
@@ -320,6 +384,28 @@ class ChiselEngine:
             "status": "running",
             "kind": kind,
             "hint": "Poll job_status with job_id until completed or failed.",
+        }
+
+    def tool_cancel_job(self, job_id):
+        """MCP tool: request cancellation of a running background job."""
+        row = self.storage.get_bg_job(job_id)
+        if not row:
+            return {
+                "status": "not_found",
+                "job_id": job_id,
+                "message": "No job with this id",
+            }
+        if row["status"] != "running":
+            return {
+                "status": "error",
+                "job_id": job_id,
+                "message": f"Job is already {row['status']}",
+            }
+        self.storage.request_bg_job_cancel(job_id)
+        return {
+            "status": "ok",
+            "job_id": job_id,
+            "message": "Cancellation requested",
         }
 
     def tool_job_status(self, job_id):
@@ -337,6 +423,7 @@ class ChiselEngine:
             "status": row["status"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            "cancel_requested": row.get("cancel_requested_at") is not None,
         }
         # Prefer in-memory progress; fall back to DB column
         with self._bg_jobs_lock:
@@ -350,6 +437,16 @@ class ChiselEngine:
             out["error"] = row["error_message"]
         if row["result_json"]:
             out["result"] = json.loads(row["result_json"])
+        if row["status"] == "running":
+            with self._bg_jobs_lock:
+                mem_events = [
+                    {"event_type": e["event_type"], "created_at": e["created_at"],
+                     **({"payload": e["payload"]} if e.get("payload") else {})}
+                    for e in self._job_event_buffer.get(job_id, [])
+                ]
+            out["events"] = mem_events[-20:]
+        else:
+            out["events"] = self.storage.get_job_events(job_id, limit=20)
         return out
 
     def tool_impact(self, files, functions=None):
@@ -361,63 +458,112 @@ class ChiselEngine:
                     return empty
                 return self.impact.get_impacted_tests(files, functions)
 
-    def tool_suggest_tests(self, file_path, fallback_to_all=False,
-                           working_tree=False):
-        """MCP tool: suggest tests for a file.
+    def _suggest_single_file(self, file_path, fallback_to_all, working_tree,
+                              disk, extra):
+        """Suggest tests for a single file (used by file_path and directory modes)."""
+        # Fast path for working-tree files with no DB edges:
+        if working_tree and self.storage.get_file_hash(file_path) is None:
+            result = []
+            if not fallback_to_all:
+                result = self.impact._fallback_suggest_tests(file_path)
+            if not result:
+                result = self._working_tree_suggest(file_path, disk_test_files=disk)
+            return result[:_WORKING_TREE_SUGGEST_LIMIT] if len(result) > _WORKING_TREE_SUGGEST_LIMIT else result
+
+        if working_tree:
+            quick_db = self.impact.get_impacted_tests([file_path])
+            if not quick_db:
+                result = []
+                if not fallback_to_all:
+                    result = self.impact._fallback_suggest_tests(file_path)
+                if not result:
+                    result = self._working_tree_suggest(file_path, disk_test_files=disk)
+                return result[:_WORKING_TREE_SUGGEST_LIMIT] if len(result) > _WORKING_TREE_SUGGEST_LIMIT else result
+
+        result = self.impact.suggest_tests(
+            file_path,
+            fallback_to_all=fallback_to_all,
+            disk_test_files=disk,
+            extra_code_paths=extra,
+        )
+        if not result and not fallback_to_all:
+            result = self.impact._fallback_suggest_tests(file_path)
+        if not result and not working_tree:
+            result = self._working_tree_suggest(file_path, disk_test_files=disk)
+        if working_tree and not result:
+            result = self._working_tree_suggest(file_path, disk_test_files=disk)
+        return result[:_WORKING_TREE_SUGGEST_LIMIT] if len(result) > _WORKING_TREE_SUGGEST_LIMIT else result
+
+    def tool_suggest_tests(self, file_path=None, directory=None,
+                           fallback_to_all=False, working_tree=False):
+        """MCP tool: suggest tests for a file or all files under a directory.
 
         Args:
+            file_path: Specific code file to query (mutually exclusive with
+                       *directory*).
+            directory: Directory path; returns a mapping of ``{file_path: [suggestions]}``
+                       for every code file found under that directory.
             fallback_to_all: If True and no test edges exist, return all known
                 test files ranked by stem-match relevance.
             working_tree: If True, also check untracked files on disk and use
                 stem-matching to find relevant tests when the file has no DB edges.
                 Useful during active development before files are committed.
         """
+        if not file_path and not directory:
+            return {
+                "status": "error",
+                "message": "Provide either file_path or directory.",
+            }
+        if file_path and directory:
+            return {
+                "status": "error",
+                "message": "Provide only one of file_path or directory, not both.",
+            }
+
+        # Compute working-tree data outside the lock to avoid blocking readers
+        disk = self._disk_only_test_map() if working_tree else None
+        extra = self._git_untracked_code_paths() if working_tree else None
+
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                # Stale-DB detection: if file has never been analyzed, tell the agent
-                if self.storage.get_file_hash(file_path) is None:
-                    return {
-                        "status": "stale_db",
-                        "file_path": file_path,
-                        "message": "File not found in analysis database.",
-                        "hint": "Run 'chisel update' first to include new or changed files.",
-                    }
-                disk = self._disk_only_test_map() if working_tree else None
-                extra = self._git_untracked_code_paths() if working_tree else None
-                # Fast path for working-tree files with no DB edges:
-                # skip the expensive StaticImportIndex build and fall back
-                # to stem-matching directly.
-                if working_tree:
-                    quick_db = self.impact.get_impacted_tests([file_path])
-                    if not quick_db:
-                        result = []
-                        if not fallback_to_all:
-                            result = self.impact._fallback_suggest_tests(file_path)
-                        if not result:
-                            result = self._working_tree_suggest(file_path, disk_test_files=disk)
-                        if len(result) > _WORKING_TREE_SUGGEST_LIMIT:
-                            result = result[:_WORKING_TREE_SUGGEST_LIMIT]
-                        return result
-                result = self.impact.suggest_tests(
-                    file_path,
-                    fallback_to_all=fallback_to_all,
-                    disk_test_files=disk,
-                    extra_code_paths=extra,
-                )
-                # Auto-fallback: if no DB/static hits, automatically try
-                # fallback_to_all and working_tree suggestions.
-                if not result and not fallback_to_all:
-                    result = self.impact._fallback_suggest_tests(file_path)
-                if not result and not working_tree:
-                    result = self._working_tree_suggest(file_path, disk_test_files=disk)
-                if working_tree and not result:
-                    # File may be untracked — try stem-matching against known test files
-                    result = self._working_tree_suggest(file_path, disk_test_files=disk)
-                if len(result) > _WORKING_TREE_SUGGEST_LIMIT:
-                    result = result[:_WORKING_TREE_SUGGEST_LIMIT]
+
+                if file_path:
+                    if self.storage.get_file_hash(file_path) is None and not working_tree:
+                        return {
+                            "status": "stale_db",
+                            "file_path": file_path,
+                            "message": "File not found in analysis database.",
+                            "hint": "Run 'chisel update' first to include new or changed files.",
+                        }
+                    return self._suggest_single_file(
+                        file_path, fallback_to_all, working_tree, disk, extra,
+                    )
+
+                # Directory mode
+                dir_norm = directory.replace("\\", "/").rstrip("/") + "/"
+                db_paths = self.storage.get_distinct_code_file_paths()
+                targets = {
+                    p for p in db_paths
+                    if p.replace("\\", "/").startswith(dir_norm)
+                }
+                if working_tree and extra:
+                    targets.update(
+                        p for p in extra
+                        if p.replace("\\", "/").startswith(dir_norm)
+                    )
+                if not targets:
+                    return {}
+
+                result = {}
+                for fp in sorted(targets):
+                    suggestions = self._suggest_single_file(
+                        fp, fallback_to_all, working_tree, disk, extra,
+                    )
+                    if suggestions:
+                        result[fp] = suggestions
                 return result
 
     def tool_churn(self, file_path, unit_name=None):
@@ -639,13 +785,13 @@ class ChiselEngine:
                 functions.extend(self.git.get_changed_functions(fp, ref))
             except RuntimeError:
                 pass
+        disk = self._disk_only_test_map() if working_tree else None
+        extra = self._git_untracked_code_paths() if working_tree else None
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                disk = self._disk_only_test_map() if working_tree else None
-                extra = self._git_untracked_code_paths() if working_tree else None
                 # Stale-DB detection: warn when changed files are missing from the DB
                 missing_from_db = [
                     cf for cf in changed_files
@@ -732,25 +878,27 @@ class ChiselEngine:
         return result
 
     def tool_test_gaps(self, file_path=None, directory=None, exclude_tests=True,
-                       working_tree=False):
+                       working_tree=False, limit=None):
         """MCP tool: find code units with no test coverage.
 
         Args:
             working_tree: If True, also scan untracked (uncommitted) files from
                 disk and include their code units as gaps with churn=0. Useful
                 for identifying coverage gaps in files that haven't been committed.
+            limit: Optional maximum number of results to return.
         """
+        disk = self._disk_only_test_map() if working_tree else None
+        extra = self._git_untracked_code_paths() if working_tree else None
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                disk = self._disk_only_test_map() if working_tree else None
-                extra = self._git_untracked_code_paths() if working_tree else None
                 gaps = list(self.impact.get_test_gaps(
                     file_path, directory, exclude_tests,
                     disk_test_files=disk,
                     extra_code_paths=extra,
+                    limit=limit,
                 ))
                 if working_tree:
                     gaps.extend(self._working_tree_gaps(file_path, directory, exclude_tests))
@@ -778,18 +926,18 @@ class ChiselEngine:
     def tool_triage(self, directory=None, top_n=10, exclude_tests=True,
                     working_tree=False):
         """MCP tool: combined risk_map + test_gaps + stale_tests triage."""
+        extra = self._git_untracked_code_paths() if working_tree else None
+        disk = self._disk_only_test_map() if working_tree else None
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
-                extra = self._git_untracked_code_paths() if working_tree else None
                 risk_map = self.impact.get_risk_map(
                     directory, exclude_tests,
                     extra_files=sorted(extra) if extra else None,
                 )
                 risk_map = risk_map[:top_n]
-                disk = self._disk_only_test_map() if working_tree else None
                 test_gaps = self.impact.get_test_gaps(
                     directory=directory,
                     disk_test_files=disk,
@@ -957,6 +1105,12 @@ class ChiselEngine:
                         )
                 return stats
 
+    def tool_optimize_storage(self):
+        """MCP tool: run PRAGMA optimize and VACUUM if the WAL is large."""
+        with self._process_lock.exclusive():
+            with self.lock.write_lock():
+                return self.storage.optimize()
+
     # ------------------------------------------------------------------ #
     # Shared internal helpers
     # ------------------------------------------------------------------ #
@@ -981,15 +1135,32 @@ class ChiselEngine:
     def _find_changed_files(self, code_files, force=False):
         """Compare content hashes to identify changed code files.
 
+        Uses mtime/size as a fast-path to avoid re-hashing unchanged files.
         Returns list of (abs_path, rel_path, new_hash) tuples.
         """
+        rels = [normalize_path(fpath, self.project_dir) for fpath in code_files]
+        hash_batch = self.storage.get_file_hashes_batch(rels)
         changed = []
-        for fpath in code_files:
-            rel = normalize_path(fpath, self.project_dir)
+        hash_updates = []
+        for fpath, rel in zip(code_files, rels):
+            try:
+                st = os.stat(fpath)
+            except OSError:
+                continue
+            old = hash_batch.get(rel)
+            if (
+                not force
+                and old is not None
+                and old.get("mtime") == st.st_mtime
+                and old.get("size") == st.st_size
+            ):
+                continue
             new_hash = compute_file_hash(fpath)
-            old_hash = self.storage.get_file_hash(rel)
-            if force or old_hash != new_hash:
+            hash_updates.append((rel, new_hash, st.st_mtime, st.st_size))
+            if force or (old is None or old.get("hash") != new_hash):
                 changed.append((fpath, rel, new_hash))
+        if hash_updates:
+            self.storage.set_file_hashes_batch(hash_updates)
         return changed
 
     def _parse_and_store_code_units(self, changed_files):
@@ -999,7 +1170,6 @@ class ChiselEngine:
         """
         count = 0
         for fpath, rel, new_hash in changed_files:
-            self.storage.set_file_hash(rel, new_hash)
             self.storage.delete_code_units_by_file(rel)
             try:
                 with open(fpath, encoding="utf-8", errors="replace") as f:
@@ -1007,76 +1177,124 @@ class ChiselEngine:
             except OSError:
                 continue
             units = extract_code_units(fpath, content)
+            batch = []
             for u in units:
                 cid = f"{rel}:{u.name}:{u.unit_type}"
-                self.storage.upsert_code_unit(
-                    cid, rel, u.name, u.unit_type,
-                    u.line_start, u.line_end, new_hash,
+                batch.append(
+                    (cid, rel, u.name, u.unit_type, u.line_start, u.line_end, new_hash)
                 )
+            if batch:
+                self.storage.upsert_code_units_batch(batch)
             count += len(units)
         return count
 
     def _store_blame(self, changed_files):
-        """Parse and store git blame data for changed files."""
-        for _, rel, new_hash in changed_files:
+        """Parse and store git blame data for changed files.
+
+        Uses a thread pool to parallelize blame subprocess calls, then
+        bulk-inserts the results.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _blame_for_file(rel):
             try:
-                self.storage.invalidate_blame(rel)
-                blame_blocks = self.git.parse_blame(rel)
-                for block in blame_blocks:
-                    self.storage.store_blame(
-                        rel, block["line_start"], block["line_end"],
-                        block["commit_hash"], block["author"],
-                        block["author_email"], block["date"], new_hash,
-                    )
+                return self.git.parse_blame(rel)
             except RuntimeError:
-                pass
+                return []
+
+        # Collect blame data in parallel (subprocess-bound, not DB-bound)
+        rels = [rel for _, rel, _ in changed_files]
+        rel_to_new_hash = {rel: new_hash for _, rel, new_hash in changed_files}
+        results = {}
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for rel, blocks in zip(rels, pool.map(_blame_for_file, rels)):
+                results[rel] = blocks
+
+        # All DB writes happen in the main thread
+        all_rows = []
+        for rel in rels:
+            self.storage.invalidate_blame(rel)
+            new_hash = rel_to_new_hash[rel]
+            for block in results.get(rel, []):
+                all_rows.append((
+                    rel, block["line_start"], block["line_end"],
+                    block["commit_hash"], block["author"],
+                    block["author_email"], block["date"], new_hash,
+                ))
+        if all_rows:
+            self.storage.store_blame_batch(all_rows)
 
     def _store_commits(self, commits):
         """Upsert commits and their file entries into storage."""
+        commit_rows = []
+        file_rows = []
         for commit in commits:
-            self.storage.upsert_commit(
-                commit["hash"], commit["author"], commit["author_email"],
-                commit["date"], commit["message"],
-            )
+            commit_rows.append((
+                commit["hash"], commit.get("author"), commit.get("author_email"),
+                commit["date"], commit.get("message"),
+            ))
             for f in commit.get("files", []):
-                self.storage.upsert_commit_file(
-                    commit["hash"], f["path"], f["insertions"], f["deletions"],
-                )
+                file_rows.append((
+                    commit["hash"], f["path"], f.get("insertions", 0), f.get("deletions", 0),
+                ))
+        if commit_rows:
+            self.storage.upsert_commits_batch(commit_rows)
+        if file_rows:
+            self.storage.upsert_commit_files_batch(file_rows)
 
-    # Skip unit-level churn (git log -L per function) for repos above this
-    # file count — each function spawns a subprocess, so 10k+ files with
-    # multiple functions each would mean tens of thousands of subprocess calls.
-    _UNIT_CHURN_FILE_LIMIT = 2000
+    # Unit-level churn is computed in parallel using a thread pool to avoid
+    # serial subprocess overhead. Limit workers to keep system load reasonable.
+    _UNIT_CHURN_WORKERS = 8
 
     def _compute_churn_and_coupling(self, commits, code_files):
         """Compute file-level and unit-level churn stats, plus co-change coupling."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Batch file-level churn
+        file_churn_rows = []
         for fpath in code_files:
             rel = normalize_path(fpath, self.project_dir)
             churn = compute_churn(commits, rel)
-            self.storage.upsert_churn_stat(
+            file_churn_rows.append((
                 rel, "", churn["commit_count"], churn["distinct_authors"],
                 churn["total_insertions"], churn["total_deletions"],
                 churn["last_changed"], churn["churn_score"],
-            )
+            ))
+        if file_churn_rows:
+            self.storage.upsert_churn_stats_batch(file_churn_rows)
 
-        # Unit-level churn via git log -L (expensive: one subprocess per function)
-        if len(code_files) <= self._UNIT_CHURN_FILE_LIMIT:
-            for fpath in code_files:
-                rel = normalize_path(fpath, self.project_dir)
-                for cu in self.storage.get_code_units_by_file(rel):
-                    if cu["unit_type"] in ("function", "async_function"):
-                        bare_name = cu["name"].rsplit(".", 1)[-1]
-                        func_commits = self.git.get_function_log(rel, bare_name)
-                        if func_commits:
-                            fc = compute_churn(
-                                func_commits, rel, unit_name=cu["name"],
-                            )
-                            self.storage.upsert_churn_stat(
-                                rel, cu["name"], fc["commit_count"],
-                                fc["distinct_authors"], fc["total_insertions"],
-                                fc["total_deletions"], fc["last_changed"],
-                                fc["churn_score"],
-                            )
+        # Unit-level churn via git log -L, parallelized with a thread pool
+        unit_tasks = []
+        for fpath in code_files:
+            rel = normalize_path(fpath, self.project_dir)
+            for cu in self.storage.get_code_units_by_file(rel):
+                if cu["unit_type"] in ("function", "async_function"):
+                    bare_name = cu["name"].rsplit(".", 1)[-1]
+                    unit_tasks.append((rel, cu["name"], bare_name))
+
+        def _churn_for_unit(task):
+            rel, unit_name, bare_name = task
+            try:
+                func_commits = self.git.get_function_log(rel, bare_name)
+                if func_commits:
+                    fc = compute_churn(func_commits, rel, unit_name=unit_name)
+                    return (
+                        rel, unit_name, fc["commit_count"], fc["distinct_authors"],
+                        fc["total_insertions"], fc["total_deletions"],
+                        fc["last_changed"], fc["churn_score"],
+                    )
+            except RuntimeError:
+                pass
+            return None
+
+        unit_churn_rows = []
+        if unit_tasks:
+            with ThreadPoolExecutor(max_workers=self._UNIT_CHURN_WORKERS) as pool:
+                for row in pool.map(_churn_for_unit, unit_tasks):
+                    if row is not None:
+                        unit_churn_rows.append(row)
+        if unit_churn_rows:
+            self.storage.upsert_churn_stats_batch(unit_churn_rows)
 
         distinct_authors = len({c["author"] for c in commits if c.get("author")})
         adaptive_min = _coupling_threshold(len(commits))
@@ -1088,11 +1306,11 @@ class ChiselEngine:
         self.storage.set_meta("co_change_query_min", str(adaptive_min))
         self.storage.set_meta("distinct_authors", str(distinct_authors))
         co_changes = compute_co_changes(commits, min_count=adaptive_min)
-        for cc in co_changes:
-            self.storage.upsert_co_change(
-                cc["file_a"], cc["file_b"],
-                cc["co_commit_count"], cc["last_co_commit"],
-            )
+        if co_changes:
+            self.storage.upsert_co_changes_batch([
+                (cc["file_a"], cc["file_b"], cc["co_commit_count"], cc["last_co_commit"])
+                for cc in co_changes
+            ])
 
         self.storage.clear_branch_co_changes()
         try:
@@ -1111,11 +1329,11 @@ class ChiselEngine:
                         "branch_coupling_commits", str(len(branch_commits)),
                     )
                     br_cc = compute_co_changes(branch_commits, min_count=1)
-                    for cc in br_cc:
-                        self.storage.upsert_branch_co_change(
-                            cc["file_a"], cc["file_b"],
-                            cc["co_commit_count"], cc["last_co_commit"],
-                        )
+                    if br_cc:
+                        self.storage.upsert_branch_co_changes_batch([
+                            (cc["file_a"], cc["file_b"], cc["co_commit_count"], cc["last_co_commit"])
+                            for cc in br_cc
+                        ])
                 else:
                     self.storage.set_meta("branch_coupling_commits", "0")
         except RuntimeError:
@@ -1128,6 +1346,8 @@ class ChiselEngine:
         """
         test_files = self.mapper.discover_test_files()
         all_test_units = []
+        test_unit_batch = []
+        static_import_rows = []
         for tf in test_files:
             rel_tf = normalize_path(tf, self.project_dir)
             # Remove stale test units/edges before reinserting
@@ -1135,12 +1355,46 @@ class ChiselEngine:
             for ot in old_tests:
                 self.storage.delete_test_edges_by_test(ot["id"])
             self.storage.delete_test_units_by_file(rel_tf)
-            for tu in self.mapper.parse_test_file(tf):
-                self.storage.upsert_test_unit(
+            parsed = self.mapper.parse_test_file(tf)
+            for tu in parsed:
+                test_unit_batch.append((
                     tu["id"], tu["file_path"], tu["name"], tu["framework"],
                     tu["line_start"], tu["line_end"], tu["content_hash"],
-                )
+                ))
                 all_test_units.append(tu)
+            # Persist static imports for working-tree fast-path
+            try:
+                with open(tf, encoding="utf-8", errors="replace") as fh:
+                    content = fh.read()
+                deps = self.mapper.extract_test_dependencies(rel_tf, content)
+                all_paths = set(self.storage.get_resolvable_code_file_paths())
+                lang = self.mapper.detect_framework(tf)
+                py_imp = rel_tf.endswith(".py")
+                from chisel.import_graph import _resolve_import_targets
+                for dep in deps:
+                    if dep.get("dep_type") != "import":
+                        continue
+                    mp = dep.get("module_path")
+                    if py_imp:
+                        gap_eligible = False
+                    elif rel_tf.endswith(".go") and mp:
+                        gap_eligible = True
+                    else:
+                        gap_eligible = bool(mp) and mp.startswith(".")
+                    for tgt in _resolve_import_targets(rel_tf, dep, mp, all_paths):
+                        for tu in parsed:
+                            static_import_rows.append((
+                                rel_tf, tu["name"], tgt.replace("\\", "/"),
+                                1 if gap_eligible else 0,
+                                1.0,
+                            ))
+            except OSError:
+                pass
+        if test_unit_batch:
+            self.storage.upsert_test_units_batch(test_unit_batch)
+        self.storage.clear_static_test_imports()
+        if static_import_rows:
+            self.storage.upsert_static_test_imports_batch(static_import_rows)
 
         all_cu_dicts = []
         for fpath in code_files:
@@ -1148,23 +1402,32 @@ class ChiselEngine:
             all_cu_dicts.extend(self.storage.get_code_units_by_file(rel))
 
         edges = self.mapper.build_test_edges(all_test_units, all_cu_dicts)
-        for edge in edges:
-            self.storage.upsert_test_edge(
-                edge["test_id"], edge["code_id"],
-                edge["edge_type"], edge["weight"],
-            )
+        if edges:
+            self.storage.upsert_test_edges_batch([
+                (e["test_id"], e["code_id"], e["edge_type"], e["weight"])
+                for e in edges
+            ])
         return all_test_units, len(test_files), len(edges)
 
-    def _rebuild_import_edges(self, code_files):
-        """Rebuild static import_edges for all scanned code files."""
-        self.storage.clear_import_edges()
+    def _rebuild_import_edges(self, all_code_files, changed_files):
+        """Rebuild static import_edges incrementally for changed files.
+
+        Deletes existing edges whose importer_file is in *changed_files*,
+        then re-scans only those files while resolving imports against the
+        full set of *all_code_files*.
+        """
+        changed_rels = {rel for _fpath, rel, _hsh in changed_files}
+        if changed_rels:
+            self.storage.delete_import_edges_for_files(changed_rels)
         test_paths = set(self.storage.get_test_file_paths())
-        rels = [normalize_path(f, self.project_dir) for f in code_files]
-        edges = build_import_edges(self.mapper, self.project_dir, rels, test_paths)
-        for e in edges:
-            self.storage.upsert_import_edge(
-                e["importer_file"], e["imported_file"],
-            )
+        all_rels = [normalize_path(f, self.project_dir) for f in all_code_files]
+        edges = build_import_edges(
+            self.mapper, self.project_dir, all_rels, test_paths, changed_rels,
+        )
+        if edges:
+            self.storage.upsert_import_edges_batch([
+                (e["importer_file"], e["imported_file"]) for e in edges
+            ])
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -1209,7 +1472,7 @@ class ChiselEngine:
             for cu in source_units:
                 if cu["file_path"] != test_file:
                     self.storage.upsert_test_edge(
-                        tu["id"], cu["id"], "heuristic", 0.5,
+                        tu["id"], cu["id"], "heuristic", 0.2,
                     )
                     count += 1
         return count
@@ -1349,6 +1612,31 @@ class ChiselEngine:
             active = getattr(self, "_active_bg_job_id", None)
             if active:
                 self._bg_job_progress[active] = pct
+        if active:
+            self.storage.update_bg_job(
+                active, status="running", progress_pct=pct,
+            )
+
+    def _record_job_event(self, event_type, payload=None):
+        """Write a progress/lifecycle event for the active background job."""
+        active = getattr(self, "_active_bg_job_id", None)
+        if not active:
+            return
+        with self._bg_jobs_lock:
+            self._job_event_buffer.setdefault(active, []).append({
+                "event_type": event_type,
+                "payload": payload,
+                "created_at": self.storage._now(),
+            })
+
+    def _check_job_cancelled(self):
+        """Raise JobCancelledError if the active background job has a cancel request."""
+        active = getattr(self, "_active_bg_job_id", None)
+        if active and self.storage.is_bg_job_cancel_requested(active):
+            self.storage.update_bg_job(
+                active, status="failed", error_message="Cancelled by user",
+            )
+            raise JobCancelledError(f"Background job {active} was cancelled")
 
     def _check_project_fingerprint(self):
         """Warn if the stored project fingerprint does not match the current directory."""
