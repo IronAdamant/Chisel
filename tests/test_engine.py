@@ -895,6 +895,8 @@ class TestWorkingTreeDiffImpact:
         # Stage the new source file so it appears in diff_files, not untracked
         import subprocess
         subprocess.run(["git", "add", "services/nutrition.py"], cwd=str(git_project), check=True)
+        # Must update so the new file is in the DB; otherwise diff_impact returns stale_db
+        engine.update()
         result = engine.tool_diff_impact(working_tree=True)
         test_ids = {item["test_id"] for item in result}
         assert any("test_nutrition" in tid for tid in test_ids)
@@ -917,6 +919,87 @@ class TestWorkingTreeSuggest:
         suggestions = engine._working_tree_suggest("services/widget.js")
         by_path = {s["file_path"]: s["relevance"] for s in suggestions}
         assert by_path["tests/services/widget.test.js"] > by_path["tests/cli/widget.test.js"]
+
+
+class TestTriageWorkingTree:
+    def test_triage_forwards_working_tree(self, engine, git_project):
+        engine.analyze()
+        (git_project / "fresh.py").write_text("def alpha(): pass\n")
+        result = engine.tool_triage(working_tree=True)
+        files = [r["file_path"] for r in result["top_risk_files"]]
+        assert "fresh.py" in files
+
+
+class TestStaleDbDetection:
+    def test_diff_impact_returns_stale_db_for_new_file(self, engine, git_project):
+        engine.analyze()
+        (git_project / "new_module.py").write_text("def x(): pass\n")
+        # Do NOT update — file is missing from DB
+        result = engine.tool_diff_impact()
+        assert isinstance(result, dict)
+        assert result["status"] == "stale_db"
+        assert "new_module.py" in result["missing_from_db"]
+
+    def test_suggest_tests_returns_stale_db_for_new_file(self, engine, git_project):
+        engine.analyze()
+        (git_project / "new_module.py").write_text("def x(): pass\n")
+        result = engine.tool_suggest_tests("new_module.py")
+        assert isinstance(result, dict)
+        assert result["status"] == "stale_db"
+
+    def test_suggest_tests_auto_fallback_for_known_file(self, engine):
+        engine.analyze()
+        # app.py is known but may have no DB edges in some fixtures
+        result = engine.tool_suggest_tests("app.py")
+        # Should return a list (either DB hits or auto-fallback)
+        assert isinstance(result, list)
+
+
+class TestBackgroundJobProgress:
+    def test_job_status_includes_progress(self, engine):
+        engine.analyze()
+        start = engine.tool_start_job("update")
+        assert start["status"] == "running"
+        job_id = start["job_id"]
+        status = engine.tool_job_status(job_id)
+        assert "progress_pct" in status
+        # Wait for completion
+        for _ in range(200):
+            st = engine.tool_job_status(job_id)
+            if st["status"] == "completed":
+                assert st.get("progress_pct") == 100
+                return
+            if st["status"] == "failed":
+                raise AssertionError(st.get("error"))
+            import time
+            time.sleep(0.02)
+        raise AssertionError("background job did not complete")
+
+
+class TestHeuristicEdgesDuringAnalyze:
+    def test_analyze_creates_heuristic_edges_for_missing_scans(self, engine, git_project):
+        engine.analyze()
+        # Create a test file that mirrors an existing source file by stem (app.py)
+        (git_project / "tests" / "test_app.py").write_text(
+            "def test_process_data():\n    assert True\n"
+        )
+        # Clear existing edges so heuristic can apply
+        engine.storage._execute("DELETE FROM test_edges")
+        engine.analyze(force=True)
+        # Heuristic edges should have been backfilled
+        test_units = engine.storage.get_test_units_by_file("tests/test_app.py")
+        assert len(test_units) > 0
+        edges = engine.storage.get_edges_for_test(test_units[0]["id"])
+        assert any(e["edge_type"] == "heuristic" for e in edges)
+
+
+class TestProjectFingerprint:
+    def test_stats_warns_on_fingerprint_mismatch(self, engine):
+        engine.analyze()
+        engine.storage.set_meta("project_fingerprint", "/some/other/path")
+        stats = engine.tool_stats()
+        assert "warning" in stats
+        assert "mismatch" in stats["warning"]
 
 
 # ------------------------------------------------------------------ #

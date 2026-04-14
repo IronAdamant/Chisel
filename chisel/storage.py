@@ -197,11 +197,17 @@ class Storage:
                     status TEXT NOT NULL,
                     result_json TEXT,
                     error_message TEXT,
+                    progress_pct INTEGER,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_bg_jobs_status ON bg_jobs(status);
             """)
+        # Schema migration: add progress_pct if upgrading an existing DB
+        try:
+            self._conn.execute("ALTER TABLE bg_jobs ADD COLUMN progress_pct INTEGER")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
     # --- Query helpers ---
 
@@ -775,19 +781,28 @@ class Storage:
         now = self._now()
         self._execute(
             """INSERT INTO bg_jobs (id, kind, status, result_json, error_message,
-                                    created_at, updated_at)
-               VALUES (?, ?, ?, NULL, NULL, ?, ?)""",
+                                    progress_pct, created_at, updated_at)
+               VALUES (?, ?, ?, NULL, NULL, 0, ?, ?)""",
             (job_id, kind, status, now, now),
         )
 
-    def update_bg_job(self, job_id, status, result_json=None, error_message=None):
+    def update_bg_job(self, job_id, status, result_json=None, error_message=None,
+                       progress_pct=None):
         """Update job status and optional result or error."""
-        self._execute(
-            """UPDATE bg_jobs SET status = ?, result_json = ?, error_message = ?,
-                                  updated_at = ?
-               WHERE id = ?""",
-            (status, result_json, error_message, self._now(), job_id),
-        )
+        if progress_pct is not None:
+            self._execute(
+                """UPDATE bg_jobs SET status = ?, result_json = ?, error_message = ?,
+                                      progress_pct = ?, updated_at = ?
+                   WHERE id = ?""",
+                (status, result_json, error_message, progress_pct, self._now(), job_id),
+            )
+        else:
+            self._execute(
+                """UPDATE bg_jobs SET status = ?, result_json = ?, error_message = ?,
+                                      updated_at = ?
+                   WHERE id = ?""",
+                (status, result_json, error_message, self._now(), job_id),
+            )
 
     def get_bg_job(self, job_id):
         """Return job row as dict, or None if missing."""

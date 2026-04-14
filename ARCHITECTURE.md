@@ -1,6 +1,6 @@
 # Chisel — Architecture
 
-**Version:** 0.6.5 | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
+**Version:** 0.8.2+ | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
 
 Test impact analysis and code intelligence **for LLM agents**. The design target is **solo-maintained repos** where **multiple agent sessions or processes** (MCP clients, terminals, CI) may run `analyze` / read tools concurrently — hence **ProcessLock**, **WAL SQLite**, and **normalized paths** as core mechanics, not optional extras.
 
@@ -81,7 +81,7 @@ ChiselEngine (engine.py) — main orchestrator
         └── stdio MCP (mcp_stdio.py) — for Claude Desktop/Cursor
 ```
 
-## SQLite Tables (10)
+## SQLite Tables (13)
 
 ```sql
 code_units        — functions, classes, structs (id = file:name:type)
@@ -91,30 +91,43 @@ commits           — git commit metadata
 commit_files      — per-file stats per commit
 blame_cache       — cached git blame, keyed by content hash
 co_changes        — file pairs that change together
+branch_co_changes — branch-only co-change pairs (merge-base..HEAD)
 churn_stats       — churn scores per file and per function
 file_hashes       — content hashes for incremental analysis
 test_results      — recorded pass/fail outcomes for prioritization
+import_edges      — static import edges between source files
+bg_jobs           — background analyze/update jobs with progress_pct
+meta              — key-value project metadata (includes project_fingerprint)
 ```
 
-## 15 MCP Tools
+## 24 MCP Tools
 
 | Tool | Input | Output |
 |------|-------|--------|
 | `analyze` | directory, force | full rebuild stats |
 | `update` | — | incremental update stats |
 | `impact` | files, functions | affected tests + scores |
-| `diff_impact` | ref (auto-detects branch) | affected tests from git diff |
-| `suggest_tests` | file_path | ranked tests by relevance + failure rate |
+| `diff_impact` | ref, working_tree | affected tests from git diff |
+| `suggest_tests` | file_path, fallback_to_all, working_tree | ranked tests by relevance + failure rate |
 | `churn` | file, unit_name | churn score, commits, authors |
 | `ownership` | file | author breakdown (blame-based, role=original_author) |
 | `who_reviews` | file | reviewer suggestions (activity-based, role=suggested_reviewer) |
-| `coupling` | file, min_count | co-change partners |
-| `risk_map` | directory | risk scores (batch-computed) |
+| `coupling` | file, min_count | co-change + import partners |
+| `risk_map` | directory, exclude_tests, working_tree | risk scores (batch-computed) |
 | `stale_tests` | — | tests pointing at removed code |
-| `test_gaps` | file, directory | untested code units by churn risk |
+| `test_gaps` | file, directory, working_tree | untested code units by churn risk |
 | `history` | file | commit timeline |
 | `record_result` | test_id, passed, duration | store for future prioritization |
 | `stats` | — | database summary counts |
+| `triage` | directory, top_n, exclude_tests, working_tree | combined risk_map + test_gaps + stale_tests |
+| `start_job` | kind, directory, force | background job id |
+| `job_status` | job_id | job status + progress_pct + result |
+| `acquire_lock` | file_path | advisory lock for multi-agent coordination |
+| `release_lock` | file_path | release advisory lock |
+| `refresh_lock` | file_path | extend lock TTL |
+| `check_lock` | file_path | lock status query |
+| `check_locks` | file_paths | batch lock status query |
+| `list_locks` | — | list all active locks |
 
 All list-returning tools accept a `limit` parameter to cap result size.
 
@@ -125,7 +138,10 @@ All list-returning tools accept a `limit` parameter to cap result size.
 - **Proximity-based edge weights**: 0.4-1.0 based on directory distance. Python import-path matching (`from myapp.utils import foo` → `myapp/utils.py:foo`) takes priority.
 - **Risk formula**: `0.35*churn + 0.25*coupling + 0.15*coverage_gap + 0.10*coverage_depth + 0.10*author_concentration + 0.05*test_instability + hidden_risk_factor + new_file_boost`
 - **Batch queries**: `get_risk_map()` fetches all data in ~5 queries. `_chunked()` helper stays under SQLite's 999-variable limit.
-- **Working-tree support**: `risk_map`, `test_gaps`, `diff_impact`, and `suggest_tests` can analyze uncommitted files on disk.
+- **Working-tree support**: `risk_map`, `test_gaps`, `diff_impact`, `suggest_tests`, and `triage` can analyze uncommitted files on disk.
+- **Heuristic edge backfill**: `analyze`/`update` automatically creates filename-based heuristic test edges for test files missing static edges.
+- **Project fingerprint**: `meta.project_fingerprint` stores the canonical project root to warn against accidental cross-project DB reuse.
+- **Background jobs**: `start_job` / `job_status` run long analyses out-of-band; `progress_pct` (0–100) is reported in status.
 - **Churn formula**: `sum(1 / (1 + days_since_commit))` — recent changes weigh heavily.
 - **Co-change threshold**: Adaptive `max(3, total_commits // 4)`. Commits touching >50 files skipped.
 - **Blame caching**: Cached by file content hash, invalidated on change.

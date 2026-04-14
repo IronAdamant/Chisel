@@ -15,7 +15,7 @@ Agents should **not** assume semantic parity with IDE-grade analysis; treat resu
 
 When a tool returns a **dict**, check keys in this order before trusting long lists or scores:
 
-1. **`status`** — `no_data` | `no_changes` | `no_edges` | `git_error` (and tool-specific)
+1. **`status`** — `no_data` | `no_changes` | `no_edges` | `git_error` | `stale_db` (and tool-specific)
 2. **`error`** — e.g. `not_a_git_repo` on `diff_impact` / git failures
 3. **`message`**, **`hint`**
 4. **`_meta`** — on `risk_map` / triage (uniform components, thresholds)

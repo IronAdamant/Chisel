@@ -14,6 +14,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`test_gaps` working-tree elevation**: Gaps from untracked files now sort to the top of the list when `working_tree=true`, preventing the `limit` parameter from cutting them off.
 - **`suggest_tests` / `diff_impact` directory-aware stem matching**: Same-directory tests (e.g. `tests/services/X.test.js` for `src/services/X.js`) are strongly preferred over fuzzy substring matches.
 - **`diff_impact` expanded working-tree fallback**: Static import scan and stem-match fallback now apply to ALL changed files (including newly staged files), not just untracked ones.
+- **`diff_impact` stale-DB detection**: Returns `{"status": "stale_db", "file_path": ..., "hint": "chisel analyze"}` when changed files are not present in the database, instead of silently returning empty results.
+- **`suggest_tests` auto-fallback**: When a file has no DB test edges and no static import edges, `suggest_tests` now automatically falls back to stem-matching across all known test files (previously required `fallback_to_all=True`). This makes the tool self-healing for newly tracked or newly created files.
+- **`triage` `working_tree` passthrough**: `tool_triage()` now forwards `working_tree` to `risk_map` and `test_gaps`, so composite triage calls include untracked files.
+- **`start_job` / `job_status` progress tracking**: Background jobs now report `progress_pct` (0–100). `job_status` includes this field; `start_job` updates it during long-running `analyze`/`update` operations.
+- **Heuristic edge backfill during `analyze`/`update`**: After edge discovery, test files that still have no test edges get filename-based heuristic edges automatically created via `_backfill_heuristic_edges()`. This improves coverage for projects where static dependency extraction misses test-to-source links.
+- **Project fingerprint**: `analyze` stores the canonical project root in `meta.project_fingerprint`. Subsequent `suggest_tests` / `diff_impact` calls warn when the DB was created for a different project path, preventing accidental cross-project analysis reuse.
 - **Git warnings in `analyze`/`update`**: When git is unavailable, the returned stats dict includes `git_warning` so agents know churn/blame/coupling will be missing.
 - **MCP timeout hints**: `tool_analyze` and `tool_update` now include a `hint` recommending `start_job` for large repos.
 
@@ -23,6 +29,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Coupling formula**: Import-graph coupling is now first-class. Changed from `max(cochange, cochange + 0.25 * import)` to `max(cochange, import, 0.5*cochange + 0.5*import)` in `tool_coupling`, `compute_risk_score`, and `get_risk_map`. In single-author/low-commit repos, import coupling now dominates instead of being a minor boost.
 - **`risk_map` defaults**: Changed default `coverage_mode` from `"unit"` to `"line"` and default `proximity_adjustment` from `False` to `True`, so coverage gaps are graduated by default.
 - **`test_gaps` static-import filter**: Now only removes files with NO DB test edges at all. Previously, a file with partial DB coverage could be incorrectly excluded from gaps just because a static import existed.
+
+### Fixed
+
+- **`storage.py` read-only transaction error**: `_fetchone()` and `_execute()` no longer use `with self._conn as conn:` for reads, which caused `sqlite3.OperationalError: cannot commit - no transaction is active` when SQLite implicitly opened no transaction for SELECT queries.
 
 ## [0.8.2] - 2026-04-10
 

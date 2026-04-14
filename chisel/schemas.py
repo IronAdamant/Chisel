@@ -407,6 +407,13 @@ _TOOL_SCHEMAS = {
                         "Exclude test files from risk ranking (default: true)."
                     ),
                 },
+                "working_tree": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, forward working_tree to risk_map and test_gaps "
+                        "so uncommitted files are included."
+                    ),
+                },
             },
             "required": [],
         },
@@ -593,7 +600,7 @@ _TOOL_DISPATCH = {
     "update": ("tool_update", []),
     "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests", "working_tree"]),
     "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
-    "triage": ("tool_triage", ["directory", "top_n", "exclude_tests"]),
+    "triage": ("tool_triage", ["directory", "top_n", "exclude_tests", "working_tree"]),
     "stats": ("tool_stats", []),
     "start_job": ("tool_start_job", ["kind", "directory", "force"]),
     "job_status": ("tool_job_status", ["job_id"]),

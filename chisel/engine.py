@@ -117,6 +117,8 @@ class ChiselEngine:
         self._process_lock = ProcessLock(resolved_storage)
         self._bg_jobs_lock = threading.Lock()
         self._bg_job_in_progress = False
+        self._bg_job_progress = {}
+        self._check_project_fingerprint()
 
     # ------------------------------------------------------------------ #
     # Full analysis
@@ -146,6 +148,9 @@ class ChiselEngine:
         except RuntimeError as exc:
             git_warning = str(exc)
 
+        total_files = len(code_files)
+        self._set_bg_progress(0)
+
         # Phase 2: write to storage under both process lock (cross-process)
         # and RWLock (in-process threads).
         with self._process_lock.exclusive():
@@ -153,13 +158,14 @@ class ChiselEngine:
                 changed_files = self._find_changed_files(code_files, force=force)
 
                 stats = {
-                    "code_files_scanned": len(code_files),
+                    "code_files_scanned": total_files,
                     "code_units_found": self._parse_and_store_code_units(changed_files),
                     "test_files_found": 0,
                     "test_units_found": 0,
                     "test_edges_built": 0,
                     "commits_parsed": 0,
                 }
+                self._set_bg_progress(20)
 
                 if commits is not None:
                     stats["commits_parsed"] = len(commits)
@@ -171,13 +177,18 @@ class ChiselEngine:
                         f"Git unavailable ({git_warning}); "
                         "churn, blame, and coupling will be missing."
                     )
+                self._set_bg_progress(50)
 
                 test_units, tf_count, edge_count = self._discover_and_build_edges(code_files)
                 stats["test_files_found"] = tf_count
                 stats["test_units_found"] = len(test_units)
                 stats["test_edges_built"] = edge_count
+                self._set_bg_progress(75)
 
                 self._rebuild_import_edges(code_files)
+                self._backfill_heuristic_edges()
+                self.storage.set_meta("project_fingerprint", self.project_dir)
+                self._set_bg_progress(100)
 
                 stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
                 return stats
@@ -194,10 +205,12 @@ class ChiselEngine:
         """
         # Scan filesystem outside locks to avoid blocking
         code_files = self._scan_code_files()
+        self._set_bg_progress(0)
         with self._process_lock.exclusive():
             with self.lock.write_lock():
                 changed_files = self._find_changed_files(code_files)
                 code_units_found = self._parse_and_store_code_units(changed_files)
+                self._set_bg_progress(30)
 
                 stats = {
                     "files_updated": len(changed_files),
@@ -222,9 +235,14 @@ class ChiselEngine:
                         f"Git unavailable ({exc}); "
                         "churn, blame, and coupling will be missing."
                     )
+                self._set_bg_progress(60)
 
                 self._discover_and_build_edges(code_files)
                 self._rebuild_import_edges(code_files)
+                self._backfill_heuristic_edges()
+                self.storage.set_meta("project_fingerprint", self.project_dir)
+                self._set_bg_progress(100)
+
                 stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
                 return stats
 
@@ -270,6 +288,8 @@ class ChiselEngine:
                 }
             self._bg_job_in_progress = True
         job_id = uuid.uuid4().hex
+        with self._bg_jobs_lock:
+            self._active_bg_job_id = job_id
         self.storage.insert_bg_job(job_id, kind, "running")
 
         def run():
@@ -280,14 +300,17 @@ class ChiselEngine:
                     out = self.update()
                 self.storage.update_bg_job(
                     job_id, "completed", result_json=json.dumps(out, default=str),
+                    progress_pct=100,
                 )
             except Exception as exc:
                 self.storage.update_bg_job(
                     job_id, "failed", error_message=str(exc),
+                    progress_pct=100,
                 )
             finally:
                 with self._bg_jobs_lock:
                     self._bg_job_in_progress = False
+                    self._active_bg_job_id = None
 
         threading.Thread(
             target=run, name=f"chisel-bg-{kind}", daemon=True,
@@ -300,7 +323,7 @@ class ChiselEngine:
         }
 
     def tool_job_status(self, job_id):
-        """MCP tool: poll a job started with ``tool_start_job``."""
+        """MCP tool: poll a job started with ``tool_start_job`` ."""
         row = self.storage.get_bg_job(job_id)
         if not row:
             return {
@@ -315,6 +338,14 @@ class ChiselEngine:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
+        # Prefer in-memory progress; fall back to DB column
+        with self._bg_jobs_lock:
+            mem_pct = self._bg_job_progress.get(job_id)
+        db_pct = row.get("progress_pct")
+        if mem_pct is not None:
+            out["progress_pct"] = mem_pct
+        elif db_pct is not None:
+            out["progress_pct"] = db_pct
         if row["error_message"]:
             out["error"] = row["error_message"]
         if row["result_json"]:
@@ -346,6 +377,14 @@ class ChiselEngine:
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
+                # Stale-DB detection: if file has never been analyzed, tell the agent
+                if self.storage.get_file_hash(file_path) is None:
+                    return {
+                        "status": "stale_db",
+                        "file_path": file_path,
+                        "message": "File not found in analysis database.",
+                        "hint": "Run 'chisel update' first to include new or changed files.",
+                    }
                 disk = self._disk_only_test_map() if working_tree else None
                 extra = self._git_untracked_code_paths() if working_tree else None
                 result = self.impact.suggest_tests(
@@ -354,10 +393,16 @@ class ChiselEngine:
                     disk_test_files=disk,
                     extra_code_paths=extra,
                 )
+                # Auto-fallback: if no DB/static hits, automatically try
+                # fallback_to_all and working_tree suggestions.
+                if not result and not fallback_to_all:
+                    result = self.impact._fallback_suggest_tests(file_path)
+                if not result and not working_tree:
+                    result = self._working_tree_suggest(file_path, disk_test_files=disk)
                 if working_tree and not result:
                     # File may be untracked — try stem-matching against known test files
                     result = self._working_tree_suggest(file_path, disk_test_files=disk)
-                if working_tree and len(result) > _WORKING_TREE_SUGGEST_LIMIT:
+                if len(result) > _WORKING_TREE_SUGGEST_LIMIT:
                     result = result[:_WORKING_TREE_SUGGEST_LIMIT]
                 return result
 
@@ -582,8 +627,24 @@ class ChiselEngine:
                 pass
         with self._process_lock.shared():
             with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
                 disk = self._disk_only_test_map() if working_tree else None
                 extra = self._git_untracked_code_paths() if working_tree else None
+                # Stale-DB detection: warn when changed files are missing from the DB
+                missing_from_db = [
+                    cf for cf in changed_files
+                    if self.storage.get_file_hash(cf) is None
+                ]
+                if missing_from_db:
+                    return {
+                        "status": "stale_db",
+                        "changed_files": changed_files,
+                        "missing_from_db": missing_from_db,
+                        "message": "Some changed files are missing from the analysis database.",
+                        "hint": "Run 'chisel update' first to include new or changed files.",
+                    }
                 result = self.impact.get_impacted_tests(
                     changed_files,
                     functions or None,
@@ -699,18 +760,29 @@ class ChiselEngine:
                     result["heuristic_edges_created"] = edges_created
                 return result
 
-    def tool_triage(self, directory=None, top_n=10, exclude_tests=True):
+    def tool_triage(self, directory=None, top_n=10, exclude_tests=True,
+                    working_tree=False):
         """MCP tool: combined risk_map + test_gaps + stale_tests triage."""
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
+                extra = self._git_untracked_code_paths() if working_tree else None
                 risk_map = self.impact.get_risk_map(
                     directory, exclude_tests,
+                    extra_files=sorted(extra) if extra else None,
                 )
                 risk_map = risk_map[:top_n]
-                test_gaps = self.impact.get_test_gaps(directory=directory)
+                disk = self._disk_only_test_map() if working_tree else None
+                test_gaps = self.impact.get_test_gaps(
+                    directory=directory,
+                    disk_test_files=disk,
+                    extra_code_paths=extra,
+                )
+                if working_tree:
+                    test_gaps.extend(self._working_tree_gaps(directory=directory))
+                    test_gaps.sort(key=lambda g: (not g.get("_working_tree"), -g.get("churn_score", 0)))
                 stale = self.impact.detect_stale_tests()
                 stats = self.storage.get_stats()
 
@@ -860,6 +932,14 @@ class ChiselEngine:
                                 4,
                             ),
                         }
+                    # Project fingerprint mismatch warning
+                    fp = self.storage.get_meta("project_fingerprint")
+                    if fp and fp != self.project_dir:
+                        stats["warning"] = (
+                            f"Database fingerprint mismatch: stored '{fp}' "
+                            f"vs current '{self.project_dir}'. "
+                            f"Use --storage-dir to isolate projects."
+                        )
                 return stats
 
     # ------------------------------------------------------------------ #
@@ -1247,6 +1327,34 @@ class ChiselEngine:
                     "_working_tree": True,
                 })
         return gaps
+
+    def _set_bg_progress(self, pct):
+        """Update in-memory progress percentage for the current background job."""
+        with self._bg_jobs_lock:
+            active = getattr(self, "_active_bg_job_id", None)
+            if active:
+                self._bg_job_progress[active] = pct
+
+    def _check_project_fingerprint(self):
+        """Warn if the stored project fingerprint does not match the current directory."""
+        stored = self.storage.get_meta("project_fingerprint")
+        if stored and stored != self.project_dir:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Chisel DB fingerprint mismatch: stored '%s' vs current '%s'",
+                stored, self.project_dir,
+            )
+
+    def _backfill_heuristic_edges(self):
+        """Create heuristic test edges for tests that have zero DB edges.
+
+        Runs after analyze/update so filename-based matches are established
+        even for test files the static scanner missed.
+        """
+        all_tests = self.storage.get_all_test_units()
+        for tu in all_tests:
+            if not self.storage.get_edges_for_test(tu["id"]):
+                self._create_heuristic_edges(tu["id"])
 
     def _scan_code_files(self, directory=None):
         """Walk project tree and return all code file paths.
