@@ -11,10 +11,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`analyze` auto-fallback to background job**: `tool_analyze` now scans the repo before starting a full forced analysis. If `force=True` and the repository contains more than 300 code files, it automatically queues a background job via `start_job` and returns `{"status": "auto_queued", "job_id": ..., "kind": "analyze"}` to avoid MCP timeouts on large repos.
 - **`exclude_new_file_boost` parameter**: Both `risk_map` and `triage` now accept `exclude_new_file_boost=True`. When set, the 0.5 additive boost for files with zero churn and zero coverage is suppressed, making long-term risk rankings more stable.
+- **`auto_update` parameter for read-only tools**: `diff_impact`, `suggest_tests`, `risk_map`, `test_gaps`, and `triage` now accept `auto_update=True`. When the DB is stale (missing changed files), Chisel attempts a lightweight inline `update()` before returning results. Capped at 50 changed files and skipped when a background job is already running.
+- **`chisel run` CLI subcommand**: `chisel run -- <test-command>` runs tests and automatically calls `record_result` for each detected test. Supports pytest (via `-v` output parsing) and Jest (via `--json` output file). Go and Rust are scaffolded for future extension.
+- **Extractor plugin examples**: Added `examples/extractors/tree_sitter_js_extractor.py`, `swift_syntax_extractor.py`, and `lsp_symbol_extractor.py`, plus `docs/EXTRACTOR_ECOSYSTEM.md` with install instructions and bootstrap snippets.
 
 ### Changed
 
-- **Documentation**: `README.md`, `docs/LLM_CONTRACT.md`, and `docs/AGENT_PLAYBOOK.md` now include stronger guidance to call `record_result` after test runs so that `test_instability` and failure-rate boosting in `suggest_tests` are populated over time.
+- **Documentation**: `README.md`, `docs/LLM_CONTRACT.md`, `docs/AGENT_PLAYBOOK.md`, and `docs/CUSTOM_EXTRACTORS.md` now include stronger guidance to call `record_result` after test runs, and link to the new extractor ecosystem docs.
 
 ## [0.8.3] — 2026-04-14
 

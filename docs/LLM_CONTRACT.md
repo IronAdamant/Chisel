@@ -77,11 +77,23 @@ Each per-file entry in `risk_map` output includes:
 
 **Best practice:** After every test run (local or CI), call `record_result(test_id, passed, duration_ms?)` for each test. This makes Chisel's prioritization more accurate over time.
 
+## `auto_update` inline refresh
+
+Several read-only tools now support `auto_update=True`:
+- `diff_impact`
+- `suggest_tests`
+- `risk_map`
+- `test_gaps`
+- `triage`
+
+When enabled, Chisel checks if the DB is stale (changed files missing). If ≤50 files changed and no background job is running, it performs a lightweight `update()` inline before returning results. For `risk_map` and `triage`, `_meta.auto_update_performed` indicates whether the refresh happened. If the cap is exceeded, the tool falls back to its normal stale-DB behavior.
+
 ## MCP vs CLI
 
 - **MCP** wraps results with **`next_steps`** suggestions when using HTTP/stdio servers—use them for follow-up tool calls.
 - Long **`analyze`** runs should use **`start_job`** + **`job_status`** or a terminal to avoid client timeouts.
 - For repos with >300 code files, `analyze` with `force=True` now auto-queues a background job and returns `status: "auto_queued"`.
+- **CLI** `chisel run -- <test-command>` runs tests and auto-records results. Currently supports pytest and Jest.
 
 ## Cursor / host integration (out of band)
 

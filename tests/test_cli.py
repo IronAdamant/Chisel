@@ -8,8 +8,9 @@ from chisel.cli import cmd_analyze, cmd_churn, cmd_coupling, cmd_diff_impact
 from chisel.cli import cmd_history, cmd_impact, cmd_ownership, cmd_record_result
 from chisel.cli import cmd_risk_map, cmd_serve, cmd_serve_mcp, cmd_stale_tests
 from chisel.cli import cmd_stats, cmd_suggest_tests, cmd_test_gaps
-from chisel.cli import cmd_triage, cmd_update, cmd_who_reviews
+from chisel.cli import cmd_run, cmd_triage, cmd_update, cmd_who_reviews
 from chisel.cli import create_parser, main
+from chisel.cli import _detect_test_framework, _parse_pytest_output, _parse_jest_json
 
 
 # ------------------------------------------------------------------ #
@@ -636,6 +637,87 @@ class TestHandlerOutputFormats:
         with patch("chisel.mcp_stdio.main", mock_mcp_main):
             args = _make_args()
             cmd_serve_mcp(args)
+
+    @patch("chisel.cli.ChiselEngine")
+    @patch("chisel.cli.subprocess.Popen")
+    def test_cmd_run_pytest_records_results(self, mock_popen, mock_cls, capsys, tmp_path):
+        engine = _make_engine_mock()
+        mock_cls.return_value = engine
+
+        # Mock subprocess stdout
+        proc = MagicMock()
+        proc.stdout = [
+            b"tests/test_app.py::test_foo PASSED\n",
+            b"tests/test_app.py::test_bar FAILED\n",
+        ]
+        proc.returncode = 1
+        mock_popen.return_value = proc
+
+        args = _make_args(command=["pytest"], project_dir=str(tmp_path))
+        exit_code = cmd_run(args)
+
+        assert exit_code == 1
+        mock_popen.assert_called_once()
+        # Should record two results
+        assert engine.tool_record_result.call_count == 2
+        engine.tool_record_result.assert_any_call("tests/test_app.py::test_foo", passed=True)
+        engine.tool_record_result.assert_any_call("tests/test_app.py::test_bar", passed=False)
+
+    @patch("chisel.cli.subprocess.run")
+    def test_cmd_run_unknown_framework_no_record(self, mock_run, capsys):
+        mock_run.return_value = MagicMock(returncode=0)
+
+        args = _make_args(command=["make", "test"])
+        exit_code = cmd_run(args)
+
+        assert exit_code == 0
+        mock_run.assert_called_once_with(["make", "test"])
+
+
+# ------------------------------------------------------------------ #
+# Test-run parser helpers
+# ------------------------------------------------------------------ #
+
+class TestRunHelpers:
+    def test_detect_pytest(self):
+        assert _detect_test_framework(["pytest"]) == "pytest"
+        assert _detect_test_framework(["python", "-m", "pytest"]) is None
+
+    def test_detect_jest(self):
+        assert _detect_test_framework(["jest"]) == "jest"
+        assert _detect_test_framework(["npx", "jest"]) == "jest"
+
+    def test_parse_pytest_output(self):
+        lines = [
+            "tests/test_app.py::test_foo PASSED",
+            "tests/test_app.py::test_bar FAILED",
+            "tests/test_app.py::test_baz SKIPPED",
+        ]
+        results = _parse_pytest_output(lines)
+        assert results == [
+            ("tests/test_app.py::test_foo", True),
+            ("tests/test_app.py::test_bar", False),
+            # SKIPPED is treated as not-passed so it isn't recorded
+            ("tests/test_app.py::test_baz", False),
+        ]
+
+    def test_parse_jest_json(self, tmp_path):
+        data = {
+            "testResults": [
+                {
+                    "name": str(tmp_path / "tests" / "foo.test.js"),
+                    "assertionResults": [
+                        {"title": "should pass", "status": "passed"},
+                        {"title": "should fail", "status": "failed"},
+                    ],
+                }
+            ]
+        }
+        jest_file = tmp_path / "jest.json"
+        jest_file.write_text(json.dumps(data))
+        results = _parse_jest_json(str(jest_file), str(tmp_path))
+        assert ("tests/foo.test.js:should pass", True) in results
+        assert ("tests/foo.test.js:should fail", False) in results
 
 
 # ------------------------------------------------------------------ #

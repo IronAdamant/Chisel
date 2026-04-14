@@ -219,6 +219,13 @@ _TOOL_SCHEMAS = {
                         "so newly created files are visible."
                     ),
                 },
+                "auto_update": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, attempt an incremental update before scoring "
+                        "so recent changes are reflected."
+                    ),
+                },
                 "exclude_new_file_boost": {
                     "type": "boolean",
                     "description": (
@@ -321,6 +328,13 @@ _TOOL_SCHEMAS = {
                         "are committed."
                     ),
                 },
+                "auto_update": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, attempt an incremental update when changed "
+                        "files are missing from the DB before returning results."
+                    ),
+                },
             },
             "required": [],
         },
@@ -398,6 +412,13 @@ _TOOL_SCHEMAS = {
                         "useful for identifying coverage gaps in files that haven't been committed yet."
                     ),
                 },
+                "auto_update": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, attempt an incremental update before querying "
+                        "so recent changes are reflected."
+                    ),
+                },
             },
             "required": [],
         },
@@ -432,6 +453,13 @@ _TOOL_SCHEMAS = {
                     "description": (
                         "If true, forward working_tree to risk_map and test_gaps "
                         "so uncommitted files are included."
+                    ),
+                },
+                "auto_update": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, attempt an incremental update before triaging "
+                        "so recent changes are reflected."
                     ),
                 },
                 "exclude_new_file_boost": {
@@ -612,22 +640,22 @@ _TOOL_SCHEMAS = {
 _TOOL_DISPATCH = {
     "analyze": ("tool_analyze", ["directory", "force"]),
     "impact": ("tool_impact", ["files", "functions"]),
-    "suggest_tests": ("tool_suggest_tests", ["file_path", "directory", "fallback_to_all", "working_tree"]),
+    "suggest_tests": ("tool_suggest_tests", ["file_path", "directory", "fallback_to_all", "working_tree", "auto_update"]),
     "churn": ("tool_churn", ["file_path", "unit_name"]),
     "ownership": ("tool_ownership", ["file_path"]),
     "coupling": ("tool_coupling", ["file_path", "min_count"]),
     "risk_map": (
         "tool_risk_map",
-        ["directory", "exclude_tests", "proximity_adjustment", "coverage_mode", "working_tree", "exclude_new_file_boost"],
+        ["directory", "exclude_tests", "proximity_adjustment", "coverage_mode", "working_tree", "exclude_new_file_boost", "auto_update"],
     ),
     "stale_tests": ("tool_stale_tests", []),
     "history": ("tool_history", ["file_path"]),
     "who_reviews": ("tool_who_reviews", ["file_path"]),
-    "diff_impact": ("tool_diff_impact", ["ref", "working_tree"]),
+    "diff_impact": ("tool_diff_impact", ["ref", "working_tree", "auto_update"]),
     "update": ("tool_update", []),
-    "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests", "working_tree", "limit"]),
+    "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests", "working_tree", "limit", "auto_update"]),
     "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
-    "triage": ("tool_triage", ["directory", "top_n", "exclude_tests", "working_tree", "exclude_new_file_boost"]),
+    "triage": ("tool_triage", ["directory", "top_n", "exclude_tests", "working_tree", "exclude_new_file_boost", "auto_update"]),
     "stats": ("tool_stats", []),
     "optimize_storage": ("tool_optimize_storage", []),
     "start_job": ("tool_start_job", ["kind", "directory", "force"]),

@@ -350,6 +350,71 @@ class TestToolMethods:
         test_ids = {item["test_id"] for item in result}
         assert any("test_addon" in tid for tid in test_ids)
 
+    def test_tool_diff_impact_auto_update_clears_stale_db(self, engine, git_project, run_git):
+        engine.analyze()
+        # Add a new tracked file without re-analyzing
+        (git_project / "new_module.py").write_text("def new_func(): pass\n")
+        # Stage it so git sees it as a changed file
+        run_git(git_project, "add", "new_module.py")
+        # Without auto_update, this would be stale_db because new_module.py is missing from DB
+        result = engine.tool_diff_impact(auto_update=True)
+        # After auto-update, it should return a normal result (list or no_changes)
+        assert isinstance(result, (list, dict))
+        if isinstance(result, dict):
+            assert result.get("status") != "stale_db"
+
+    def test_tool_suggest_tests_auto_update_clears_stale_db(self, engine, git_project, run_git):
+        engine.analyze()
+        # Add a new file without re-analyzing
+        (git_project / "new_module.py").write_text("def new_func(): pass\n")
+        run_git(git_project, "add", "new_module.py")
+        # Without auto_update this returns stale_db
+        stale = engine.tool_suggest_tests("new_module.py")
+        assert isinstance(stale, dict) and stale.get("status") == "stale_db"
+        # With auto_update it should refresh and return a list (possibly empty)
+        result = engine.tool_suggest_tests("new_module.py", auto_update=True)
+        assert isinstance(result, list)
+
+    def test_tool_risk_map_auto_update_meta(self, engine):
+        engine.analyze()
+        result = engine.tool_risk_map(auto_update=True)
+        assert "_meta" in result
+        assert "auto_update_performed" in result["_meta"]
+        # In a clean repo with no changes, auto_update should be skipped with reason "no_changes"
+        assert result["_meta"]["auto_update_performed"] is False
+        assert result["_meta"]["auto_update_skip_reason"] == "no_changes"
+
+    def test_tool_triage_auto_update_summary(self, engine):
+        engine.analyze()
+        result = engine.tool_triage(auto_update=True)
+        assert "summary" in result
+        assert "auto_update_performed" in result["summary"]
+        assert result["summary"]["auto_update_performed"] is False
+        assert result["summary"]["auto_update_skip_reason"] == "no_changes"
+
+    def test_tool_auto_update_skipped_when_bg_job_running(self, engine):
+        engine.analyze()
+        # Fake a background job in progress
+        with engine._bg_jobs_lock:
+            engine._bg_job_in_progress = True
+        try:
+            result = engine.tool_risk_map(auto_update=True)
+            assert result["_meta"]["auto_update_performed"] is False
+            assert result["_meta"]["auto_update_skip_reason"] == "background_job_running"
+        finally:
+            with engine._bg_jobs_lock:
+                engine._bg_job_in_progress = False
+
+    def test_tool_auto_update_skipped_when_too_many_files(self, engine, git_project, run_git):
+        engine.analyze()
+        # Create many changed files to exceed the cap
+        for i in range(60):
+            (git_project / f"mod_{i}.py").write_text(f"def mod_{i}(): pass\n")
+            run_git(git_project, "add", f"mod_{i}.py")
+        result = engine.tool_risk_map(auto_update=True)
+        assert result["_meta"]["auto_update_performed"] is False
+        assert result["_meta"]["auto_update_skip_reason"] == "too_many_changed_files"
+
     def test_tool_record_result(self, engine):
         engine.analyze()
         all_tests = engine.storage.get_all_test_units()

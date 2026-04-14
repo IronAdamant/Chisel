@@ -164,6 +164,16 @@ def rust_tree_sitter_extractor(file_path: str, content: str) -> list[CodeUnit]:
 register_extractor("rust", rust_tree_sitter_extractor)
 ```
 
+## Official plugin examples
+
+Ready-to-copy extractors maintained in the Chisel repo:
+
+- **[JS/TS Tree-sitter](../examples/extractors/tree_sitter_js_extractor.py)** — scope-aware variable tracking, dynamic `require()` resolution.
+- **[Swift Syntax](../examples/extractors/swift_syntax_extractor.py)** — `swift-syntax` based parser for functions, classes, structs, enums.
+- **[LSP Symbols](../examples/extractors/lsp_symbol_extractor.py)** — generic JSON-RPC LSP client for polyglot repos.
+
+See **[EXTRACTOR_ECOSYSTEM.md](EXTRACTOR_ECOSYSTEM.md)** for install instructions, bootstrap snippets, and the community extensions table.
+
 ## Example stub (stdlib-only)
 
 See **`examples/chisel_bootstrap_example.py`** — documents the hook without adding dependencies; copy and extend in your repo.

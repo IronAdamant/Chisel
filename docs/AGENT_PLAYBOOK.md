@@ -13,7 +13,9 @@ Short guide for **LLM agents** using Chisel (MCP or CLI). Solo maintainer, multi
 
 1. Edit code.
 2. **`diff_impact`** — which tests to run (fix **`git_error`** if cwd/project wrong).
+   - Use **`auto_update=true`** to refresh stale DB inline instead of the two-step `update` → `diff_impact` dance.
 3. Run tests in the terminal or CI.
+   - Or use **`chisel run -- pytest tests/`** to run tests and auto-record results.
 4. **`record_result`** for failures/passes to feed ranking and risk.
 5. **`update`** after small edits — or **`start_job`** / `update` for heavy jobs.
 
@@ -22,7 +24,7 @@ Short guide for **LLM agents** using Chisel (MCP or CLI). Solo maintainer, multi
 | Symptom | Action |
 |--------|--------|
 | `no_data` | Run **`analyze`** on the repo root. |
-| `stale_db` | The file isn't in the Chisel DB yet — run **`analyze`** or use **`working_tree=true`** for uncommitted files. |
+| `stale_db` | The file isn't in the Chisel DB yet — use **`auto_update=true`**, run **`analyze`**, or use **`working_tree=true`** for uncommitted files. |
 | `suggest_tests` empty | Try **`fallback_to_all`** or **`working_tree`** for untracked files; ensure **analyze** has run. |
 | `risk_map` misses new files | Use **`working_tree=true`** to include untracked files in risk scoring. |
 | `coupling` co-change empty | Normal in solo history — use **`import_coupling`** / **`import_partners`** and **`risk_map`**. |

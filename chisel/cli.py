@@ -3,6 +3,10 @@
 import argparse
 import json
 import os
+import re
+import subprocess
+import sys
+import tempfile
 
 from chisel.engine import ChiselEngine
 
@@ -146,6 +150,11 @@ def create_parser():
                               help="Mark test as failed")
     p_record.add_argument("--duration", type=int, default=None,
                           help="Duration in milliseconds")
+
+    # run
+    p_run = sub.add_parser("run", parents=[shared],
+                           help="Run tests and automatically record results")
+    p_run.add_argument("command", nargs="+", help="Test command to execute")
 
     # stats
     sub.add_parser("stats", parents=[shared],
@@ -645,6 +654,150 @@ def cmd_serve_mcp(args):
 
 
 # ------------------------------------------------------------------ #
+# Test-run helpers (chisel run)
+# ------------------------------------------------------------------ #
+
+def _detect_test_framework(command):
+    """Detect test framework from the command list."""
+    if not command:
+        return None
+    first = command[0].lower()
+    if first == "pytest" or first.endswith("/pytest"):
+        return "pytest"
+    if first in ("jest", "npx"):
+        return "jest"
+    if first == "go":
+        return "go"
+    if first == "cargo":
+        return "rust"
+    return None
+
+
+# Pytest verbose output: "tests/test_app.py::test_foo PASSED"
+_PYTEST_RESULT_RE = re.compile(
+    r"^(.+?)\s+(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)$"
+)
+
+
+def _parse_pytest_output(lines):
+    """Parse pytest -v output and return list of (test_id, passed)."""
+    results = []
+    for line in lines:
+        line = line.rstrip("\n")
+        m = _PYTEST_RESULT_RE.match(line)
+        if m:
+            test_id = m.group(1).strip()
+            status = m.group(2)
+            passed = status in ("PASSED", "XFAIL")
+            results.append((test_id, passed))
+    return results
+
+
+def _parse_jest_json(path, project_dir):
+    """Parse Jest JSON output and return list of (test_id, passed)."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    results = []
+    for suite in data.get("testResults", []):
+        suite_path = suite.get("name", "")
+        # Make path relative to project dir
+        rel_path = os.path.relpath(suite_path, project_dir).replace("\\", "/")
+        for assertion in suite.get("assertionResults", []):
+            title = assertion.get("title", "")
+            status = assertion.get("status", "")
+            passed = status == "passed"
+            test_id = f"{rel_path}:{title}"
+            results.append((test_id, passed))
+    return results
+
+
+def _augment_command(command, framework):
+    """Add framework-specific flags to produce machine-readable output."""
+    augmented = list(command)
+    if framework == "pytest":
+        if "-v" not in augmented and "--verbose" not in augmented:
+            augmented.append("-v")
+    elif framework == "jest":
+        if "--json" not in augmented:
+            augmented.append("--json")
+    elif framework == "go":
+        if "-json" not in augmented:
+            augmented.append("-json")
+    elif framework == "rust":
+        if "--message-format=json" not in augmented:
+            augmented.append("--message-format=json")
+    return augmented
+
+
+def _collect_run_results(framework, stdout_lines, temp_files, project_dir):
+    """Collect (test_id, passed) tuples from test output."""
+    if framework == "pytest":
+        return _parse_pytest_output(stdout_lines)
+    if framework == "jest" and temp_files:
+        return _parse_jest_json(temp_files[0], project_dir)
+    return []
+
+
+def cmd_run(args):
+    """Run a test command and record results automatically."""
+    framework = _detect_test_framework(args.command)
+    if framework is None:
+        print("Warning: could not detect test framework; results will not be recorded.")
+        print(f"Running: {' '.join(args.command)}")
+        proc = subprocess.run(args.command)
+        return proc.returncode
+
+    augmented = _augment_command(args.command, framework)
+    temp_files = []
+    if framework == "jest":
+        # Jest needs a temp file for JSON output
+        fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="chisel-jest-")
+        os.close(fd)
+        temp_files.append(tmp_path)
+        if "--outputFile" not in augmented and "-o" not in augmented:
+            augmented.extend(["--outputFile", tmp_path])
+
+    proc = subprocess.Popen(
+        augmented,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    stdout_lines = []
+    for raw in proc.stdout:
+        text = raw.decode("utf-8", errors="replace")
+        stdout_lines.append(text)
+        sys.stdout.write(text)
+    proc.wait()
+    exit_code = proc.returncode
+
+    try:
+        results = _collect_run_results(
+            framework, stdout_lines, temp_files, args.project_dir,
+        )
+        if results:
+            with ChiselEngine(args.project_dir, storage_dir=args.storage_dir) as engine:
+                recorded = 0
+                for test_id, passed in results:
+                    engine.tool_record_result(test_id, passed=passed)
+                    recorded += 1
+            print(f"\n[chisel] Recorded {recorded} test result(s)")
+        else:
+            print("\n[chisel] No test results parsed from output")
+    finally:
+        for tmp in temp_files:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    return exit_code
+
+
+# ------------------------------------------------------------------ #
 # Dispatch table
 # ------------------------------------------------------------------ #
 
@@ -663,6 +816,7 @@ _COMMANDS = {
     "update": cmd_update,
     "test-gaps": cmd_test_gaps,
     "record-result": cmd_record_result,
+    "run": cmd_run,
     "triage": cmd_triage,
     "stats": cmd_stats,
     "start-job": cmd_start_job,

@@ -311,6 +311,29 @@ class ChiselEngine:
         return None
 
     _AUTO_BG_JOB_THRESHOLD = 300
+    _AUTO_UPDATE_MAX_FILES = 50
+
+    def _try_auto_update(self):
+        """Attempt a lightweight inline update when DB is stale.
+
+        Returns:
+            tuple: (performed: bool, reason: str | None)
+        """
+        with self._bg_jobs_lock:
+            if self._bg_job_in_progress:
+                return False, "background_job_running"
+
+        code_files = self._scan_code_files()
+        with self._process_lock.exclusive():
+            with self.lock.write_lock():
+                changed_files = self._find_changed_files(code_files)
+                if not changed_files:
+                    return False, "no_changes"
+                if len(changed_files) > self._AUTO_UPDATE_MAX_FILES:
+                    return False, "too_many_changed_files"
+
+        self.update()
+        return True, None
 
     def tool_analyze(self, directory=None, force=False):
         """MCP tool: full analysis.
@@ -514,7 +537,8 @@ class ChiselEngine:
         return result[:_WORKING_TREE_SUGGEST_LIMIT] if len(result) > _WORKING_TREE_SUGGEST_LIMIT else result
 
     def tool_suggest_tests(self, file_path=None, directory=None,
-                           fallback_to_all=False, working_tree=False):
+                           fallback_to_all=False, working_tree=False,
+                           auto_update=False):
         """MCP tool: suggest tests for a file or all files under a directory.
 
         Args:
@@ -527,6 +551,8 @@ class ChiselEngine:
             working_tree: If True, also check untracked files on disk and use
                 stem-matching to find relevant tests when the file has no DB edges.
                 Useful during active development before files are committed.
+            auto_update: If True, attempt an incremental update when the DB
+                is stale before returning results.
         """
         if not file_path and not directory:
             return {
@@ -542,6 +568,34 @@ class ChiselEngine:
         # Compute working-tree data outside the lock to avoid blocking readers
         disk = self._disk_only_test_map() if working_tree else None
         extra = self._git_untracked_code_paths() if working_tree else None
+
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
+
+                if file_path:
+                    file_missing = self.storage.get_file_hash(file_path) is None and not working_tree
+                else:
+                    file_missing = False
+
+        if file_path and file_missing and auto_update:
+            performed, _ = self._try_auto_update()
+            if performed:
+                return self.tool_suggest_tests(
+                    file_path=file_path,
+                    directory=directory,
+                    fallback_to_all=fallback_to_all,
+                    working_tree=working_tree,
+                    auto_update=False,
+                )
+            return {
+                "status": "stale_db",
+                "file_path": file_path,
+                "message": "File not found in analysis database.",
+                "hint": "Run 'chisel update' first to include new or changed files.",
+            }
 
         with self._process_lock.shared():
             with self.lock.read_lock():
@@ -642,7 +696,8 @@ class ChiselEngine:
 
     def tool_risk_map(self, directory=None, exclude_tests=True,
                       proximity_adjustment=True, coverage_mode="line",
-                      working_tree=False, exclude_new_file_boost=False):
+                      working_tree=False, exclude_new_file_boost=False,
+                      auto_update=False):
         """MCP tool: risk scores for all files.
 
         Returns ``{"files": [...], "_meta": {...}}`` so LLM agents can
@@ -664,7 +719,14 @@ class ChiselEngine:
             exclude_new_file_boost: If True, suppress the 0.5 new-file boost
                 so long-term risk rankings are not skewed toward recently
                 touched files.
+            auto_update: If True, attempt an incremental update before
+                scoring so recent changes are reflected.
         """
+        auto_update_performed = False
+        auto_update_reason = None
+        if auto_update:
+            auto_update_performed, auto_update_reason = self._try_auto_update()
+
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
@@ -693,6 +755,10 @@ class ChiselEngine:
                 meta["coverage_gap_mode"] = (
                     "proximity_adjusted" if proximity_adjustment else coverage_mode
                 )
+                if auto_update:
+                    meta["auto_update_performed"] = auto_update_performed
+                    if not auto_update_performed:
+                        meta["auto_update_skip_reason"] = auto_update_reason
                 if extra:
                     meta["working_tree_files_included"] = len(extra)
                 if untracked_warning:
@@ -757,7 +823,8 @@ class ChiselEngine:
                     return empty
                 return self.impact.suggest_reviewers(file_path)
 
-    def tool_diff_impact(self, ref=None, working_tree=False):
+    def tool_diff_impact(self, ref=None, working_tree=False,
+                         auto_update=False):
         """MCP tool: auto-detect changes from git diff and return impacted tests.
 
         If ref is not provided, auto-detects: on a feature branch diffs against
@@ -768,6 +835,8 @@ class ChiselEngine:
             working_tree: If True, perform full static import scanning for
                 untracked files (matching suggest_tests behavior) instead of
                 only stem-match fallback.
+            auto_update: If True, attempt an incremental update when changed
+                files are missing from the DB before returning results.
 
         Returns a diagnostic dict (status="no_changes") instead of bare []
         when no diff is found, so LLM agents can reason about why.
@@ -816,6 +885,32 @@ class ChiselEngine:
                 if empty is not None:
                     return empty
                 # Stale-DB detection: warn when changed files are missing from the DB
+                missing_from_db = [
+                    cf for cf in changed_files
+                    if self.storage.get_file_hash(cf) is None
+                ]
+
+        if missing_from_db and auto_update:
+            performed, _ = self._try_auto_update()
+            if performed:
+                return self.tool_diff_impact(
+                    ref=ref,
+                    working_tree=working_tree,
+                    auto_update=False,
+                )
+            return {
+                "status": "stale_db",
+                "changed_files": changed_files,
+                "missing_from_db": missing_from_db,
+                "message": "Some changed files are missing from the analysis database.",
+                "hint": "Run 'chisel update' first to include new or changed files.",
+            }
+
+        with self._process_lock.shared():
+            with self.lock.read_lock():
+                empty = self._check_analysis_data()
+                if empty is not None:
+                    return empty
                 missing_from_db = [
                     cf for cf in changed_files
                     if self.storage.get_file_hash(cf) is None
@@ -901,7 +996,7 @@ class ChiselEngine:
         return result
 
     def tool_test_gaps(self, file_path=None, directory=None, exclude_tests=True,
-                       working_tree=False, limit=None):
+                       working_tree=False, limit=None, auto_update=False):
         """MCP tool: find code units with no test coverage.
 
         Args:
@@ -909,7 +1004,12 @@ class ChiselEngine:
                 disk and include their code units as gaps with churn=0. Useful
                 for identifying coverage gaps in files that haven't been committed.
             limit: Optional maximum number of results to return.
+            auto_update: If True, attempt an incremental update before
+                querying so recent changes are reflected.
         """
+        if auto_update:
+            self._try_auto_update()
+
         disk = self._disk_only_test_map() if working_tree else None
         extra = self._git_untracked_code_paths() if working_tree else None
         with self._process_lock.shared():
@@ -947,8 +1047,14 @@ class ChiselEngine:
                 return result
 
     def tool_triage(self, directory=None, top_n=10, exclude_tests=True,
-                    working_tree=False, exclude_new_file_boost=False):
+                    working_tree=False, exclude_new_file_boost=False,
+                    auto_update=False):
         """MCP tool: combined risk_map + test_gaps + stale_tests triage."""
+        auto_update_performed = False
+        auto_update_reason = None
+        if auto_update:
+            auto_update_performed, auto_update_reason = self._try_auto_update()
+
         extra = self._git_untracked_code_paths() if working_tree else None
         disk = self._disk_only_test_map() if working_tree else None
         with self._process_lock.shared():
@@ -977,18 +1083,23 @@ class ChiselEngine:
                 relevant_gaps = [g for g in test_gaps if g["file_path"] in top_files]
 
                 commit_count = stats.get("commits", 0)
+                summary = {
+                    "files_triaged": len(risk_map),
+                    "total_test_gaps": len(relevant_gaps),
+                    "total_stale_tests": len(stale),
+                    "test_edge_count": stats.get("test_edges", 0),
+                    "test_result_count": stats.get("test_results", 0),
+                    "coupling_threshold": _coupling_threshold(commit_count),
+                }
+                if auto_update:
+                    summary["auto_update_performed"] = auto_update_performed
+                    if not auto_update_performed:
+                        summary["auto_update_skip_reason"] = auto_update_reason
                 return {
                     "top_risk_files": risk_map,
                     "test_gaps": relevant_gaps,
                     "stale_tests": stale,
-                    "summary": {
-                        "files_triaged": len(risk_map),
-                        "total_test_gaps": len(relevant_gaps),
-                        "total_stale_tests": len(stale),
-                        "test_edge_count": stats.get("test_edges", 0),
-                        "test_result_count": stats.get("test_results", 0),
-                        "coupling_threshold": _coupling_threshold(commit_count),
-                    },
+                    "summary": summary,
                 }
 
     # --- file_locks (advisory multi-agent locking) ---
