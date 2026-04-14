@@ -23,6 +23,7 @@ Short guide for **LLM agents** using Chisel (MCP or CLI). Solo maintainer, multi
 |--------|--------|
 | `no_data` | Run **`analyze`** on the repo root. |
 | `suggest_tests` empty | Try **`fallback_to_all`** or **`working_tree`** for untracked files; ensure **analyze** has run. |
+| `risk_map` misses new files | Use **`working_tree=true`** to include untracked files in risk scoring. |
 | `coupling` co-change empty | Normal in solo history — use **`import_coupling`** / **`import_partners`** and **`risk_map`**. |
 | MCP timeout on analyze | Use **`start_job`** + **`job_status`**, or run **`chisel analyze`** in a terminal. |
 

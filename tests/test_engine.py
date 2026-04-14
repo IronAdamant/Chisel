@@ -850,6 +850,76 @@ class TestStaticSuggestWhenEdgesCleared:
 
 
 # ------------------------------------------------------------------ #
+# Working-tree improvements
+# ------------------------------------------------------------------ #
+
+class TestWorkingTreeRiskMap:
+    def test_risk_map_includes_untracked_files_when_working_tree(self, engine, git_project):
+        engine.analyze()
+        # Create an untracked source file
+        (git_project / "new_module.py").write_text("def new_func():\n    pass\n")
+        result = engine.tool_risk_map(working_tree=True)
+        files = [r["file_path"] for r in result["files"]]
+        assert "new_module.py" in files
+        meta = result["_meta"]
+        assert meta.get("working_tree_files_included") >= 1
+
+    def test_risk_map_warns_about_untracked_files_excluded(self, engine, git_project):
+        engine.analyze()
+        (git_project / "untracked.py").write_text("def x(): pass\n")
+        result = engine.tool_risk_map(working_tree=False)
+        warnings = result["_meta"].get("warnings", [])
+        assert any("untracked" in w for w in warnings)
+
+
+class TestWorkingTreeTestGaps:
+    def test_test_gaps_puts_working_tree_gaps_first(self, engine, git_project):
+        engine.analyze()
+        # untracked file should appear before low-churn DB gaps
+        (git_project / "fresh.py").write_text("def alpha(): pass\ndef beta(): pass\n")
+        gaps = engine.tool_test_gaps(working_tree=True)
+        # First gap should be from the working tree
+        assert gaps[0]["file_path"] == "fresh.py"
+        assert gaps[0].get("_working_tree") is True
+
+
+class TestWorkingTreeDiffImpact:
+    def test_diff_impact_stem_matches_new_tracked_files_with_working_tree(self, engine, git_project):
+        engine.analyze()
+        # Create a new source file and a matching test file, then stage them
+        (git_project / "services").mkdir()
+        (git_project / "services" / "nutrition.py").write_text("def calc(): return 1\n")
+        (git_project / "tests" / "test_nutrition.py").write_text(
+            "def test_calc():\n    assert True\n"
+        )
+        # Stage the new source file so it appears in diff_files, not untracked
+        import subprocess
+        subprocess.run(["git", "add", "services/nutrition.py"], cwd=str(git_project), check=True)
+        result = engine.tool_diff_impact(working_tree=True)
+        test_ids = {item["test_id"] for item in result}
+        assert any("test_nutrition" in tid for tid in test_ids)
+
+
+class TestWorkingTreeSuggest:
+    def test_working_tree_suggest_prefers_same_directory(self, engine, git_project):
+        engine.analyze()
+        (git_project / "services").mkdir()
+        (git_project / "tests" / "services").mkdir()
+        (git_project / "tests" / "services" / "widget.test.js").write_text(
+            "describe('w', () => { it('a', () => {}); });\n"
+        )
+        (git_project / "tests" / "cli").mkdir()
+        (git_project / "tests" / "cli" / "widget.test.js").write_text(
+            "describe('c', () => { it('b', () => {}); });\n"
+        )
+        # Re-analyze so new test files are in DB
+        engine.analyze(force=True)
+        suggestions = engine._working_tree_suggest("services/widget.js")
+        by_path = {s["file_path"]: s["relevance"] for s in suggestions}
+        assert by_path["tests/services/widget.test.js"] > by_path["tests/cli/widget.test.js"]
+
+
+# ------------------------------------------------------------------ #
 # _test_to_source_stem helper
 # ------------------------------------------------------------------ #
 

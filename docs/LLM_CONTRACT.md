@@ -60,11 +60,13 @@ Each per-file entry in `risk_map` output includes:
 | Field | Type | Description |
 |-------|------|-------------|
 | `hidden_risk_factor` | float | Additive risk component (0–0.15) from `dynamic_import`/`eval_import` edge density: `min(dynamic_edge_count/20, 1.0) * 0.15` |
+| `new_file_boost` | float | Additive 0.5 for files with zero churn and zero test coverage, so new/untracked files surface in rankings |
 | `shadow_edge_count` | int | Edges that are not `call`-type (import + dynamic types) |
 | `dynamic_edge_count` | int | Edges with `edge_type` of `dynamic_import` or `eval_import` |
 | `breakdown.hidden_risk` | float | Same as `hidden_risk_factor` (for breakdown consistency) |
+| `breakdown.new_file_boost` | float | Same as `new_file_boost` (for breakdown consistency) |
 
-`hidden_risk_factor` is added to the risk score after the 5-component formula. Files with 20+ dynamic edges reach the maximum `0.15` hidden-risk uplift. Use `dynamic_edge_count` to assess how many deps are actually unknown.
+`hidden_risk_factor` and `new_file_boost` are added to the risk score after the 6-component formula. Files with 20+ dynamic edges reach the maximum `0.15` hidden-risk uplift. Use `dynamic_edge_count` to assess how many deps are actually unknown. Use `working_tree=true` to include untracked files in `risk_map` scoring.
 
 ## MCP vs CLI
 

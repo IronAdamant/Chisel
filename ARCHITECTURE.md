@@ -123,8 +123,9 @@ All list-returning tools accept a `limit` parameter to cap result size.
 - **Zero deps**: stdlib only. `ast` for Python, regex for 11 other languages. `subprocess.run(["git", ...])` for git. Requires Python >= 3.11.
 - **Pluggable extractors**: `register_extractor(lang, fn)` overrides built-in regex with tree-sitter/LSP. Zero-dep — just callable hooks.
 - **Proximity-based edge weights**: 0.4-1.0 based on directory distance. Python import-path matching (`from myapp.utils import foo` → `myapp/utils.py:foo`) takes priority.
-- **Risk formula**: `0.35*churn + 0.25*coupling + 0.2*coverage_gap + 0.1*author_concentration + 0.1*test_instability`
+- **Risk formula**: `0.35*churn + 0.25*coupling + 0.15*coverage_gap + 0.10*coverage_depth + 0.10*author_concentration + 0.05*test_instability + hidden_risk_factor + new_file_boost`
 - **Batch queries**: `get_risk_map()` fetches all data in ~5 queries. `_chunked()` helper stays under SQLite's 999-variable limit.
+- **Working-tree support**: `risk_map`, `test_gaps`, `diff_impact`, and `suggest_tests` can analyze uncommitted files on disk.
 - **Churn formula**: `sum(1 / (1 + days_since_commit))` — recent changes weigh heavily.
 - **Co-change threshold**: Adaptive `max(3, total_commits // 4)`. Commits touching >50 files skipped.
 - **Blame caching**: Cached by file content hash, invalidated on change.

@@ -125,10 +125,10 @@ chisel test-gaps
 | `analyze` | Full project scan — builds the code/test/git graph |
 | `update` | Incremental re-analysis of changed files only |
 | `diff_impact` | Detects your changes from `git diff` and returns impacted tests. `working_tree=true` enables full static import scanning for untracked files |
-| `suggest_tests` | Ranks tests by relevance for a given file |
+| `suggest_tests` | Ranks tests by relevance for a given file. Prefers same-directory tests via stem matching |
 | `impact` | Which tests cover these files or functions? |
-| `risk_map` | Risk scores for all files (churn + coupling + coverage gaps) |
-| `test_gaps` | Code with zero test coverage, sorted by risk |
+| `risk_map` | Risk scores for all files (churn + coupling + coverage gaps). `working_tree=true` includes untracked files and boosts new untested files |
+| `test_gaps` | Code with zero test coverage, sorted by risk. `working_tree=true` elevates uncommitted files to the top |
 | `triage` | Top risks + gaps + stale tests in one call |
 | `churn` | How often does this file or function change? |
 | `coupling` | Files that change together or import each other |

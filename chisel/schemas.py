@@ -212,6 +212,13 @@ _TOOL_SCHEMAS = {
                         "so large untested units have proportionally higher gap."
                     ),
                 },
+                "working_tree": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, include untracked code files in the risk map "
+                        "so newly created files are visible."
+                    ),
+                },
             },
             "required": [],
         },
@@ -577,7 +584,7 @@ _TOOL_DISPATCH = {
     "coupling": ("tool_coupling", ["file_path", "min_count"]),
     "risk_map": (
         "tool_risk_map",
-        ["directory", "exclude_tests", "proximity_adjustment", "coverage_mode"],
+        ["directory", "exclude_tests", "proximity_adjustment", "coverage_mode", "working_tree"],
     ),
     "stale_tests": ("tool_stale_tests", []),
     "history": ("tool_history", ["file_path"]),

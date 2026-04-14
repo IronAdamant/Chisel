@@ -156,6 +156,22 @@ class TestRiskScore:
         # Should not crash, returns some default
         assert risk["risk_score"] >= 0
 
+    def test_new_file_boost_for_zero_churn_zero_coverage(self, storage, analyzer):
+        """Files with no history and no tests get a new_file_boost."""
+        storage.upsert_code_unit("new.py:func:func", "new.py", "func", "func", 1, 5)
+        storage.upsert_churn_stat("new.py", "", churn_score=0.0)
+        risk = analyzer.compute_risk_score("new.py")
+        assert risk["breakdown"]["new_file_boost"] == 0.5
+        assert risk["new_file_boost"] == 0.5
+        # Base risk without boost would be ~0.25; with boost should be ~0.75
+        assert risk["risk_score"] >= 0.7
+
+    def test_no_new_file_boost_when_covered(self, storage, analyzer):
+        """Files with test coverage do not get the new-file boost."""
+        _seed_basic_data(storage)
+        risk = analyzer.compute_risk_score("app.py")
+        assert risk["breakdown"]["new_file_boost"] == 0.0
+
 
 class TestSuggestTests:
     def test_suggest_returns_results(self, storage, analyzer):
@@ -171,6 +187,18 @@ class TestSuggestTests:
             assert "relevance" in s
             assert "reason" in s
             assert "source" in s
+
+
+class TestFallbackSuggestTests:
+    def test_fallback_prefers_same_directory(self, storage, analyzer):
+        """Stem-match fallback boosts tests in a matching directory."""
+        storage.upsert_test_unit("tests/services/widget.test.js", "tests/services/widget.test.js", "test_widget", "jest")
+        storage.upsert_test_unit("tests/cli/widget.test.js", "tests/cli/widget.test.js", "test_cli_widget", "jest")
+        results = analyzer._fallback_suggest_tests("src/services/widget.js")
+        assert len(results) >= 2
+        by_path = {r["file_path"]: r["relevance"] for r in results}
+        # Same-directory test should score higher than unrelated directory
+        assert by_path["tests/services/widget.test.js"] > by_path["tests/cli/widget.test.js"]
 
 
 class TestSuggestTestsFailureBoost:

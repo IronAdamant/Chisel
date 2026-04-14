@@ -5,6 +5,7 @@ import re
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
+from chisel.ast_utils import extract_code_units
 from chisel.metrics import _parse_iso_date, compute_ownership
 from chisel.static_test_imports import StaticImportIndex
 
@@ -441,6 +442,11 @@ class ImpactAnalyzer:
         )
         shadow_edge_count = total_edges - edge_type_counts.get("call", 0)
         hidden_risk_factor = min(dynamic_edge_count / 20.0, 1.0) * 0.15
+
+        new_file_boost = 0.0
+        if churn_norm == 0.0 and coverage == 0.0:
+            new_file_boost = 0.5
+
         risk = (
             0.35 * churn_norm
             + 0.25 * coupling_norm
@@ -449,6 +455,7 @@ class ImpactAnalyzer:
             + 0.10 * author_conc
             + 0.05 * instability
             + hidden_risk_factor
+            + new_file_boost
         )
         return {
             "file_path": file_path,
@@ -458,6 +465,7 @@ class ImpactAnalyzer:
             "dynamic_edge_count": dynamic_edge_count,
             "unknown_require_count": edge_type_counts.get("eval_import", 0),
             "hidden_risk_factor": round(hidden_risk_factor, 4),
+            "new_file_boost": round(new_file_boost, 4),
             "breakdown": {
                 "churn": round(churn_norm, 4),
                 "coupling": round(coupling_norm, 4),
@@ -472,6 +480,7 @@ class ImpactAnalyzer:
                 "author_concentration": round(author_conc, 4),
                 "test_instability": round(instability, 4),
                 "hidden_risk": round(hidden_risk_factor, 4),
+                "new_file_boost": round(new_file_boost, 4),
             },
         }
 
@@ -552,6 +561,7 @@ class ImpactAnalyzer:
             return []
 
         scored = []
+        source_dir = os.path.dirname(file_path)
         for test_file, test_names in all_test_files.items():
             test_stem = os.path.splitext(os.path.basename(test_file))[0]
             # Scoring: 1.0 exact stem match, 0.5 partial, 0.1 for all
@@ -561,6 +571,15 @@ class ImpactAnalyzer:
                 score = 0.5
             else:
                 score = 0.1
+
+            # Directory affinity boost: tests in a directory matching the
+            # source file's last directory component are strongly preferred.
+            test_dir = os.path.dirname(test_file)
+            if source_dir and test_dir:
+                source_last = os.path.basename(source_dir)
+                test_last = os.path.basename(test_dir)
+                if source_last == test_last:
+                    score = min(1.0, score + 0.3)
 
             for name in test_names:
                 scored.append({
@@ -656,7 +675,8 @@ class ImpactAnalyzer:
     # ------------------------------------------------------------------ #
 
     def get_risk_map(self, directory=None, exclude_tests=True,
-                     proximity_adjustment=False, coverage_mode="unit"):
+                     proximity_adjustment=False, coverage_mode="unit",
+                     extra_files=None):
         """Compute risk scores for all tracked files (optionally in a directory).
 
         Uses batch queries to avoid the N+1 pattern: fetches churn, coupling,
@@ -673,6 +693,8 @@ class ImpactAnalyzer:
             coverage_mode: "unit" (default) weights each code unit equally;
                 "line" weights by line count so large untested units have
                 proportionally higher coverage_gap.
+            extra_files: Optional list of additional file paths to include
+                (e.g. untracked working-tree files).
 
         Returns:
             List of dicts: {file_path, risk_score, breakdown}
@@ -685,6 +707,33 @@ class ImpactAnalyzer:
             if (not directory or stat["file_path"].startswith(dir_prefix))
             and stat["file_path"] not in test_files
         })
+        extra_units = {}
+        if extra_files:
+            for fp in extra_files:
+                if fp in test_files:
+                    continue
+                if directory and not fp.startswith(dir_prefix):
+                    continue
+                files.append(fp)
+                abs_path = os.path.join(self.project_dir, fp)
+                try:
+                    with open(abs_path, encoding="utf-8", errors="replace") as fh:
+                        content = fh.read()
+                    units = extract_code_units(abs_path, content)
+                    extra_units[fp] = [
+                        {
+                            "id": f"{fp}:{u.name}:{u.unit_type}",
+                            "file_path": fp,
+                            "name": u.name,
+                            "unit_type": u.unit_type,
+                            "line_start": u.line_start,
+                            "line_end": u.line_end,
+                        }
+                        for u in units
+                    ]
+                except OSError:
+                    pass
+            files = sorted(set(files))
         if not files:
             return []
 
@@ -695,6 +744,8 @@ class ImpactAnalyzer:
         branch_cc_batch = self.storage.get_branch_co_changes_batch(files, min_count=1)
         import_neighbors_batch = self.storage.get_import_neighbors_batch(files)
         code_units_batch = self.storage.get_code_units_by_files_batch(files)
+        for fp, units in extra_units.items():
+            code_units_batch[fp] = units
 
         all_code_ids = [
             cu["id"] for cus in code_units_batch.values() for cu in cus
@@ -822,6 +873,12 @@ class ImpactAnalyzer:
             shadow_edge_count = total_edges - edge_type_counts.get("call", 0)
             hidden_risk_factor = min(dynamic_edge_count / 20.0, 1.0) * 0.15
 
+            # New-file risk boost: files with zero commits and zero test
+            # coverage are high-risk by definition (invisible to history).
+            new_file_boost = 0.0
+            if churn_norm == 0.0 and coverage == 0.0:
+                new_file_boost = 0.5
+
             # unknown_require_count: eval/new Function patterns in source file.
             # Only applies to JS/TS files where eval patterns are relevant.
             # These deps produce zero edges (confidence=0) and are invisible to
@@ -843,6 +900,7 @@ class ImpactAnalyzer:
                 + 0.10 * author_conc
                 + 0.05 * instability
                 + hidden_risk_factor
+                + new_file_boost
             )
 
             risk_map.append({
@@ -853,6 +911,7 @@ class ImpactAnalyzer:
                 "dynamic_edge_count": dynamic_edge_count,
                 "unknown_require_count": eval_pattern_count,
                 "hidden_risk_factor": round(hidden_risk_factor, 4),
+                "new_file_boost": round(new_file_boost, 4),
                 "coupling_partners": coupling_partners,
                 "import_partners": import_partners,
                 "breakdown": {
@@ -869,6 +928,7 @@ class ImpactAnalyzer:
                     "author_concentration": round(author_conc, 4),
                     "test_instability": round(instability, 4),
                     "hidden_risk": round(hidden_risk_factor, 4),
+                    "new_file_boost": round(new_file_boost, 4),
                 },
             })
 

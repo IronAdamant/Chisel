@@ -5,6 +5,20 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`risk_map` `working_tree` parameter**: When `working_tree=true`, untracked code files are included in risk scoring. New files with zero commits and zero test coverage receive a `new_file_boost` of 0.5 so they surface in rankings instead of being invisible.
+- **`risk_map` missing-file warning**: When untracked files exist but `working_tree=false`, `_meta.warnings` includes a message indicating how many files were excluded from scoring.
+- **`test_gaps` working-tree elevation**: Gaps from untracked files now sort to the top of the list when `working_tree=true`, preventing the `limit` parameter from cutting them off.
+- **`suggest_tests` / `diff_impact` directory-aware stem matching**: Same-directory tests (e.g. `tests/services/X.test.js` for `src/services/X.js`) are strongly preferred over fuzzy substring matches.
+- **`diff_impact` expanded working-tree fallback**: Static import scan and stem-match fallback now apply to ALL changed files (including newly staged files), not just untracked ones.
+
+### Changed
+
+- **Risk formula**: Added `new_file_boost` (0.0 or 0.5) to both `compute_risk_score` and `get_risk_map`. Files with no git history and no tests score ~0.75 instead of ~0.25.
+
 ## [0.8.2] - 2026-04-10
 
 ### Added

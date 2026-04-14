@@ -342,7 +342,7 @@ class ChiselEngine:
                 )
                 if working_tree and not result:
                     # File may be untracked — try stem-matching against known test files
-                    result = self._working_tree_suggest(file_path)
+                    result = self._working_tree_suggest(file_path, disk_test_files=disk)
                 if working_tree and len(result) > _WORKING_TREE_SUGGEST_LIMIT:
                     result = result[:_WORKING_TREE_SUGGEST_LIMIT]
                 return result
@@ -402,7 +402,8 @@ class ChiselEngine:
                 }
 
     def tool_risk_map(self, directory=None, exclude_tests=True,
-                      proximity_adjustment=False, coverage_mode="unit"):
+                      proximity_adjustment=False, coverage_mode="unit",
+                      working_tree=False):
         """MCP tool: risk scores for all files.
 
         Returns ``{"files": [...], "_meta": {...}}`` so LLM agents can
@@ -419,14 +420,28 @@ class ChiselEngine:
             coverage_mode: "unit" (default) weights each code unit equally;
                 "line" weights by line count so large untested units have
                 proportionally higher coverage_gap.
+            working_tree: If True, include untracked files in the risk map
+                so newly created files are visible.
         """
         with self._process_lock.shared():
             with self.lock.read_lock():
                 empty = self._check_analysis_data()
                 if empty is not None:
                     return empty
+                extra = None
+                untracked_warning = None
+                if working_tree:
+                    extra = sorted(self._git_untracked_code_paths())
+                else:
+                    untracked = self._git_untracked_code_paths()
+                    if untracked:
+                        untracked_warning = (
+                            f"{len(untracked)} untracked code files excluded "
+                            "from risk scoring due to lack of git history"
+                        )
                 files = self.impact.get_risk_map(
                     directory, exclude_tests, proximity_adjustment, coverage_mode,
+                    extra_files=extra,
                 )
                 files, rw_meta = apply_risk_reweighting(files)
                 stats = self.storage.get_stats()
@@ -435,6 +450,10 @@ class ChiselEngine:
                 meta["coverage_gap_mode"] = (
                     "proximity_adjusted" if proximity_adjustment else coverage_mode
                 )
+                if extra:
+                    meta["working_tree_files_included"] = len(extra)
+                if untracked_warning:
+                    meta.setdefault("warnings", []).append(untracked_warning)
                 bc = self.storage.get_meta("branch_coupling_commits")
                 if bc is not None:
                     try:
@@ -555,8 +574,9 @@ class ChiselEngine:
                     functions or None,
                     untracked_files=untracked_code,
                 )
-                # Static import scan for untracked files when working_tree
-                if working_tree and untracked_code:
+                # Static import scan for ALL changed files when working_tree
+                # (covers newly staged files as well as untracked ones).
+                if working_tree:
                     idx = StaticImportIndex(
                         self.project_dir,
                         self.storage,
@@ -564,8 +584,8 @@ class ChiselEngine:
                         extra_code_paths=set(extra or ()),
                     )
                     covered = {item["test_id"] for item in result}
-                    for uf in untracked_code:
-                        static_hits = idx.find_tests(uf)
+                    for cf in changed_files:
+                        static_hits = idx.find_tests(cf)
                         for sh in static_hits:
                             tid = sh["test_id"]
                             if tid not in covered:
@@ -574,21 +594,27 @@ class ChiselEngine:
                                     "test_id": tid,
                                     "file_path": sh["file_path"],
                                     "name": sh["name"],
-                                    "reason": f"static import of untracked file {uf}",
+                                    "reason": f"static import of {cf}",
                                     "score": sh["score"],
                                     "source": "working_tree",
                                 })
-                # Stem-match fallback for untracked files with no DB edges
-                if untracked_code:
+                # Stem-match fallback for any changed file without a hit.
+                # This covers untracked files always, and tracked changed files
+                # when working_tree=True.
+                if untracked_code or working_tree:
                     covered = {item["test_id"] for item in result}
-                    for uf in untracked_code:
-                        has_hit = any(
-                            uf in item.get("reason", "")
-                            for item in result
-                        )
-                        if has_hit:
+                    files_with_hits = set()
+                    for item in result:
+                        reason = item.get("reason", "")
+                        for cf in changed_files:
+                            if cf in reason:
+                                files_with_hits.add(cf)
+                                break
+                    target_files = changed_files if working_tree else sorted(untracked_code)
+                    for cf in target_files:
+                        if cf in files_with_hits:
                             continue
-                        stem_hits = self._working_tree_suggest(uf)
+                        stem_hits = self._working_tree_suggest(cf, disk_test_files=disk)
                         for sh in stem_hits:
                             if sh.get("relevance", 0) < 0.5:
                                 continue
@@ -599,7 +625,7 @@ class ChiselEngine:
                                     "test_id": tid,
                                     "file_path": sh["file_path"],
                                     "name": sh["name"],
-                                    "reason": f"stem-match for untracked file {uf}",
+                                    "reason": f"stem-match for {cf}",
                                     "score": sh["relevance"] * 0.4,
                                     "source": "working_tree",
                                 })
@@ -632,6 +658,9 @@ class ChiselEngine:
                 ))
                 if working_tree:
                     gaps.extend(self._working_tree_gaps(file_path, directory, exclude_tests))
+                    # Re-sort so working-tree gaps (zero churn, no coverage)
+                    # surface at the top instead of being buried.
+                    gaps.sort(key=lambda g: (not g.get("_working_tree"), -g.get("churn_score", 0)))
                 return gaps
 
     def tool_record_result(self, test_id, passed, duration_ms=None):
@@ -1093,16 +1122,25 @@ class ChiselEngine:
             out[rel] = [u["name"] for u in units]
         return out
 
-    def _working_tree_suggest(self, file_path):
+    def _working_tree_suggest(self, file_path, disk_test_files=None):
         """Suggest tests for an untracked file using stem-matching.
 
         Reads the file from disk, extracts code units, and matches
         against known test files in storage by stem similarity.
+        Optionally merges disk-only (untracked) test files.
         Returns an empty list if no matching tests are found.
         """
         import os
         source_stem = os.path.splitext(os.path.basename(file_path))[0]
-        all_test_files = self.storage.get_all_test_files()
+        source_dir = os.path.dirname(file_path)
+        all_test_files = dict(self.storage.get_all_test_files())
+        if disk_test_files:
+            for rel, names in disk_test_files.items():
+                if rel not in all_test_files:
+                    all_test_files[rel] = names
+                else:
+                    merged = list(dict.fromkeys(all_test_files[rel] + names))
+                    all_test_files[rel] = merged
         if not all_test_files:
             return []
 
@@ -1116,14 +1154,24 @@ class ChiselEngine:
             else:
                 score = 0.1
 
+            # Directory affinity boost: prefer tests in a directory whose
+            # last component matches the source file's directory.
+            test_dir = os.path.dirname(test_file)
+            if source_dir and test_dir:
+                source_last = os.path.basename(source_dir)
+                test_last = os.path.basename(test_dir)
+                if source_last == test_last:
+                    score = min(1.0, score + 0.3)
+
             for name in test_names:
+                src = "working_tree" if (disk_test_files and test_file in disk_test_files) else "working_tree"
                 scored.append({
                     "test_id": f"{test_file}:{name}",
                     "file_path": test_file,
                     "name": name,
                     "relevance": score,
                     "reason": "working-tree: stem-matched test (file not yet committed)",
-                    "source": "working_tree",
+                    "source": src,
                 })
 
         scored.sort(key=lambda x: x["relevance"], reverse=True)
