@@ -61,7 +61,7 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.j
 }
 ```
 
-Run `analyze` first to build the project graph, then `diff_impact` after edits to see which tests to run. For large repos, run `chisel analyze` in a terminal instead of through MCP to avoid timeouts.
+Run `analyze` first to build the project graph, then `diff_impact` after edits to see which tests to run. For large repos, run `chisel analyze` in a terminal instead of through MCP to avoid timeouts. Working-tree analysis (`--working-tree`) reuses a cached static import index and falls back to fast stem-matching for untracked files to stay within timeout budgets.
 
 ## Use with Cursor, Windsurf, Cline, or other MCP clients
 

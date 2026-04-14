@@ -32,6 +32,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`risk_map` crash with `working_tree=true`**: Fixed `KeyError: 'heuristic'` when heuristic test edges exist (created by `_backfill_heuristic_edges`) by adding `"heuristic"` to `edge_type_counts` in both `compute_risk_score` and `get_risk_map`.
+- **`suggest_tests` timeout on working-tree files**: Added `StaticImportIndex` caching to `ImpactAnalyzer` and a fast-path in `tool_suggest_tests` that skips the expensive static index build when there are no DB edges for a working-tree file, falling back directly to stem-matching.
+- **`diff_impact` timeout under working-tree load**: `StaticImportIndex` is now reused via cache, and `tool_diff_impact` only performs static import scanning on tracked changed files, using stem-matching for untracked files to avoid timeouts with many uncommitted files.
+
 - **`storage.py` read-only transaction error**: `_fetchone()` and `_execute()` no longer use `with self._conn as conn:` for reads, which caused `sqlite3.OperationalError: cannot commit - no transaction is active` when SQLite implicitly opened no transaction for SELECT queries.
 
 ## [0.8.2] - 2026-04-10

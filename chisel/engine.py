@@ -387,6 +387,20 @@ class ChiselEngine:
                     }
                 disk = self._disk_only_test_map() if working_tree else None
                 extra = self._git_untracked_code_paths() if working_tree else None
+                # Fast path for working-tree files with no DB edges:
+                # skip the expensive StaticImportIndex build and fall back
+                # to stem-matching directly.
+                if working_tree:
+                    quick_db = self.impact.get_impacted_tests([file_path])
+                    if not quick_db:
+                        result = []
+                        if not fallback_to_all:
+                            result = self.impact._fallback_suggest_tests(file_path)
+                        if not result:
+                            result = self._working_tree_suggest(file_path, disk_test_files=disk)
+                        if len(result) > _WORKING_TREE_SUGGEST_LIMIT:
+                            result = result[:_WORKING_TREE_SUGGEST_LIMIT]
+                        return result
                 result = self.impact.suggest_tests(
                     file_path,
                     fallback_to_all=fallback_to_all,
@@ -653,14 +667,15 @@ class ChiselEngine:
                 # Static import scan for ALL changed files when working_tree
                 # (covers newly staged files as well as untracked ones).
                 if working_tree:
-                    idx = StaticImportIndex(
-                        self.project_dir,
-                        self.storage,
+                    idx = self.impact._get_static_index(
                         disk_test_files=disk,
-                        extra_code_paths=set(extra or ()),
+                        extra_code_paths=extra,
                     )
                     covered = {item["test_id"] for item in result}
-                    for cf in changed_files:
+                    # Only static-scan tracked changed files to avoid timeouts
+                    # when a large number of untracked files are present.
+                    tracked_changed = [cf for cf in changed_files if cf not in untracked_code]
+                    for cf in tracked_changed:
                         static_hits = idx.find_tests(cf)
                         for sh in static_hits:
                             tid = sh["test_id"]

@@ -206,6 +206,24 @@ class ImpactAnalyzer:
     def __init__(self, storage, project_dir: str):
         self.storage = storage
         self.project_dir = project_dir
+        self._static_index_cache = None
+        self._static_index_cache_key = None
+
+    def _get_static_index(self, disk_test_files=None, extra_code_paths=None):
+        """Return a cached StaticImportIndex, rebuilding only when inputs change."""
+        cache_key = (
+            tuple(sorted((k, tuple(v)) for k, v in (disk_test_files or {}).items())),
+            tuple(sorted(extra_code_paths or ())),
+        )
+        if self._static_index_cache_key != cache_key:
+            self._static_index_cache = StaticImportIndex(
+                self.project_dir,
+                self.storage,
+                disk_test_files=disk_test_files,
+                extra_code_paths=set(extra_code_paths or ()),
+            )
+            self._static_index_cache_key = cache_key
+        return self._static_index_cache
 
     def _import_graph_undirected_neighbors(self, file_path):
         """One-hop neighbors on the static import graph (both directions)."""
@@ -393,7 +411,7 @@ class ImpactAnalyzer:
         tested_lines = 0
         total_lines = 0
         covering_test_ids = set()
-        edge_type_counts = {"call": 0, "import": 0, "dynamic_import": 0, "eval_import": 0, "tainted_import": 0}
+        edge_type_counts = {"call": 0, "import": 0, "dynamic_import": 0, "eval_import": 0, "tainted_import": 0, "heuristic": 0}
         for cu in code_units:
             unit_lines = cu["line_end"] - cu["line_start"] + 1
             total_lines += unit_lines
@@ -511,11 +529,9 @@ class ImpactAnalyzer:
             List of dicts: {test_id, file_path, name, relevance, reason, source}
         """
         db = self.get_impacted_tests([file_path])
-        idx = StaticImportIndex(
-            self.project_dir,
-            self.storage,
+        idx = self._get_static_index(
             disk_test_files=disk_test_files,
-            extra_code_paths=set(extra_code_paths or ()),
+            extra_code_paths=extra_code_paths,
         )
         static = idx.find_tests(file_path, include_python=True)
         impacted = _merge_impacted_and_static(db, static)
@@ -649,11 +665,9 @@ class ImpactAnalyzer:
         ))
         if not gaps:
             return gaps
-        idx = StaticImportIndex(
-            self.project_dir,
-            self.storage,
+        idx = self._get_static_index(
             disk_test_files=disk_test_files,
-            extra_code_paths=set(extra_code_paths or ()),
+            extra_code_paths=extra_code_paths,
         )
         gap_files = {g["file_path"] for g in gaps}
         # Only apply static-import filtering to files that have NO DB test
@@ -828,7 +842,7 @@ class ImpactAnalyzer:
             tested_lines = 0
             total_lines = 0
             covering_test_ids = set()
-            edge_type_counts = {"call": 0, "import": 0, "dynamic_import": 0, "eval_import": 0, "tainted_import": 0}
+            edge_type_counts = {"call": 0, "import": 0, "dynamic_import": 0, "eval_import": 0, "tainted_import": 0, "heuristic": 0}
             for cu in code_units:
                 unit_lines = cu["line_end"] - cu["line_start"] + 1
                 total_lines += unit_lines

@@ -4,6 +4,25 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## 2026-04-14 -- Review Thirteen fixes (kimi_review_2): risk_map crash, suggest_tests/diff_impact working_tree timeouts
+
+### Summary
+
+Addressed all confirmed bugs from Phase 13 WorkingTreeCoverageFuzzer findings:
+
+- **Fix — `risk_map` crash with `working_tree=true`**: Root cause was `KeyError: 'heuristic'` in `impact.py:get_risk_map()` (and `compute_risk_score()`). Heuristic test edges created by `_backfill_heuristic_edges()` were not accounted for in the `edge_type_counts` dict. Added `"heuristic": 0` to both dicts so risk scoring no longer crashes when heuristic edges exist.
+- **Fix — `suggest_tests` timeout on working-tree files**: Added `StaticImportIndex` instance caching to `ImpactAnalyzer` (`_get_static_index()`) so repeated calls reuse the already-built index. Added a fast-path in `engine.py:tool_suggest_tests()`: when `working_tree=True` and a file has no DB test edges, skip the expensive static index build and fall back directly to stem-matching.
+- **Fix — `diff_impact` timeout under working-tree load**: Reused the cached `StaticImportIndex` via `self.impact._get_static_index()`. Changed `tool_diff_impact()` to only perform full static import scanning on **tracked** changed files; untracked files now rely on stem-matching fallback. This prevents timeouts when hundreds of untracked files are present.
+
+### Files changed
+
+- `chisel/impact.py` — Added `"heuristic"` to `edge_type_counts`; added `_get_static_index()` cache to `ImpactAnalyzer`; replaced inline `StaticImportIndex()` instantiations with cached accessor
+- `chisel/engine.py` — `tool_suggest_tests()` working-tree fast-path; `tool_diff_impact()` static-scan limited to tracked files + cached index usage
+- `CHANGELOG.md` — Documented the three fixes under [Unreleased]
+- `findings/kimi_review_2/chisel.md` → `findings/kimi_review_2/chisel_closed.md` — Renamed to indicate closure
+
+---
+
 ## 2026-04-10 -- Review Twelve fixes: single-author coupling, diff_impact working_tree, coverage granularity, risk reweighting
 
 ### Summary
