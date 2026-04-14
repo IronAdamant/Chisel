@@ -170,9 +170,9 @@ class TestToolMethods:
         result = engine.tool_risk_map()
         app = next(r for r in result["files"] if r["file_path"] == "app.py")
         # app.py has 3 functions, 2 are tested (process_data, validate_input)
-        # format_output is untested → coverage_gap = 1/3 ≈ 0.33, quantized to 0.35 (20 steps)
+        # In default line mode: ~tested_lines / ~total_lines ≈ 0.75, gap = 0.25
         assert app["breakdown"]["coverage_gap"] < 1.0
-        assert app["breakdown"]["coverage_gap"] == 0.35
+        assert app["breakdown"]["coverage_gap"] == 0.25
 
     def test_tool_stale_tests(self, engine):
         engine.analyze()
@@ -324,7 +324,7 @@ class TestToolMethods:
         assert "effective_components" in meta
         assert "uniform_components" in meta
         assert "coverage_gap_mode" in meta
-        assert meta["coverage_gap_mode"] == "unit"
+        assert meta["coverage_gap_mode"] == "proximity_adjusted"
         assert isinstance(meta["effective_components"], list)
         assert isinstance(meta["uniform_components"], dict)
         # With the test fixture, some components should be effective

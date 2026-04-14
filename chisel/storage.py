@@ -956,6 +956,24 @@ class Storage:
                 result[row["file_path"]].append(row)
         return result
 
+    def get_files_with_test_edges(self, file_paths):
+        """Return the subset of file paths that have at least one test edge."""
+        if not file_paths:
+            return set()
+        result = set()
+        for chunk in self._chunked(list(file_paths)):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._fetchall(
+                f"""SELECT DISTINCT cu.file_path
+                    FROM code_units cu
+                    JOIN test_edges te ON cu.id = te.code_id
+                    WHERE cu.file_path IN ({placeholders})""",
+                tuple(chunk),
+            )
+            for row in rows:
+                result.add(row["file_path"])
+        return result
+
     def get_co_changes_batch(self, file_paths, min_count=3):
         """Batch-fetch co-changes for multiple file paths.
 

@@ -376,17 +376,14 @@ class ImpactAnalyzer:
         import_coupling_norm = min(
             len(import_neighbors) / float(_IMPORT_COUPLING_CAP), 1.0,
         )
-        # Additive hybrid: both signals boost coupling, but co-change dominates
-        # when present (it reflects actual change-history coupling).
-        # Formula: use co-change if non-zero; otherwise import coupling;
-        # if both are non-zero, use co-change + 0.25 * import (additive boost).
-        if cochange_coupling_norm > 0:
-            coupling_norm = max(
-                cochange_coupling_norm,
-                cochange_coupling_norm + 0.25 * import_coupling_norm,
-            )
-        else:
-            coupling_norm = import_coupling_norm
+        # First-class hybrid: import-graph coupling is treated as an equal signal
+        # to co-change, not a minor additive boost. In single-author or low-commit
+        # repos, import coupling becomes the dominant signal instead of zero.
+        coupling_norm = max(
+            cochange_coupling_norm,
+            import_coupling_norm,
+            0.5 * cochange_coupling_norm + 0.5 * import_coupling_norm,
+        )
 
         # Test coverage component (0-1, inverted)
         code_units = self.storage.get_code_units_by_file(file_path)
@@ -658,8 +655,15 @@ class ImpactAnalyzer:
             disk_test_files=disk_test_files,
             extra_code_paths=set(extra_code_paths or ()),
         )
+        gap_files = {g["file_path"] for g in gaps}
+        # Only apply static-import filtering to files that have NO DB test
+        # edges at all. Files with partial coverage should keep their untested
+        # units in the gap list.
+        files_with_edges = self.storage.get_files_with_test_edges(gap_files)
         covered_files = set()
-        for fp in {g["file_path"] for g in gaps}:
+        for fp in gap_files:
+            if fp in files_with_edges:
+                continue
             if idx.find_tests(
                 fp,
                 include_python=False,
@@ -675,7 +679,7 @@ class ImpactAnalyzer:
     # ------------------------------------------------------------------ #
 
     def get_risk_map(self, directory=None, exclude_tests=True,
-                     proximity_adjustment=False, coverage_mode="unit",
+                     proximity_adjustment=True, coverage_mode="line",
                      extra_files=None):
         """Compute risk scores for all tracked files (optionally in a directory).
 
@@ -798,17 +802,14 @@ class ImpactAnalyzer:
             import_coupling_norm = min(
                 len(import_neighbors) / float(_IMPORT_COUPLING_CAP), 1.0,
             )
-            # Additive hybrid: co-change dominates when present; import coupling
-            # is the sole source in single-author projects. When both are non-zero,
-            # additive boost reflects that files with both coupling types are more
-            # tightly integrated than either alone.
-            if cochange_coupling_norm > 0:
-                coupling_norm = max(
-                    cochange_coupling_norm,
-                    cochange_coupling_norm + 0.25 * import_coupling_norm,
-                )
-            else:
-                coupling_norm = import_coupling_norm
+            # First-class hybrid: import-graph coupling is treated as an equal
+            # signal to co-change. In single-author or low-commit repos, import
+            # coupling becomes the dominant signal instead of zero.
+            coupling_norm = max(
+                cochange_coupling_norm,
+                import_coupling_norm,
+                0.5 * cochange_coupling_norm + 0.5 * import_coupling_norm,
+            )
 
             sorted_cc = sorted(
                 co_changes, key=lambda c: c["co_commit_count"], reverse=True,

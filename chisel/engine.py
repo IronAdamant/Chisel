@@ -140,10 +140,11 @@ class ChiselEngine:
         code_files = self._scan_code_files(directory=directory)
 
         commits = None
+        git_warning = None
         try:
             commits = self.git.parse_log()
-        except RuntimeError:
-            pass  # Not a git repo or git not available
+        except RuntimeError as exc:
+            git_warning = str(exc)
 
         # Phase 2: write to storage under both process lock (cross-process)
         # and RWLock (in-process threads).
@@ -165,6 +166,11 @@ class ChiselEngine:
                     self._store_commits(commits)
                     self._compute_churn_and_coupling(commits, code_files)
                     self._store_blame(changed_files)
+                elif git_warning:
+                    stats["git_warning"] = (
+                        f"Git unavailable ({git_warning}); "
+                        "churn, blame, and coupling will be missing."
+                    )
 
                 test_units, tf_count, edge_count = self._discover_and_build_edges(code_files)
                 stats["test_files_found"] = tf_count
@@ -211,8 +217,11 @@ class ChiselEngine:
                     if new_commits or changed_files:
                         self._compute_churn_and_coupling(all_commits, code_files)
                     self._store_blame(changed_files)
-                except RuntimeError:
-                    pass
+                except RuntimeError as exc:
+                    stats["git_warning"] = (
+                        f"Git unavailable ({exc}); "
+                        "churn, blame, and coupling will be missing."
+                    )
 
                 self._discover_and_build_edges(code_files)
                 self._rebuild_import_edges(code_files)
@@ -231,7 +240,12 @@ class ChiselEngine:
 
     def tool_analyze(self, directory=None, force=False):
         """MCP tool: full analysis."""
-        return self.analyze(directory=directory, force=force)
+        result = self.analyze(directory=directory, force=force)
+        result.setdefault(
+            "hint",
+            "For large repos, use start_job with kind='analyze' to avoid MCP timeouts.",
+        )
+        return result
 
     def tool_start_job(self, kind, directory=None, force=False):
         """MCP tool: run ``analyze`` or ``update`` in a background thread.
@@ -385,12 +399,13 @@ class ChiselEngine:
                 imp_len = len(import_neighbors)
                 co_norm = min(co_len / float(_COCHANGE_COUPLING_CAP), 1.0)
                 import_norm = min(imp_len / float(_IMPORT_COUPLING_CAP), 1.0)
-                if co_norm > 0:
-                    effective_coupling = max(
-                        co_norm, co_norm + 0.25 * import_norm,
-                    )
-                else:
-                    effective_coupling = import_norm
+                # First-class hybrid: import-graph coupling is treated as an equal
+                # signal to co-change, not a minor additive boost.
+                effective_coupling = max(
+                    co_norm,
+                    import_norm,
+                    0.5 * co_norm + 0.5 * import_norm,
+                )
                 return {
                     "co_change_partners": co_change_partners,
                     "import_partners": [{"file": path} for path in import_neighbors],
@@ -402,7 +417,7 @@ class ChiselEngine:
                 }
 
     def tool_risk_map(self, directory=None, exclude_tests=True,
-                      proximity_adjustment=False, coverage_mode="unit",
+                      proximity_adjustment=True, coverage_mode="line",
                       working_tree=False):
         """MCP tool: risk scores for all files.
 
@@ -633,7 +648,12 @@ class ChiselEngine:
 
     def tool_update(self):
         """MCP tool: incremental re-analysis of changed files."""
-        return self.update()
+        result = self.update()
+        result.setdefault(
+            "hint",
+            "For large repos, use start_job with kind='update' to avoid MCP timeouts.",
+        )
+        return result
 
     def tool_test_gaps(self, file_path=None, directory=None, exclude_tests=True,
                        working_tree=False):

@@ -14,10 +14,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`test_gaps` working-tree elevation**: Gaps from untracked files now sort to the top of the list when `working_tree=true`, preventing the `limit` parameter from cutting them off.
 - **`suggest_tests` / `diff_impact` directory-aware stem matching**: Same-directory tests (e.g. `tests/services/X.test.js` for `src/services/X.js`) are strongly preferred over fuzzy substring matches.
 - **`diff_impact` expanded working-tree fallback**: Static import scan and stem-match fallback now apply to ALL changed files (including newly staged files), not just untracked ones.
+- **Git warnings in `analyze`/`update`**: When git is unavailable, the returned stats dict includes `git_warning` so agents know churn/blame/coupling will be missing.
+- **MCP timeout hints**: `tool_analyze` and `tool_update` now include a `hint` recommending `start_job` for large repos.
 
 ### Changed
 
 - **Risk formula**: Added `new_file_boost` (0.0 or 0.5) to both `compute_risk_score` and `get_risk_map`. Files with no git history and no tests score ~0.75 instead of ~0.25.
+- **Coupling formula**: Import-graph coupling is now first-class. Changed from `max(cochange, cochange + 0.25 * import)` to `max(cochange, import, 0.5*cochange + 0.5*import)` in `tool_coupling`, `compute_risk_score`, and `get_risk_map`. In single-author/low-commit repos, import coupling now dominates instead of being a minor boost.
+- **`risk_map` defaults**: Changed default `coverage_mode` from `"unit"` to `"line"` and default `proximity_adjustment` from `False` to `True`, so coverage gaps are graduated by default.
+- **`test_gaps` static-import filter**: Now only removes files with NO DB test edges at all. Previously, a file with partial DB coverage could be incorrectly excluded from gaps just because a static import existed.
 
 ## [0.8.2] - 2026-04-10
 
