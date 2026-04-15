@@ -90,8 +90,8 @@ Publishing uses **GitHub Actions trusted publishing** (OIDC, no API tokens). Do 
 #    pyproject.toml      (version)
 # 2. Commit and push
 # 3. Tag and push the tag — this triggers the publish workflow:
-git tag v0.8.1
-git push origin v0.8.1
+git tag v0.9.0
+git push origin v0.9.0
 ```
 
 The workflow (`.github/workflows/publish.yml`) builds the package and uploads via `pypa/gh-action-pypi-publish` with `id-token: write` permissions.

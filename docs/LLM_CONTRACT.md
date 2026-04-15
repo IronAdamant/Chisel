@@ -77,6 +77,16 @@ Each per-file entry in `risk_map` output includes:
 
 **Best practice:** After every test run (local or CI), call `record_result(test_id, passed, duration_ms?)` for each test. This makes Chisel's prioritization more accurate over time.
 
+## Monorepo sharding behavior
+
+When `CHISEL_SHARDS` is configured:
+- **Query tools** (`risk_map`, `triage`, `diff_impact`, `impact`, `test_gaps`, `stale_tests`, `suggest_tests`, `stats`) transparently aggregate results across all shard databases.
+- **Write tools** (`analyze`, `update`, `record_result`) automatically route to the shard that owns the file path.
+- `tool_analyze` and `tool_update` accept an optional `shard` parameter to target a specific shard.
+- `tool_start_job` also accepts `shard` to run background analyze/update on a single shard.
+
+Agents do not need to change call patterns — sharding is transparent to read operations.
+
 ## `auto_update` inline refresh
 
 Several read-only tools now support `auto_update=True`:

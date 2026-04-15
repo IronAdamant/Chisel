@@ -1,6 +1,6 @@
 # Chisel — Architecture
 
-**Version:** 0.8.2+ | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
+**Version:** 0.9.0 | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
 
 Test impact analysis and code intelligence **for LLM agents**. The design target is **solo-maintained repos** where **multiple agent sessions or processes** (MCP clients, terminals, CI) may run `analyze` / read tools concurrently — hence **ProcessLock**, **WAL SQLite**, and **normalized paths** as core mechanics, not optional extras.
 
@@ -153,6 +153,7 @@ All list-returning tools accept a `limit` parameter to cap result size.
 - **Unit-churn scaling**: `_UNIT_CHURN_FILE_LIMIT = 2000` — repos exceeding this skip per-function `git log -L` (each function spawns a subprocess, O(n*m)). File-level churn always computed. Validated on Grafana (21k files, 62k units in ~3 min).
 - **Numstat validation**: `_parse_log_output` validates tab-separated fields are digits or `-` before treating lines as numstat. Prevents diff lines with tabs from crashing the parser.
 - **Empty-state detection**: Query tools return `{"status": "no_data", ...}` instead of `[]` when no analysis data exists. `storage.has_analysis_data()` + `engine._check_analysis_data()`. CLI handles via `_is_no_data()`.
+- **Monorepo sharding**: `CHISEL_SHARDS` env var or `.chisel/shards.toml` splits data across per-directory SQLite databases. `_shard_for_path()` routes files; query tools aggregate with `_with_shard()` context manager.
 
 ## Supported Languages (12)
 

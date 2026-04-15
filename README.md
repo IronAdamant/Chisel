@@ -63,6 +63,8 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.j
 
 Run `analyze` first to build the project graph, then `diff_impact` after edits to see which tests to run. For large repos, `analyze` with `force=True` automatically falls back to a background job so you don't hit MCP timeouts. Working-tree analysis (`--working-tree`) reuses a cached static import index and falls back to fast stem-matching for untracked files to stay within timeout budgets.
 
+**Monorepo sharding:** Split large codebases across multiple SQLite databases with the `CHISEL_SHARDS` environment variable or `.chisel/shards.toml`. Query tools automatically aggregate across shards; writes route to the correct shard by file path.
+
 After running tests, call `record_result` so Chisel can track failure rates and test instability over time. Or use `chisel run -- pytest tests/` to run tests and record results automatically.
 
 ## Use with Cursor, Windsurf, Cline, or other MCP clients
@@ -124,8 +126,8 @@ chisel test-gaps
 
 | Tool | What it does |
 |------|-------------|
-| `analyze` | Full project scan — builds the code/test/git graph |
-| `update` | Incremental re-analysis of changed files only |
+| `analyze` | Full project scan — builds the code/test/git graph. Optional `shard` param for sharded monorepos |
+| `update` | Incremental re-analysis of changed files only. Optional `shard` param for sharded monorepos |
 | `diff_impact` | Detects your changes from `git diff` and returns impacted tests. `working_tree=true` enables full static import scanning for untracked files. `auto_update=true` refreshes stale DB inline |
 | `suggest_tests` | Ranks tests by relevance for a given file. Prefers same-directory tests via stem matching. `auto_update=true` refreshes stale DB inline |
 | `impact` | Which tests cover these files or functions? |
@@ -153,6 +155,7 @@ chisel test-gaps
 - **Branch-aware** — `diff_impact` auto-detects feature branch vs main
 - **Multi-agent safe** — cross-process locks so parallel agents don’t corrupt the graph
 - **MCP + CLI** — stdio and HTTP MCP servers, plus a full CLI with 18 subcommands
+- **Monorepo sharding** — split analysis across per-directory SQLite databases (`CHISEL_SHARDS`)
 - **Custom extractors** — plug in tree-sitter or LSP via `register_extractor()` if you need it
 
 ## Ecosystem

@@ -8,6 +8,7 @@ Short guide for **LLM agents** using Chisel (MCP or CLI). Solo maintainer, multi
 
 1. Run **`analyze`** (full scan) — or **`start_job`** with `kind: "analyze"` and poll **`job_status`** if the MCP client might time out on large repos.
 2. Confirm with **`stats`** (non-zero `code_units`, `test_edges`).
+3. **Monorepo sharding:** For very large repos, set `CHISEL_SHARDS=pkg1,pkg2,pkg3` (or create `.chisel/shards.toml`). Then run `analyze` per shard with the `shard` parameter, e.g. `analyze(shard="pkg1", directory="pkg1")`. Query tools automatically aggregate across shards.
 
 ## 2. Day-to-day loop
 
@@ -27,6 +28,7 @@ Short guide for **LLM agents** using Chisel (MCP or CLI). Solo maintainer, multi
 | `stale_db` | The file isn't in the Chisel DB yet — use **`auto_update=true`**, run **`analyze`**, or use **`working_tree=true`** for uncommitted files. |
 | `suggest_tests` empty | Try **`fallback_to_all`** or **`working_tree`** for untracked files; ensure **analyze** has run. |
 | `risk_map` misses new files | Use **`working_tree=true`** to include untracked files in risk scoring. |
+| Monorepo `analyze` times out | Use **`CHISEL_SHARDS`** to split by directory, or **`start_job`** for background analysis. |
 | `coupling` co-change empty | Normal in solo history — use **`import_coupling`** / **`import_partners`** and **`risk_map`**. |
 | MCP timeout on analyze | Use **`start_job`** + **`job_status`**, or run **`chisel analyze`** in a terminal. |
 

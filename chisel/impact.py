@@ -278,6 +278,8 @@ class ImpactAnalyzer:
         # Direct hits via single JOIN query per file
         for file_path in changed_files:
             fn = None if file_path in untracked else changed_functions
+            if isinstance(fn, dict):
+                fn = fn.get(file_path)
             hits = self.storage.get_direct_impacted_tests(
                 file_path, fn,
             )

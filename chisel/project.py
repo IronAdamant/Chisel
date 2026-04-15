@@ -158,7 +158,7 @@ def normalize_path(file_path, project_root):
     return rel.removeprefix("./")
 
 
-def resolve_storage_dir(project_dir=None, explicit_dir=None):
+def resolve_storage_dir(project_dir=None, explicit_dir=None, shard=None):
     """Resolve the storage directory for Chisel's database.
 
     Priority (highest to lowest):
@@ -173,22 +173,25 @@ def resolve_storage_dir(project_dir=None, explicit_dir=None):
     Args:
         project_dir: The project directory (will be canonicalized).
         explicit_dir: Explicitly provided storage directory.
+        shard: Optional shard key. When given, the directory is scoped to
+            ``<base>/shards/<shard>/``.
 
     Returns:
         Absolute path to the storage directory.
     """
     if explicit_dir is not None:
-        return os.path.abspath(explicit_dir)
-
-    env_dir = os.environ.get("CHISEL_STORAGE_DIR")
-    if env_dir:
-        return os.path.abspath(env_dir)
-
-    if project_dir:
+        base = os.path.abspath(explicit_dir)
+    elif os.environ.get("CHISEL_STORAGE_DIR"):
+        base = os.path.abspath(os.environ.get("CHISEL_STORAGE_DIR"))
+    elif project_dir:
         root = detect_project_root(project_dir)
-        return os.path.join(root, ".chisel")
+        base = os.path.join(root, ".chisel")
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".chisel")
 
-    return os.path.join(os.path.expanduser("~"), ".chisel")
+    if shard:
+        return os.path.join(base, "shards", shard)
+    return base
 
 
 class ProcessLock:

@@ -5,10 +5,11 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] — 2026-04-15
 
 ### Added
 
+- **Monorepo SQLite sharding**: Large repos can now shard analysis data across multiple SQLite databases. Set `CHISEL_SHARDS=frontend,backend` (or create `.chisel/shards.toml`) to split data by top-level directory. Query tools (`risk_map`, `triage`, `diff_impact`, `impact`, `test_gaps`, `stale_tests`, `suggest_tests`, `stats`) automatically aggregate results across shards. Write tools (`analyze`, `update`, `record_result`) route to the correct shard based on file path.
 - **`analyze` auto-fallback to background job**: `tool_analyze` now scans the repo before starting a full forced analysis. If `force=True` and the repository contains more than 300 code files, it automatically queues a background job via `start_job` and returns `{"status": "auto_queued", "job_id": ..., "kind": "analyze"}` to avoid MCP timeouts on large repos.
 - **`exclude_new_file_boost` parameter**: Both `risk_map` and `triage` now accept `exclude_new_file_boost=True`. When set, the 0.5 additive boost for files with zero churn and zero coverage is suppressed, making long-term risk rankings more stable.
 - **`auto_update` parameter for read-only tools**: `diff_impact`, `suggest_tests`, `risk_map`, `test_gaps`, and `triage` now accept `auto_update=True`. When the DB is stale (missing changed files), Chisel attempts a lightweight inline `update()` before returning results. Capped at 50 changed files and skipped when a background job is already running.
@@ -17,7 +18,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **Documentation**: `README.md`, `docs/LLM_CONTRACT.md`, `docs/AGENT_PLAYBOOK.md`, and `docs/CUSTOM_EXTRACTORS.md` now include stronger guidance to call `record_result` after test runs, and link to the new extractor ecosystem docs.
+- **Documentation**: `README.md`, `docs/LLM_CONTRACT.md`, `docs/AGENT_PLAYBOOK.md`, `docs/CUSTOM_EXTRACTORS.md`, and `ARCHITECTURE.md` updated for sharding, auto-fallback, and extractor ecosystem.
+
+## [Unreleased]
 
 ## [0.8.3] — 2026-04-14
 
