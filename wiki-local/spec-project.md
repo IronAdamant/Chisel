@@ -65,7 +65,7 @@ Built-in extraction is **stdlib-only** (regex / `ast`). For **tree-sitter**, **L
 
 ## MCP Tool Specifications
 
-**24 tools** are defined in `schemas.py`: **18 core** query/write tools (including **`start_job`** / **`job_status`** for background analyze/update) plus **6 advisory file-lock** tools for multi-agent coordination. They are reachable via CLI (where exposed), HTTP `POST /call`, and stdio MCP. Each maps to an `engine.tool_*()` method.
+**26 tools** are defined in `schemas.py`: **20 functional** query/write tools (including **`start_job`** / **`job_status`** / **`cancel_job`** for background analyze/update and **`optimize_storage`** for SQLite maintenance) plus **6 advisory file-lock** tools for multi-agent coordination. They are reachable via CLI (where exposed), HTTP `POST /call`, and stdio MCP. Each maps to an `engine.tool_*()` method.
 
 ### start_job / job_status
 

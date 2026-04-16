@@ -53,7 +53,7 @@ The core modules are:
 | `test_mapper.py` | Test discovery, framework detection, dependency extraction, edge building |
 | `impact.py` | Impact analysis (direct + co-change + import-graph tests), risk scoring, stale tests, git-derived ownership/review hints |
 | `project.py` | Project root, path normalization, **ProcessLock** (multi-process / multi-agent) |
-| `schemas.py` | JSON Schema + dispatch for **22 MCP tools** (core + advisory file locks) |
+| `schemas.py` | JSON Schema + dispatch for **26 MCP tools** (20 functional + 6 advisory file-lock) |
 | `next_steps.py` | Contextual follow-up hints for agent clients |
 | `cli.py` | argparse CLI (core tools + serve + lock subcommands) |
 | `mcp_server.py` | HTTP MCP server (`dispatch_tool`, `next_steps`) |

@@ -122,7 +122,7 @@ chisel test-gaps
 
 ## MCP Tools
 
-18 core tools plus 6 advisory file-lock helpers for multi-agent coordination.
+20 functional tools plus 6 advisory file-lock helpers for multi-agent coordination.
 
 | Tool | What it does |
 |------|-------------|
@@ -154,7 +154,7 @@ chisel test-gaps
 - **Incremental** — only re-processes changed files, not the whole repo
 - **Branch-aware** — `diff_impact` auto-detects feature branch vs main
 - **Multi-agent safe** — cross-process locks so parallel agents don’t corrupt the graph
-- **MCP + CLI** — stdio and HTTP MCP servers, plus a full CLI with 18 subcommands
+- **MCP + CLI** — stdio and HTTP MCP servers, plus a full CLI with 28 subcommands
 - **Monorepo sharding** — split analysis across per-directory SQLite databases (`CHISEL_SHARDS`)
 - **Custom extractors** — plug in tree-sitter or LSP via `register_extractor()` if you need it
 

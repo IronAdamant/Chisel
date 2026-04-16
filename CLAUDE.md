@@ -16,7 +16,7 @@ When editing behavior or docs, prefer: **structured tool results**, **explicit s
 chisel/
   engine.py         — Orchestrator. Owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock, ProcessLock.
   project.py        — Multi-agent safety: project root detection, path normalization, storage resolution, cross-process file lock.
-  storage.py        — SQLite persistence (WAL mode, 30s busy timeout, write retry). 13 tables (incl. meta, import_edges, branch_co_changes).
+  storage.py        — SQLite persistence (WAL mode, 30s busy timeout, write retry). 17 tables (incl. meta, import_edges, branch_co_changes, file_locks, bg_jobs, job_events, static_test_imports).
   ast_utils.py      — Multi-lang AST extraction (12 languages). CodeUnit dataclass. _extract_brace_lang() shared by brace-delimited langs.
   git_analyzer.py   — Parses git log/blame via subprocess. Branch/diff queries.
   metrics.py        — Pure computation: churn scoring, ownership aggregation, co-change detection, coupling_threshold(). _parse_iso_date shared utility.
@@ -24,8 +24,8 @@ chisel/
   test_mapper.py    — Test file discovery, framework detection, dependency extraction, edge building.
   impact.py         — Impact analysis, risk scoring, stale test detection, reviewer suggestions.
   risk_meta.py      — Risk-map _meta diagnostics and dynamic reweighting when components are uniform.
-  cli.py            — argparse CLI (18 subcommands). _run_tool() shared handler. Entry point: chisel.cli:main
-  schemas.py        — JSON Schema definitions for all 22 tools + dispatch table. Shared by HTTP and stdio servers.
+  cli.py            — argparse CLI (28 subcommands). _run_tool() shared handler. Entry point: chisel.cli:main
+  schemas.py        — JSON Schema definitions for all 26 tools (20 functional + 6 file-lock) + dispatch table. Shared by HTTP and stdio servers.
   mcp_server.py     — HTTP MCP server (GET /tools, /health, POST /call). ThreadedHTTPServer. dispatch_tool() shared by both servers.
   mcp_stdio.py      — stdio MCP server (requires optional 'mcp' package). _configure_server() for engine lifecycle mgmt.
   next_steps.py     — Contextual next-step suggestions for MCP tool responses. compute_next_steps() dispatched per tool.
@@ -113,9 +113,9 @@ mcp_stdio.py → engine.py, mcp_server.py, schemas.py
 next_steps.py → (no internal deps)
 ```
 
-## 24 MCP Tools
+## 26 MCP Tools (20 functional + 6 file-lock)
 
-`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`, `diff_impact`, `update`, `test_gaps`, `record_result`, `stats`, `triage`, `start_job`, `job_status`, plus 6 advisory file lock tools
+`analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`, `diff_impact`, `update`, `test_gaps`, `record_result`, `stats`, `triage`, `optimize_storage`, `start_job`, `job_status`, `cancel_job`, plus 6 advisory file lock tools (`acquire_file_lock`, `release_file_lock`, `refresh_file_lock`, `check_file_lock`, `check_locks`, `list_file_locks`)
 
 Each wired through: engine.tool_*() → CLI subcommand, HTTP POST /call, stdio MCP.
 

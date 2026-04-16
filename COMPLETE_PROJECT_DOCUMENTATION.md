@@ -37,17 +37,17 @@ Test impact analysis and code intelligence for **LLM agents** in **solo-maintain
 | `chisel/__init__.py` | Package init, exports `__version__` | -- | -- |
 | `chisel/ast_utils.py` | Multi-language AST extraction (12 languages), pluggable extractor registry, `CodeUnit` dataclass, `_SKIP_DIRS` constant, `compute_file_hash`, `detect_language` | `ast`, `hashlib`, `re`, `dataclasses`, `functools`, `pathlib` | [glossary: code unit](wiki-local/glossary.md) |
 | `chisel/bootstrap.py` | Optional `CHISEL_BOOTSTRAP` module import (user tree-sitter / custom extractors) | `importlib`, `os` | [CUSTOM_EXTRACTORS](../docs/CUSTOM_EXTRACTORS.md) |
-| `chisel/storage.py` | SQLite persistence layer (WAL mode, 10 tables, single persistent connection), all CRUD operations | `sqlite3`, `datetime`, `pathlib` | [glossary: blame cache](wiki-local/glossary.md) |
+| `chisel/storage.py` | SQLite persistence layer (WAL mode, 17 tables, single persistent connection, cross-process busy-retry), all CRUD operations | `sqlite3`, `datetime`, `pathlib`, `logging` | [glossary: blame cache](wiki-local/glossary.md) |
 | `chisel/git_analyzer.py` | Git log/blame parsing via subprocess, branch/diff queries, function-level log | `re`, `subprocess`, `datetime` | [glossary: churn score](wiki-local/glossary.md) |
 | `chisel/metrics.py` | Pure computation: churn scoring, ownership aggregation, co-change detection | `collections`, `datetime`, `itertools` | [glossary: churn score](wiki-local/glossary.md) |
 | `chisel/test_mapper.py` | Test file discovery, framework detection (pytest/Jest/Go/Rust/Playwright), dependency extraction, test edge building | `ast`, `os`, `re`, `pathlib`, `chisel.ast_utils`, `chisel.project` | [glossary: test edge](wiki-local/glossary.md) |
 | `chisel/impact.py` | Impact analysis, risk scoring (20-step coverage quantization, proximity for partial coverage), stale test detection, ownership queries, reviewer suggestions | `collections`, `datetime`, `chisel.metrics`, `chisel.storage` (via constructor injection) | [glossary: risk score](wiki-local/glossary.md) |
 | `chisel/project.py` | Multi-process / multi-agent safety: project root detection (worktree-aware), path normalization, storage dir resolution, cross-platform file lock (ProcessLock) for concurrent agents and CLI | `os`, `subprocess`, `sys`, `contextlib`; Unix: `fcntl`; Windows: `ctypes`, `msvcrt` | -- |
 | `chisel/engine.py` | Orchestrator -- owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock, ProcessLock; exposes `tool_*()` methods for all MCP tools. Single-author co-change threshold halving, diff_impact working_tree support via StaticImportIndex | `os`, `chisel.ast_utils`, `chisel.git_analyzer`, `chisel.impact`, `chisel.project`, `chisel.rwlock`, `chisel.storage`, `chisel.static_test_imports`, `chisel.test_mapper` | [spec-project](wiki-local/spec-project.md) |
-| `chisel/cli.py` | argparse CLI with 17 subcommands, dispatch table, output formatting | `argparse`, `json`, `os`, `chisel.engine` | [spec-project: CLI](wiki-local/spec-project.md) |
+| `chisel/cli.py` | argparse CLI with 28 subcommands, dispatch table, output formatting | `argparse`, `json`, `os`, `chisel.engine` | [spec-project: CLI](wiki-local/spec-project.md) |
 | `chisel/mcp_server.py` | HTTP MCP server (GET /tools, /health; POST /call), ThreadedHTTPServer, shared `dispatch_tool()` | `json`, `logging`, `threading`, `http.server`, `socketserver`, `chisel.engine`, `chisel.schemas` | [spec-project: MCP tools](wiki-local/spec-project.md) |
 | `chisel/mcp_stdio.py` | stdio MCP server for Claude Desktop/Cursor integration, requires optional `mcp` package | `asyncio`, `json`, `logging`, `os`, `sys`, `chisel.engine`, `chisel.mcp_server` (imports `dispatch_tool`), `chisel.schemas` (imports `_TOOL_SCHEMAS`) | [spec-project: MCP tools](wiki-local/spec-project.md) |
-| `chisel/schemas.py` | JSON Schema definitions for all 15 tools + dispatch table, shared by HTTP and stdio servers | -- (pure data module) | -- |
+| `chisel/schemas.py` | JSON Schema definitions for all 26 tools (20 functional + 6 file-lock) + dispatch table, shared by HTTP and stdio servers | -- (pure data module) | -- |
 | `chisel/rwlock.py` | Read-write lock (multiple readers or one exclusive writer) for concurrent access | `threading`, `contextlib` | -- |
 
 ### tests/ -- Test Suite
@@ -83,13 +83,13 @@ mcp_server.py --> engine.py, schemas.py
 mcp_stdio.py --> engine.py, mcp_server.py, schemas.py
 ```
 
-## SQLite Tables (10)
+## SQLite Tables (17)
 
-`code_units`, `test_units`, `test_edges`, `commits`, `commit_files`, `blame_cache`, `co_changes`, `churn_stats`, `file_hashes`, `test_results`
+`code_units`, `test_units`, `test_edges`, `commits`, `commit_files`, `blame_cache`, `co_changes`, `churn_stats`, `file_hashes`, `import_edges`, `branch_co_changes`, `test_results`, `meta`, `file_locks`, `bg_jobs`, `job_events`, `static_test_imports`
 
 ## Entry Points
 
 | Script | Target | Description |
 |--------|--------|-------------|
-| `chisel` | `chisel.cli:main` | CLI with 17 subcommands |
+| `chisel` | `chisel.cli:main` | CLI with 28 subcommands |
 | `chisel-mcp` | `chisel.mcp_stdio:main` | stdio MCP server |

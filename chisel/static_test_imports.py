@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 from chisel.ast_utils import detect_language
 from chisel.import_graph import _resolve_import_targets
 from chisel.test_mapper import TestMapper, _compute_proximity_weight
+
+logger = logging.getLogger(__name__)
 
 
 class StaticImportIndex:
@@ -49,7 +52,8 @@ class StaticImportIndex:
                 abs_path = os.path.join(self._project_dir, test_fp)
                 try:
                     content = Path(abs_path).read_text(encoding="utf-8", errors="replace")
-                except OSError:
+                except OSError as exc:
+                    logger.debug("StaticImportIndex skipped unreadable test file %s: %s", abs_path, exc)
                     continue
                 lang = detect_language(test_fp)
                 py_imp = test_fp.endswith(".py")

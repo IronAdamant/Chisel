@@ -318,6 +318,11 @@ class Storage:
                     time.sleep(backoff)
                     backoff *= 2
                 else:
+                    if "database is locked" in str(exc):
+                        logger.warning(
+                            "SQLite write failed after %d retries (db=%s): %s",
+                            _BUSY_RETRIES, self.db_path, exc,
+                        )
                     raise
 
     def _executemany(self, sql, params_seq):
@@ -339,6 +344,11 @@ class Storage:
                     time.sleep(backoff)
                     backoff *= 2
                 else:
+                    if "database is locked" in str(exc):
+                        logger.warning(
+                            "SQLite executemany failed after %d retries (db=%s): %s",
+                            _BUSY_RETRIES, self.db_path, exc,
+                        )
                     raise
 
     # --- code_units ---

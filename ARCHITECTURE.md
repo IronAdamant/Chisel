@@ -66,7 +66,7 @@ ChiselEngine (engine.py) — main orchestrator
   │     └── Brace matching with multi-line block comment tracking
   ├── Bootstrap (bootstrap.py) — `CHISEL_BOOTSTRAP` imports user plugin module
   ├── Storage (storage.py, SQLite WAL)
-  │     ├── 10 tables, single persistent connection
+  │     ├── 17 tables, single persistent connection, cross-process busy-retry
   │     ├── Batch query methods for N+1 elimination
   │     └── Incremental update via content hashes
   ├── Project (project.py)
@@ -76,58 +76,63 @@ ChiselEngine (engine.py) — main orchestrator
   ├── RWLock (rwlock.py) — in-process read/write lock
   ├── Schemas (schemas.py) — JSON Schema defs + dispatch table
   └── APIs
-        ├── CLI (cli.py) — 17 subcommands
+        ├── CLI (cli.py) — 28 subcommands
         ├── HTTP (mcp_server.py) — GET /tools, /health; POST /call
         └── stdio MCP (mcp_stdio.py) — for Claude Desktop/Cursor
 ```
 
-## SQLite Tables (13)
+## SQLite Tables (17)
 
 ```sql
-code_units        — functions, classes, structs (id = file:name:type)
-test_units        — test functions (id = file:name)
-test_edges        — test → code links with edge_type and weight
-commits           — git commit metadata
-commit_files      — per-file stats per commit
-blame_cache       — cached git blame, keyed by content hash
-co_changes        — file pairs that change together
-branch_co_changes — branch-only co-change pairs (merge-base..HEAD)
-churn_stats       — churn scores per file and per function
-file_hashes       — content hashes for incremental analysis
-test_results      — recorded pass/fail outcomes for prioritization
-import_edges      — static import edges between source files
-bg_jobs           — background analyze/update jobs with progress_pct
-meta              — key-value project metadata (includes project_fingerprint)
+code_units           — functions, classes, structs (id = file:name:type)
+test_units           — test functions (id = file:name)
+test_edges           — test → code links with edge_type and weight
+commits              — git commit metadata
+commit_files         — per-file stats per commit
+blame_cache          — cached git blame, keyed by content hash
+co_changes           — file pairs that change together
+branch_co_changes    — branch-only co-change pairs (merge-base..HEAD)
+churn_stats          — churn scores per file and per function
+file_hashes          — content hashes for incremental analysis
+test_results         — recorded pass/fail outcomes for prioritization
+import_edges         — static import edges between source files
+static_test_imports  — cached test-file import scan results
+bg_jobs              — background analyze/update jobs with progress_pct
+job_events           — per-phase progress events for background jobs
+file_locks           — advisory file locks for multi-agent coordination
+meta                 — key-value project metadata (includes project_fingerprint)
 ```
 
-## 24 MCP Tools
+## 26 MCP Tools (20 functional + 6 file-lock)
 
 | Tool | Input | Output |
 |------|-------|--------|
-| `analyze` | directory, force | full rebuild stats |
-| `update` | — | incremental update stats |
+| `analyze` | directory, force, shard | full rebuild stats |
+| `update` | shard | incremental update stats |
 | `impact` | files, functions | affected tests + scores |
-| `diff_impact` | ref, working_tree | affected tests from git diff |
-| `suggest_tests` | file_path, fallback_to_all, working_tree | ranked tests by relevance + failure rate |
+| `diff_impact` | ref, working_tree, auto_update | affected tests from git diff |
+| `suggest_tests` | file_path, fallback_to_all, working_tree, auto_update | ranked tests by relevance + failure rate |
 | `churn` | file, unit_name | churn score, commits, authors |
 | `ownership` | file | author breakdown (blame-based, role=original_author) |
 | `who_reviews` | file | reviewer suggestions (activity-based, role=suggested_reviewer) |
 | `coupling` | file, min_count | co-change + import partners |
-| `risk_map` | directory, exclude_tests, working_tree | risk scores (batch-computed) |
+| `risk_map` | directory, exclude_tests, working_tree, auto_update | risk scores (batch-computed) |
 | `stale_tests` | — | tests pointing at removed code |
-| `test_gaps` | file, directory, working_tree | untested code units by churn risk |
+| `test_gaps` | file, directory, working_tree, limit, auto_update | untested code units by churn risk |
 | `history` | file | commit timeline |
 | `record_result` | test_id, passed, duration | store for future prioritization |
 | `stats` | — | database summary counts |
-| `triage` | directory, top_n, exclude_tests, working_tree | combined risk_map + test_gaps + stale_tests |
-| `start_job` | kind, directory, force | background job id |
+| `triage` | directory, top_n, exclude_tests, working_tree, auto_update | combined risk_map + test_gaps + stale_tests |
+| `optimize_storage` | — | `PRAGMA optimize` + conditional `VACUUM` |
+| `start_job` | kind, directory, force, shard | background job id |
 | `job_status` | job_id | job status + progress_pct + result |
-| `acquire_lock` | file_path | advisory lock for multi-agent coordination |
-| `release_lock` | file_path | release advisory lock |
-| `refresh_lock` | file_path | extend lock TTL |
-| `check_lock` | file_path | lock status query |
+| `cancel_job` | job_id | cancel a running background job |
+| `acquire_file_lock` | file_path, agent_id, ttl, purpose | advisory lock for multi-agent coordination |
+| `release_file_lock` | file_path, agent_id | release advisory lock |
+| `refresh_file_lock` | file_path, agent_id, ttl | extend lock TTL |
+| `check_file_lock` | file_path | lock status query |
 | `check_locks` | file_paths | batch lock status query |
-| `list_locks` | — | list all active locks |
+| `list_file_locks` | agent_id | list all active locks (optionally filtered) |
 
 All list-returning tools accept a `limit` parameter to cap result size.
 
@@ -189,7 +194,7 @@ Chisel/
 │   ├── project.py            # project root, path normalization, ProcessLock
 │   ├── rwlock.py             # read-write lock
 │   ├── schemas.py            # JSON Schema defs + dispatch table
-│   ├── cli.py                # argparse CLI (17 subcommands)
+│   ├── cli.py                # argparse CLI (28 subcommands)
 │   ├── mcp_server.py         # HTTP MCP server
 │   └── mcp_stdio.py          # stdio MCP server
 ├── tests/

@@ -1,6 +1,7 @@
 """ChiselEngine — main orchestrator tying together all subsystems."""
 
 import json
+import logging
 import os
 import threading
 import time
@@ -11,6 +12,8 @@ try:
     import tomllib
 except ImportError:  # pragma: no cover
     tomllib = None
+
+logger = logging.getLogger(__name__)
 
 
 class JobCancelledError(Exception):
@@ -156,8 +159,8 @@ class ChiselEngine:
                 shards = data.get("shards", [])
                 if isinstance(shards, list):
                     return self._parse_shard_config(",".join(shards))
-            except Exception:
-                pass
+            except (OSError, tomllib.TOMLDecodeError, ValueError) as exc:
+                logger.warning("Failed to load shard config from %s: %s", toml_path, exc)
         return []
 
     def _parse_shard_config(self, config_str):
@@ -427,6 +430,20 @@ class ChiselEngine:
     _AUTO_BG_JOB_THRESHOLD = 300
     _AUTO_UPDATE_MAX_FILES = 50
 
+    # Human-readable hints for each reason _try_auto_update may skip.
+    # Used by callers that return stale_db or similar envelopes so agents can
+    # distinguish "DB is current" from "DB is stale but auto-refresh was skipped".
+    _AUTO_UPDATE_SKIP_HINTS = {
+        "background_job_running": (
+            "Auto-update skipped: a background analyze/update is in progress. "
+            "Poll job_status and retry when it completes."
+        ),
+        "too_many_changed_files": (
+            f"Auto-update skipped: more than {_AUTO_UPDATE_MAX_FILES} files changed. "
+            "Run 'chisel update' or start_job(kind='update') to refresh the DB."
+        ),
+    }
+
     def _try_auto_update(self):
         """Attempt a lightweight inline update when DB is stale.
 
@@ -437,9 +454,11 @@ class ChiselEngine:
             if self._bg_job_in_progress:
                 return False, "background_job_running"
 
-        code_files = self._scan_code_files()
+        # Scan + change-check must happen under the same lock window so concurrent
+        # writers cannot insert new files between scan and hash comparison.
         with self._process_lock.exclusive():
             with self.lock.write_lock():
+                code_files = self._scan_code_files()
                 changed_files = self._find_changed_files(code_files)
                 if not changed_files:
                     return False, "no_changes"
@@ -703,18 +722,25 @@ class ChiselEngine:
                     file_missing = False
 
         if file_path and file_missing and auto_update:
-            performed, _ = self._try_auto_update()
+            performed, reason = self._try_auto_update()
             if performed:
                 return self._suggest_tests_impl(
                     file_path, directory, fallback_to_all, working_tree,
                     False, disk, extra,
                 )
-            return {
+            hint = self._AUTO_UPDATE_SKIP_HINTS.get(
+                reason,
+                "Run 'chisel update' first to include new or changed files.",
+            )
+            result = {
                 "status": "stale_db",
                 "file_path": file_path,
                 "message": "File not found in analysis database.",
-                "hint": "Run 'chisel update' first to include new or changed files.",
+                "hint": hint,
             }
+            if reason:
+                result["auto_update_skip_reason"] = reason
+            return result
 
         with self._process_lock.shared():
             with self.lock.read_lock():
@@ -1189,21 +1215,31 @@ class ChiselEngine:
                     if self.storage.get_file_hash(cf) is None:
                         missing_from_db.append(cf)
 
+        auto_update_reason = None
         if missing_from_db and auto_update:
-            performed, _ = self._try_auto_update()
+            performed, auto_update_reason = self._try_auto_update()
             if performed:
                 return self.tool_diff_impact(
                     ref=ref,
                     working_tree=working_tree,
                     auto_update=False,
                 )
-            return {
+
+        if missing_from_db:
+            hint = self._AUTO_UPDATE_SKIP_HINTS.get(
+                auto_update_reason,
+                "Run 'chisel update' first to include new or changed files.",
+            )
+            result = {
                 "status": "stale_db",
                 "changed_files": changed_files,
                 "missing_from_db": missing_from_db,
                 "message": "Some changed files are missing from the analysis database.",
-                "hint": "Run 'chisel update' first to include new or changed files.",
+                "hint": hint,
             }
+            if auto_update_reason:
+                result["auto_update_skip_reason"] = auto_update_reason
+            return result
 
         if not self._shard_config:
             with self._process_lock.shared():
@@ -1384,7 +1420,9 @@ class ChiselEngine:
                 querying so recent changes are reflected.
         """
         if auto_update:
-            self._try_auto_update()
+            performed, reason = self._try_auto_update()
+            if not performed and reason in self._AUTO_UPDATE_SKIP_HINTS:
+                logger.warning("test_gaps %s", self._AUTO_UPDATE_SKIP_HINTS[reason])
 
         disk = self._disk_only_test_map() if working_tree else None
         extra = self._git_untracked_code_paths() if working_tree else None
