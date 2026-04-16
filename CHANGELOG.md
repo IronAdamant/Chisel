@@ -22,6 +22,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-04-17
+
+### Fixed
+
+- **Silent exception swallowing**: `engine._load_shard_config` now logs a warning when `.chisel/shards.toml` fails to parse instead of silently returning an empty config. `storage._execute` / `_executemany` now emit a warning (in addition to the existing debug-level retry logs) when SQLITE_BUSY persists past the retry cap. `static_test_imports.StaticImportIndex` now debug-logs the path and error when an untracked test file cannot be read, instead of silently skipping it.
+- **`_try_auto_update` race window**: `_scan_code_files()` is now called inside the exclusive lock held by `_try_auto_update`, so concurrent writers cannot add files between the scan and the hash-based change check.
+- **`auto_update` skip reasons surfaced to agents**: When `auto_update=True` is requested but skipped (either because a background job is running or because more than 50 files changed), the response now includes an explicit `auto_update_skip_reason` field and a reason-specific hint. Applied to `suggest_tests` and `diff_impact` stale-DB envelopes; `test_gaps` (which returns a bare list) logs a warning instead. `risk_map` and `triage` already exposed this via `_meta`.
+
+### Changed
+
+- **Documentation parity sweep**: Tool count (`22`/`24` → `26` = 20 functional + 6 file-lock), CLI subcommand count (`17`/`18` → `28`), and SQLite table count (`10`/`13` → `17`) corrected across `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `ARCHITECTURE.md`, `COMPLETE_PROJECT_DOCUMENTATION.md`, and `wiki-local/spec-project.md`. `ARCHITECTURE.md` tool table gained `optimize_storage` and `cancel_job` and fixed the file-lock tool names (`acquire_lock` → `acquire_file_lock`, etc.) to match `schemas.py`.
+
 ## [0.8.3] — 2026-04-14
 
 ### Fixed
