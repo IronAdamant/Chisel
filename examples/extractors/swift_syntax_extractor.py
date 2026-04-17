@@ -11,7 +11,7 @@ Usage:
 from chisel.ast_utils import CodeUnit, register_extractor
 
 try:
-    from swift_syntax import *
+    from swift_syntax import *  # noqa: F403
     from swift_syntax.parser import Parser
 except ImportError as exc:
     raise ImportError(
@@ -28,7 +28,7 @@ def swift_syntax_extractor(file_path: str, content: str) -> list[CodeUnit]:
     units = []
 
     def _walk(node):
-        if isinstance(node, FunctionDeclSyntax):
+        if isinstance(node, FunctionDeclSyntax):  # noqa: F405
             name = node.name.text if node.name else "anonymous"
             units.append(CodeUnit(
                 file_path=file_path,
@@ -37,16 +37,16 @@ def swift_syntax_extractor(file_path: str, content: str) -> list[CodeUnit]:
                 line_start=node.position.line,
                 line_end=node.end_position.line,
             ))
-        elif isinstance(node, (ClassDeclSyntax, StructDeclSyntax,
-                               EnumDeclSyntax, ActorDeclSyntax,
-                               ProtocolDeclSyntax)):
+        elif isinstance(node, (ClassDeclSyntax, StructDeclSyntax,  # noqa: F405
+                               EnumDeclSyntax, ActorDeclSyntax,  # noqa: F405
+                               ProtocolDeclSyntax)):  # noqa: F405
             name = node.name.text if node.name else "anonymous"
             kind_map = {
-                ClassDeclSyntax: "class",
-                StructDeclSyntax: "struct",
-                EnumDeclSyntax: "enum",
-                ActorDeclSyntax: "actor",
-                ProtocolDeclSyntax: "interface",
+                ClassDeclSyntax: "class",  # noqa: F405
+                StructDeclSyntax: "struct",  # noqa: F405
+                EnumDeclSyntax: "enum",  # noqa: F405
+                ActorDeclSyntax: "actor",  # noqa: F405
+                ProtocolDeclSyntax: "interface",  # noqa: F405
             }
             units.append(CodeUnit(
                 file_path=file_path,

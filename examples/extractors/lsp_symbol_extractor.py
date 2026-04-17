@@ -18,7 +18,6 @@ Usage:
 import json
 import subprocess
 import threading
-import uuid
 
 from chisel.ast_utils import CodeUnit, register_extractor
 

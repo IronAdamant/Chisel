@@ -1,7 +1,5 @@
 """Framework-specific fixture tests for test_mapper detection."""
 
-import os
-
 import pytest
 
 from chisel.ast_utils import extract_code_units

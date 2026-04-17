@@ -13,12 +13,6 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
-logger = logging.getLogger(__name__)
-
-
-class JobCancelledError(Exception):
-    """Raised when a background analyze/update job is cancelled mid-flight."""
-
 from chisel.ast_utils import (
     _EXTENSION_MAP,
     _SKIP_DIRS,
@@ -39,8 +33,13 @@ from chisel.project import ProcessLock, detect_project_root, normalize_path, res
 from chisel.risk_meta import apply_risk_reweighting, build_risk_meta
 from chisel.rwlock import RWLock
 from chisel.storage import Storage
-from chisel.static_test_imports import StaticImportIndex
 from chisel.test_mapper import TestMapper
+
+logger = logging.getLogger(__name__)
+
+
+class JobCancelledError(Exception):
+    """Raised when a background analyze/update job is cancelled mid-flight."""
 
 
 # Derived from ast_utils._EXTENSION_MAP to avoid duplication.
@@ -2065,7 +2064,6 @@ class ChiselEngine:
                     content = fh.read()
                 deps = self.mapper.extract_test_dependencies(rel_tf, content)
                 all_paths = set(self.storage.get_resolvable_code_file_paths())
-                lang = self.mapper.detect_framework(tf)
                 py_imp = rel_tf.endswith(".py")
                 from chisel.import_graph import _resolve_import_targets
                 for dep in deps:

@@ -22,6 +22,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-04-17
+
+### Fixed
+
+- **CI lint failures**: Resolved 29 ruff errors blocking the CI matrix. `chisel/engine.py` — `JobCancelledError` and `logger` moved below the import block (was triggering 12× E402); removed unused `StaticImportIndex` import (F401); removed unused `lang = self.mapper.detect_framework(tf)` local (F841). `chisel/mcp_server.py` — removed unused `from socketserver import ThreadingMixIn` (F401). `examples/extractors/lsp_symbol_extractor.py` — removed unused `import uuid` (F401). `examples/extractors/swift_syntax_extractor.py` — added `# noqa: F403 / F405` on the star import and the symbols it provides (intentional — optional third-party dep). `tests/test_language_frameworks.py` — removed unused `import os` (F401). No behavior changes.
+
 ## [0.9.1] — 2026-04-17
 
 ### Fixed

@@ -11,7 +11,6 @@ import json
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from socketserver import ThreadingMixIn
 
 from chisel.engine import ChiselEngine
 from chisel.next_steps import compute_next_steps
