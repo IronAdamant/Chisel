@@ -211,6 +211,16 @@ class TestMapper:
                 continue
 
             deps = self.extract_test_dependencies(file_path, content)
+
+            # Pre-pass: collect the set of code files that this test file's
+            # imports resolve to. Restricting tier-4 (name-only) matches to
+            # this scope eliminates symbol-name collisions across unrelated
+            # files (e.g. a generic `dispatch()` call leaking into edges of
+            # every file that happens to define a `dispatch` symbol).
+            resolved_import_files = self._resolve_import_targets(
+                file_path, deps, id_to_file,
+            )
+
             seen = set()
             for dep in deps:
                 module_path = dep.get("module_path")
@@ -252,7 +262,22 @@ class TestMapper:
                                     matched_ids.append(cid)
                 # 4. Fall back to name-based matching
                 if not matched_ids:
-                    matched_ids = name_to_ids.get(dep["name"], [])
+                    candidate_ids = name_to_ids.get(dep["name"], [])
+                    if not module_path and resolved_import_files and candidate_ids:
+                        # Symbol-collision guard: a `call`-style dep without a
+                        # module_path is just a bare symbol name. Constrain it
+                        # to code units in files this test actually imports.
+                        scoped = [
+                            cid for cid in candidate_ids
+                            if id_to_file.get(cid) in resolved_import_files
+                        ]
+                        # If scoping eliminates every candidate (e.g. the
+                        # symbol is defined in an unimported helper file),
+                        # drop the edge rather than falling back to a noisy
+                        # global match.
+                        matched_ids = scoped
+                    else:
+                        matched_ids = candidate_ids
 
                 for cid in matched_ids:
                     key = (tu["id"], cid, dep["dep_type"])
@@ -273,6 +298,47 @@ class TestMapper:
                             "weight": weight,
                         })
         return edges
+
+    def _resolve_import_targets(self, test_file_path, deps, id_to_file):
+        """Return the set of code-file paths that *deps* with module_path resolve to.
+
+        Used to scope tier-4 (name-only) matches so a bare `dispatch()` call
+        in test A cannot accidentally edge to a `dispatch` symbol in
+        unrelated file B that test A never imports.
+        """
+        resolved_files: set[str] = set()
+        is_go = detect_language(test_file_path) == "go"
+        for dep in deps:
+            module_path = dep.get("module_path")
+            if not module_path:
+                continue
+            # Python: module.path resolves to a code file path.
+            for cfile in id_to_file.values():
+                if _matches_import_path(cfile, module_path):
+                    resolved_files.add(cfile)
+            # JS/TS relative imports.
+            if module_path.startswith("."):
+                resolved = _resolve_js_module_path(test_file_path, module_path)
+                if resolved:
+                    for cfile in id_to_file.values():
+                        if _matches_js_import_path(cfile, resolved):
+                            resolved_files.add(cfile)
+            # Go module imports.
+            if is_go:
+                resolved = _resolve_go_import_path(self.project_dir, module_path)
+                if resolved:
+                    resolved_norm = resolved.replace("\\", "/")
+                    for cfile in id_to_file.values():
+                        cfile_norm = cfile.replace("\\", "/")
+                        if resolved_norm == ".":
+                            if "/" not in cfile_norm:
+                                resolved_files.add(cfile)
+                        elif (
+                            cfile_norm == resolved_norm
+                            or cfile_norm.startswith(resolved_norm + "/")
+                        ):
+                            resolved_files.add(cfile)
+        return resolved_files
 
 
 # ------------------------------------------------------------------ #
@@ -542,6 +608,14 @@ _JS_EVAL_WITH_REQUIRE_RE = re.compile(
     r"new\s+Function\s*\(",
 )
 
+# Dynamic require with path.join(__dirname, '<dir>', <var>)
+# Captures the first literal path token ('plugins') as the directory hint
+# so the import graph can resolve it to all files in that subdirectory.
+_JS_REQUIRE_PATH_JOIN_RE = re.compile(
+    r"require\s*\(\s*path\.join\s*\(\s*(?:__dirname|__filename)\s*,\s*"
+    r"['\"]([^'\"]+)['\"]"
+)
+
 # Variable assignment tracking for taint analysis:
 # const/let/var MODULE = './path' or MODULE = './path'
 _JS_VAR_ASSIGN_RE = re.compile(
@@ -699,6 +773,19 @@ def _extract_js_deps(content):
             "dep_type": "eval_import",
             "require_type": "eval",
             "confidence": _REQUIRE_CONFIDENCE["eval"],
+        })
+
+    # require(path.join(__dirname, '<dir>', <var>)) — node-style plugin loaders.
+    # Captures the literal directory token so the import-graph builder can
+    # resolve it to all files in that subdirectory (soft / dynamic edges).
+    for m in _JS_REQUIRE_PATH_JOIN_RE.finditer(content):
+        directory = m.group(1)
+        deps.append({
+            "name": f"require(path.join(__dirname, '{directory}', ...))",
+            "dep_type": "dynamic_import",
+            "module_path": directory,
+            "require_type": "path_join",
+            "confidence": _REQUIRE_CONFIDENCE["concat"],
         })
 
     for m in _JS_CALL_RE.finditer(content):

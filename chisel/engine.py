@@ -923,11 +923,14 @@ class ChiselEngine:
                 meta["coverage_gap_mode"] = (
                     "proximity_adjusted" if proximity_adjustment else coverage_mode
                 )
-                # Compute cycles from import graph for inclusion in _meta
+                # Compute cycles from the DIRECTED import graph for _meta.
+                # Tarjan's SCC must run on directed edges — undirected
+                # neighbors (used elsewhere for structural coupling) would
+                # collapse every connected component into a fake cycle.
                 all_files = {f["file_path"] for f in files}
-                import_neighbors = self.storage.get_import_neighbors_batch(list(all_files))
+                directed_imports = self.storage.get_imported_files_batch(list(all_files))
                 from chisel.impact import _find_circular_dependencies
-                cycles = _find_circular_dependencies(all_files, import_neighbors)
+                cycles = _find_circular_dependencies(all_files, directed_imports)
                 meta["cycles"] = cycles
                 return {"files": files, "_meta": meta}
 
@@ -1177,7 +1180,15 @@ class ChiselEngine:
             p for p in untracked_raw
             if path_has_code_extension(p)
         }
-        changed_files = sorted(set(diff_files) | untracked_code)
+        # Filter tracked diff files by indexed extensions too. Non-code
+        # changes (.json data files, .md docs, .db binaries) never have
+        # impact and would otherwise trigger spurious stale_db when they
+        # are not present in the analysis DB.
+        diff_code_files = {
+            p for p in diff_files
+            if path_has_code_extension(p)
+        }
+        changed_files = sorted(diff_code_files | untracked_code)
         if not changed_files:
             try:
                 branch = self.git.get_current_branch()
@@ -2121,7 +2132,12 @@ class ChiselEngine:
         )
         if edges:
             self.storage.upsert_import_edges_batch([
-                (e["importer_file"], e["imported_file"]) for e in edges
+                (
+                    e["importer_file"],
+                    e["imported_file"],
+                    e.get("confidence", 1.0),
+                )
+                for e in edges
             ])
 
     # ------------------------------------------------------------------ #

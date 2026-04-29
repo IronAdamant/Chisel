@@ -273,6 +273,17 @@ class Storage:
             except sqlite3.OperationalError:
                 pass  # column already exists
 
+        # Schema migration: add confidence column to import_edges.
+        # Default 1.0 = hard static import. Tainted/dynamic require()
+        # resolutions emit edges with confidence < 1.0 so callers can
+        # distinguish guaranteed imports from heuristic ones.
+        try:
+            self._conn.execute(
+                "ALTER TABLE import_edges ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
     # --- Query helpers ---
 
     @staticmethod
@@ -692,30 +703,49 @@ class Storage:
                 tuple(chunk),
             )
 
-    def upsert_import_edge(self, importer_file, imported_file):
+    def upsert_import_edge(self, importer_file, imported_file, confidence=1.0):
+        # Use INSERT OR REPLACE so a higher-confidence edge can supersede
+        # an earlier soft (tainted/dynamic) edge for the same pair.
         self._execute(
-            """INSERT OR IGNORE INTO import_edges (importer_file, imported_file)
-               VALUES (?, ?)""",
-            (importer_file, imported_file),
+            """INSERT INTO import_edges (importer_file, imported_file, confidence)
+               VALUES (?, ?, ?)
+               ON CONFLICT(importer_file, imported_file) DO UPDATE SET
+                   confidence = MAX(import_edges.confidence, excluded.confidence)""",
+            (importer_file, imported_file, confidence),
         )
 
     def upsert_import_edges_batch(self, rows):
         """Batch insert import edges (ignore duplicates).
 
-        *rows* is an iterable of (importer_file, imported_file) tuples.
+        *rows* is an iterable of (importer_file, imported_file) or
+        (importer_file, imported_file, confidence) tuples. Two-tuple form
+        is preserved for backwards compatibility and defaults confidence
+        to 1.0 (hard static import). When a pair already exists, the
+        stored confidence rises to max(existing, new) — a real static
+        import always wins over a dynamic-require heuristic.
         """
         if not rows:
             return
+        normalized = [
+            (r[0], r[1], r[2] if len(r) >= 3 else 1.0)
+            for r in rows
+        ]
         self._executemany(
-            """INSERT OR IGNORE INTO import_edges (importer_file, imported_file)
-               VALUES (?, ?)""",
-            list(rows),
+            """INSERT INTO import_edges (importer_file, imported_file, confidence)
+               VALUES (?, ?, ?)
+               ON CONFLICT(importer_file, imported_file) DO UPDATE SET
+                   confidence = MAX(import_edges.confidence, excluded.confidence)""",
+            normalized,
         )
 
-    def get_import_neighbors_batch(self, file_paths):
+    def get_import_neighbors_batch(self, file_paths, min_confidence=0.0):
         """Return distinct neighbor files (either direction) per path in *file_paths*.
 
         Neighbors exclude the file itself.  Used for structural coupling.
+
+        ``min_confidence`` filters out soft (dynamic-require) edges below
+        the threshold. Default 0.0 includes everything (static + tainted +
+        dynamic) so structural-coupling counts capture heuristic edges.
         """
         if not file_paths:
             return {}
@@ -723,9 +753,9 @@ class Storage:
         for chunk in self._chunked_by_params(list(file_paths), params_per_item=2):
             placeholders = ",".join("?" for _ in chunk)
             sql = f"""SELECT importer_file, imported_file FROM import_edges
-                      WHERE importer_file IN ({placeholders})
-                         OR imported_file IN ({placeholders})"""
-            rows = self._fetchall(sql, tuple(chunk) + tuple(chunk))
+                      WHERE confidence >= ? AND (importer_file IN ({placeholders})
+                         OR imported_file IN ({placeholders}))"""
+            rows = self._fetchall(sql, (min_confidence, *chunk, *chunk))
             for row in rows:
                 a, b = row["importer_file"], row["imported_file"]
                 if a in result and b != a:
@@ -734,21 +764,75 @@ class Storage:
                     result[b].add(a)
         return {fp: sorted(neighbors) for fp, neighbors in result.items()}
 
-    def get_importers(self, imported_file):
+    def get_imported_files_batch(self, file_paths, min_confidence=1.0):
+        """Return forward (directed) imports per path in *file_paths*.
+
+        Unlike ``get_import_neighbors_batch`` (undirected), this returns only
+        the files that *each importer_file* actually imports. Required for
+        Tarjan's SCC cycle detection — undirected edges turn every connected
+        component into a fake cycle.
+
+        ``min_confidence`` defaults to 1.0 so cycle detection only sees
+        hard static imports. Soft edges from dynamic require() resolution
+        are heuristic and would produce noisy false cycles.
+        """
+        if not file_paths:
+            return {}
+        result = {fp: set() for fp in file_paths}
+        for chunk in self._chunked(list(file_paths), size=450):
+            placeholders = ",".join("?" for _ in chunk)
+            sql = (
+                "SELECT importer_file, imported_file FROM import_edges "
+                f"WHERE confidence >= ? AND importer_file IN ({placeholders})"
+            )
+            for row in self._fetchall(sql, (min_confidence, *chunk)):
+                importer = row["importer_file"]
+                imported = row["imported_file"]
+                if importer in result and importer != imported:
+                    result[importer].add(imported)
+        return {fp: sorted(neighbors) for fp, neighbors in result.items()}
+
+    def get_importers(self, imported_file, min_confidence=0.0):
         """Return files that statically import *imported_file* (reverse edges)."""
         rows = self._fetchall(
-            "SELECT DISTINCT importer_file FROM import_edges WHERE imported_file = ?",
-            (imported_file,),
+            "SELECT DISTINCT importer_file FROM import_edges "
+            "WHERE imported_file = ? AND confidence >= ?",
+            (imported_file, min_confidence),
         )
         return [r["importer_file"] for r in rows]
 
-    def get_imported_files(self, importer_file):
+    def get_imported_files(self, importer_file, min_confidence=0.0):
         """Return files that *importer_file* imports (forward edges)."""
         rows = self._fetchall(
-            "SELECT DISTINCT imported_file FROM import_edges WHERE importer_file = ?",
-            (importer_file,),
+            "SELECT DISTINCT imported_file FROM import_edges "
+            "WHERE importer_file = ? AND confidence >= ?",
+            (importer_file, min_confidence),
         )
         return [r["imported_file"] for r in rows]
+
+    def get_import_edges_with_confidence(self, file_paths):
+        """Return forward import edges with confidence values per importer.
+
+        Used by the impact closure to apply confidence-weighted decay when
+        traversing through soft (dynamic-require) edges.
+        """
+        if not file_paths:
+            return {}
+        result: dict[str, list[dict]] = {fp: [] for fp in file_paths}
+        for chunk in self._chunked(list(file_paths), size=450):
+            placeholders = ",".join("?" for _ in chunk)
+            sql = (
+                "SELECT importer_file, imported_file, confidence FROM import_edges "
+                f"WHERE importer_file IN ({placeholders})"
+            )
+            for row in self._fetchall(sql, tuple(chunk)):
+                importer = row["importer_file"]
+                if importer in result:
+                    result[importer].append({
+                        "imported_file": row["imported_file"],
+                        "confidence": row["confidence"],
+                    })
+        return result
 
     # --- branch_co_changes (merge-base..HEAD only, rebuilt each analyze) ---
 

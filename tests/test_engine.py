@@ -1096,6 +1096,31 @@ class TestStaleDbDetection:
         assert isinstance(result, dict)
         assert result["status"] == "stale_db"
 
+    def test_diff_impact_ignores_non_code_diffs(self, engine, git_project, run_git):
+        """Regression: tracked changes to non-code files (.json data, .md
+        docs, .db binaries) must NOT trigger stale_db. Only indexed code
+        extensions count toward missing_from_db.
+        """
+        engine.analyze()
+        # Edit a tracked non-code file. This shows up in `git diff` but is
+        # not something Chisel indexes — it shouldn't trip stale_db.
+        readme = git_project / "README.md"
+        readme.write_text(
+            "# project\n\nSome existing readme content for the test fixture.\n"
+        )
+        run_git(git_project, "add", "README.md")
+        run_git(git_project, "commit", "-m", "add readme")
+        readme.write_text(
+            "# project\n\nUpdated readme content with more detail.\n"
+        )
+        result = engine.tool_diff_impact()
+        # No stale_db because no CODE files changed.
+        if isinstance(result, dict) and result.get("status") == "stale_db":
+            raise AssertionError(
+                "diff_impact tripped stale_db on a non-code file change: "
+                f"{result.get('missing_from_db')}"
+            )
+
     def test_suggest_tests_auto_fallback_for_known_file(self, engine):
         engine.analyze()
         # app.py is known but may have no DB edges in some fixtures

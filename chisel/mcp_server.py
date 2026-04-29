@@ -9,6 +9,8 @@ Endpoints:
 
 import json
 import logging
+import os
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -41,7 +43,50 @@ def dispatch_tool(engine, tool_name, arguments):
         elif isinstance(result, dict) and isinstance(result.get("files"), list):
             result = {**result, "files": result["files"][:limit]}
     next_steps = compute_next_steps(tool_name, result)
+
+    # When suggest_tests is called on a JS/TS file that uses eval or
+    # new Function(), test edges through the runtime-generated code are
+    # invisible to static analysis. Surface that as a warning so agents
+    # know the suggestion list may be incomplete.
+    if tool_name == "suggest_tests":
+        warning = _eval_warning(engine, arguments.get("file_path"))
+        if warning:
+            next_steps.append(warning)
+
     return result, next_steps
+
+
+# Regex matches eval(...) and new Function(...) — both can dynamically
+# load code at runtime in ways the static parser can never see.
+_EVAL_PATTERN_RE = re.compile(r"\beval\s*\(|\bnew\s+Function\s*\(")
+_JS_LIKE_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+
+
+def _eval_warning(engine, file_path):
+    """Return a next-step warning if *file_path* uses eval/new Function.
+
+    Targeted at JS/TS files since the patterns are JS-specific. Returns
+    ``None`` when not applicable so callers can no-op cheaply.
+    """
+    if not file_path or not file_path.endswith(_JS_LIKE_EXTS):
+        return None
+    abs_path = os.path.join(engine.project_dir, file_path)
+    try:
+        with open(abs_path, encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+    except OSError:
+        return None
+    if not _EVAL_PATTERN_RE.search(content):
+        return None
+    return {
+        "action": "warn_eval_used",
+        "reason": (
+            f"{file_path} uses eval(...) or new Function(...). Modules "
+            f"loaded that way are invisible to static analysis, so tests "
+            f"of runtime-generated targets are not in this list. Cross-"
+            f"check risk_map → unknown_require_count for affected files."
+        ),
+    }
 
 
 # ------------------------------------------------------------------ #

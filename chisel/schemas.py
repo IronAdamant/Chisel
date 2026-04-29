@@ -70,10 +70,14 @@ _TOOL_SCHEMAS = {
         "description": (
             "Suggest tests to run for a file, ranked by relevance. Combines direct "
             "test edges, git co-change, and static import-graph reachability (e.g. "
-            "facade tests covering inner modules). Each item may include "
+            "facade tests covering inner modules). Each item includes a "
             "source: direct | co_change | import_graph | static_require | hybrid | "
-            "fallback | working_tree. Merges DB impact with a static scan of test "
-            "files (require/import → source path); hybrid = both agree. With "
+            "fallback | working_tree. Confidence ranking (highest first): "
+            "hybrid > direct > import_graph > co_change > static_require > "
+            "working_tree > fallback. hybrid means BOTH the DB test edges AND a "
+            "static scan of test-file imports agree on the same test — these "
+            "are the safest to trust and typically score ~0.5 (vs ~0.4 for "
+            "direct alone or ~0.16 for import_graph alone). With "
             "working_tree=true, also indexes untracked test files and git-untracked "
             "source paths for resolution. Returns empty for untracked/new files "
             "unless fallback_to_all or working_tree is set. "
@@ -86,8 +90,11 @@ _TOOL_SCHEMAS = {
                     "type": "string",
                     "description": (
                         "Path to the file to suggest tests for. "
-                        "Trust: prefer items with source direct or hybrid over "
-                        "static_require or fallback alone."
+                        "Trust ranking: hybrid > direct > import_graph > "
+                        "co_change > static_require > working_tree > fallback. "
+                        "When both hybrid and direct items appear for the same "
+                        "test, hybrid wins — it has corroboration from both "
+                        "the DB edge graph and a static import scan."
                     ),
                 },
                 "fallback_to_all": {

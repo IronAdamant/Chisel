@@ -26,6 +26,11 @@ _QUANTIZE_STEPS = 10
 _IMPORT_GRAPH_TEST_WEIGHT = 0.45
 _IMPORT_HOP_DECAY = 0.88
 _MAX_IMPORT_CLOSURE_HOPS = 32
+# Stop traversing further when the cumulative decay drops below this
+# threshold. With all hard edges this only matters past ~30 hops; soft
+# edges (confidence < 1.0) hit it sooner so dynamic-require chains do
+# not flood the closure with low-relevance results.
+_MIN_CLOSURE_DECAY = 0.01
 
 # When DB impact and static import scan agree on the same test, blend scores (non-binary).
 _HYBRID_STATIC_BONUS = 0.28
@@ -231,22 +236,58 @@ class ImpactAnalyzer:
         out = self.storage.get_imported_files(file_path)
         return set(im) | set(out)
 
-    def _import_static_closure(self, start):
-        """Shortest-hop distances from *start* over undirected import edges.
+    def _import_graph_neighbors_with_confidence(self, file_path):
+        """Return ``{neighbor: best_confidence}`` for one-hop neighbors.
 
-        Used to find tests that cover modules reachable from *start* via
-        imports (e.g. inner module only exercised through a facade test).
+        Confidence < 1.0 marks soft edges from dynamic require() / template
+        / path.join resolutions. The closure traversal uses these to apply
+        proportionally smaller score boosts when a hop crosses heuristic
+        edges.
         """
-        visited = {start: 0}
+        rows = self.storage._fetchall(
+            "SELECT imported_file AS f, confidence FROM import_edges "
+            "WHERE importer_file = ? "
+            "UNION ALL "
+            "SELECT importer_file AS f, confidence FROM import_edges "
+            "WHERE imported_file = ?",
+            (file_path, file_path),
+        )
+        out: dict[str, float] = {}
+        for r in rows:
+            f = r["f"]
+            if f == file_path:
+                continue
+            conf = float(r["confidence"])
+            if conf > out.get(f, 0.0):
+                out[f] = conf
+        return out
+
+    def _import_static_closure(self, start):
+        """Best decay per file reachable from *start* over the import graph.
+
+        Returns ``{file: (hops, decay)}`` where ``decay`` accumulates
+        ``_IMPORT_HOP_DECAY * edge_confidence`` along the best-scoring
+        path. For graphs with only hard imports (confidence=1.0) this
+        reduces to the prior hop-counting behavior. Soft edges from
+        dynamic-require resolutions contribute reduced decay so tests
+        of dynamically-loaded plugins still surface, just at lower
+        relevance.
+        """
+        visited: dict[str, tuple[int, float]] = {start: (0, 1.0)}
         q = deque([start])
         while q:
             u = q.popleft()
-            du = visited[u]
-            if du >= _MAX_IMPORT_CLOSURE_HOPS:
+            u_hops, u_decay = visited[u]
+            if u_hops >= _MAX_IMPORT_CLOSURE_HOPS:
                 continue
-            for v in self._import_graph_undirected_neighbors(u):
-                if v not in visited:
-                    visited[v] = du + 1
+            if u_decay < _MIN_CLOSURE_DECAY:
+                continue
+            for v, conf in self._import_graph_neighbors_with_confidence(u).items():
+                new_hops = u_hops + 1
+                new_decay = u_decay * _IMPORT_HOP_DECAY * conf
+                cur = visited.get(v)
+                if cur is None or new_decay > cur[1]:
+                    visited[v] = (new_hops, new_decay)
                     q.append(v)
         return visited
 
@@ -317,21 +358,28 @@ class ImpactAnalyzer:
                             "source": "co_change",
                         }
 
-        # Transitive hits via static import graph (facade / barrel patterns)
+        # Transitive hits via static import graph (facade / barrel patterns
+        # plus soft dynamic-require edges).  Decay accumulates per hop AND
+        # per edge confidence, so a dynamic-require chain produces lower
+        # scores than a chain of hard static imports.
         for file_path in changed_files:
             if file_path in untracked:
                 continue
             closure = self._import_static_closure(file_path)
-            for other, hops in closure.items():
+            for other, (hops, decay) in closure.items():
                 if other == file_path:
                     continue
                 hits = self.storage.get_direct_impacted_tests(other, None)
-                decay = _IMPORT_HOP_DECAY ** hops
+                # Tag soft-edge paths so callers can see the heuristic
+                # nature of the suggestion in the reason text.
+                hard_only_decay = _IMPORT_HOP_DECAY ** hops
+                via_soft = decay < hard_only_decay - 1e-9
                 for hit in hits:
                     new_score = hit["weight"] * _IMPORT_GRAPH_TEST_WEIGHT * decay
+                    qualifier = " via dynamic require()" if via_soft else ""
                     reason = (
                         f"import graph: tests cover {other} "
-                        f"({hops} hop{'s' if hops != 1 else ''} from {file_path})"
+                        f"({hops} hop{'s' if hops != 1 else ''} from {file_path}{qualifier})"
                     )
                     if hit["test_id"] not in impacted or new_score > impacted[hit["test_id"]]["score"]:
                         impacted[hit["test_id"]] = {
@@ -770,6 +818,9 @@ class ImpactAnalyzer:
         churn_batch = self.storage.get_churn_stats_batch(files)
         co_changes_batch = self.storage.get_co_changes_batch(files, min_count=query_min)
         branch_cc_batch = self.storage.get_branch_co_changes_batch(files, min_count=1)
+        # Coupling counts every static-import-graph neighbor including soft
+        # (dynamic-require) edges — those still represent real runtime
+        # coupling and should affect risk.
         import_neighbors_batch = self.storage.get_import_neighbors_batch(files)
         code_units_batch = self.storage.get_code_units_by_files_batch(files)
         for fp, units in extra_units.items():
@@ -797,8 +848,15 @@ class ImpactAnalyzer:
 
         hop_dist = {}
         if proximity_adjustment:
+            # Proximity uses HARD edges only. Reducing a file's
+            # coverage_gap because it's heuristically close to tested
+            # code via dynamic require() would understate real risk —
+            # the dynamic resolution is just a guess.
+            hard_neighbors = self.storage.get_import_neighbors_batch(
+                files, min_confidence=1.0,
+            )
             hop_dist = _import_hops_to_tested(
-                set(files), tested_files, import_neighbors_batch,
+                set(files), tested_files, hard_neighbors,
             )
 
         file_hashes_batch = self.storage.get_file_hashes_batch(files)

@@ -108,6 +108,100 @@ class TestGetImpactedTests:
         assert len(result) >= 2
         assert result[0]["score"] >= result[1]["score"]
 
+    def test_proximity_does_not_hop_through_soft_edges(self, storage, analyzer):
+        """Coverage_gap proximity adjustment must not credit a file for
+        being heuristically close to tested code via dynamic-require
+        edges. Soft edges (confidence < 1.0) are guesses and shouldn't
+        understate real coverage gaps.
+        """
+        # plugA.js has zero direct coverage. dispatcher.js is "tested"
+        # (has a test edge into one of its code units). The ONLY link
+        # between them is a soft import edge dispatcher.js → plugA.js.
+        storage.upsert_code_unit(
+            "src/dispatcher.js:dispatch:function", "src/dispatcher.js",
+            "dispatch", "function", 1, 5,
+        )
+        storage.upsert_code_unit(
+            "src/plugins/plugA.js:compute:function", "src/plugins/plugA.js",
+            "compute", "function", 1, 3,
+        )
+        storage.upsert_test_unit(
+            "tests/dispatcher.test.js:dispatch_works",
+            "tests/dispatcher.test.js", "dispatch_works", "jest",
+        )
+        storage.upsert_test_edge(
+            "tests/dispatcher.test.js:dispatch_works",
+            "src/dispatcher.js:dispatch:function", "import", 1.0,
+        )
+        # Churn rows are required for risk_map to include the files.
+        storage.upsert_churn_stat("src/dispatcher.js", None, commit_count=1)
+        storage.upsert_churn_stat("src/plugins/plugA.js", None, commit_count=1)
+        # Soft edge — must NOT contribute to plugA.js's proximity.
+        storage.upsert_import_edges_batch([
+            ("src/dispatcher.js", "src/plugins/plugA.js", 0.2),
+        ])
+
+        risk = analyzer.get_risk_map(proximity_adjustment=True)
+        plug_a = next(
+            r for r in risk if r["file_path"] == "src/plugins/plugA.js"
+        )
+        # plugA has zero hard import neighbors and no coverage → gap = 1.0
+        # (proximity adjustment does NOT reduce it because the only
+        # connection to tested code is via a soft edge).
+        assert plug_a["breakdown"]["coverage_gap"] == 1.0, (
+            "Soft edge leaked into proximity adjustment; coverage_gap was "
+            f"reduced to {plug_a['breakdown']['coverage_gap']}"
+        )
+
+    def test_dynamic_require_edge_surfaces_plugin_tests(self, storage, analyzer):
+        """A plugin file loaded via dynamic require() must reach the
+        dispatcher's tests through the soft import edge.
+
+        Models the conditionalRequireMatrix scenario: dispatcher.js does
+        require('./plugins/' + name), so suggest_tests for plugA.js had
+        no path to the test through the static graph. With soft edges
+        (confidence < 1.0) the closure now reaches the test, scored
+        proportionally lower than a hard-import path would have been.
+        """
+        # Source files
+        storage.upsert_code_unit(
+            "src/dispatcher.js:dispatch:function", "src/dispatcher.js",
+            "dispatch", "function", 1, 5,
+        )
+        storage.upsert_code_unit(
+            "src/plugins/plugA.js:compute:function", "src/plugins/plugA.js",
+            "compute", "function", 1, 3,
+        )
+        # Test that statically imports the dispatcher
+        storage.upsert_test_unit(
+            "tests/dispatcher.test.js:dispatch_works",
+            "tests/dispatcher.test.js", "dispatch_works", "jest",
+        )
+        storage.upsert_test_edge(
+            "tests/dispatcher.test.js:dispatch_works",
+            "src/dispatcher.js:dispatch:function", "import", 1.0,
+        )
+        # Hard edge: nothing imports plugA statically. The dynamic-require
+        # resolution emits a soft edge dispatcher.js → plugA.js.
+        storage.upsert_import_edges_batch([
+            ("src/dispatcher.js", "src/plugins/plugA.js", 0.2),
+        ])
+
+        result = analyzer.get_impacted_tests(["src/plugins/plugA.js"])
+        ids = [r["test_id"] for r in result]
+        assert "tests/dispatcher.test.js:dispatch_works" in ids, (
+            "Test for the dispatcher was not reached through the soft edge"
+        )
+        # Reason should explicitly tag it as a dynamic-require traversal.
+        match = next(
+            r for r in result if r["test_id"] == "tests/dispatcher.test.js:dispatch_works"
+        )
+        assert "dynamic require" in match["reason"]
+        # Soft edge → score must be lower than a pure-static one-hop
+        # baseline (tested separately by test_transitive_via_import_graph).
+        assert match["score"] > 0
+        assert match["score"] < 0.45  # _IMPORT_GRAPH_TEST_WEIGHT
+
 
 class TestRiskScore:
     def test_basic_risk(self, storage, analyzer):
@@ -498,6 +592,29 @@ class TestTarjanSCC:
         cycles = _find_circular_dependencies({"a", "b", "c"}, import_neighbors)
         assert len(cycles) == 1
         assert set(cycles[0]["files"]) == {"a", "b"}
+
+    def test_directed_dag_is_not_a_cycle(self):
+        """Regression: a long acyclic import chain (DAG) must NOT be reported
+        as a cycle when the SCC is fed directed edges. The earlier code
+        passed undirected neighbors to Tarjan's SCC, which collapsed every
+        connected component into a fake cycle (e.g. a 25-file bow-tie DAG
+        appearing as a 25-element 'cycle')."""
+        from chisel.impact import _find_circular_dependencies
+        # Bow-tie shape: hub imported by leaves, hub imports outputs.
+        # All edges point one direction → no SCC > 1 in the DIRECTED graph.
+        files = {"hub", "leaf1", "leaf2", "leaf3", "out1", "out2"}
+        directed = {
+            "leaf1": ["hub"],
+            "leaf2": ["hub"],
+            "leaf3": ["hub"],
+            "hub": ["out1", "out2"],
+            "out1": [],
+            "out2": [],
+        }
+        cycles = _find_circular_dependencies(files, directed)
+        assert cycles == [], (
+            "Acyclic bow-tie import graph reported as cycle"
+        )
 
 
 class TestDetectPluginSignals:

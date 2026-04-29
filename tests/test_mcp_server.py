@@ -345,6 +345,78 @@ class TestNextSteps:
         assert any(s.get("tool") == "risk_map" for s in body["next_steps"])
 
 
+class TestEvalWarning:
+    """suggest_tests should warn when the queried JS/TS file uses
+    eval/new Function — those imports are invisible to static analysis,
+    so the suggestion list is necessarily incomplete.
+    """
+
+    def test_warning_appended_for_file_with_eval(self, tmp_path):
+        from chisel.engine import ChiselEngine
+        from chisel.mcp_server import dispatch_tool
+
+        project = tmp_path / "evalproj"
+        project.mkdir()
+        (project / "evil.js").write_text(
+            "function load(code) {\n"
+            "  return new Function('require', code)(require);\n"
+            "}\n"
+            "module.exports = { load };\n"
+        )
+        engine = ChiselEngine(str(project), storage_dir=tmp_path / "store")
+        engine.analyze()
+        _result, next_steps = dispatch_tool(
+            engine, "suggest_tests", {"file_path": "evil.js"},
+        )
+        assert any(
+            s.get("action") == "warn_eval_used"
+            for s in next_steps
+        ), f"eval warning missing; got {next_steps}"
+
+    def test_no_warning_for_clean_file(self, tmp_path):
+        from chisel.engine import ChiselEngine
+        from chisel.mcp_server import dispatch_tool
+
+        project = tmp_path / "cleanproj"
+        project.mkdir()
+        (project / "clean.js").write_text(
+            "function add(a, b) { return a + b; }\n"
+            "module.exports = { add };\n"
+        )
+        engine = ChiselEngine(str(project), storage_dir=tmp_path / "store")
+        engine.analyze()
+        _result, next_steps = dispatch_tool(
+            engine, "suggest_tests", {"file_path": "clean.js"},
+        )
+        assert not any(
+            s.get("action") == "warn_eval_used"
+            for s in next_steps
+        )
+
+    def test_no_warning_for_python_file(self, tmp_path):
+        """The eval warning regex is JS-specific — Python files should
+        never receive it even if 'eval(' appears in their content.
+        """
+        from chisel.engine import ChiselEngine
+        from chisel.mcp_server import dispatch_tool
+
+        project = tmp_path / "pyproj"
+        project.mkdir()
+        (project / "pyfile.py").write_text(
+            "def run(code):\n"
+            "    return eval(code)\n"
+        )
+        engine = ChiselEngine(str(project), storage_dir=tmp_path / "store")
+        engine.analyze()
+        _result, next_steps = dispatch_tool(
+            engine, "suggest_tests", {"file_path": "pyfile.py"},
+        )
+        assert not any(
+            s.get("action") == "warn_eval_used"
+            for s in next_steps
+        )
+
+
 class TestToolCall:
     def test_call_with_limit(self, base_url):
         """Verify that the limit parameter caps the number of results."""

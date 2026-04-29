@@ -430,6 +430,23 @@ class TestDepExtractionEdgeCases:
         assert "foo" in names
         assert "bar" not in names  # alias is not the original name
 
+    def test_js_require_path_join_dynamic(self, mapper):
+        """require(path.join(__dirname, 'plugins', name)) is extracted as a
+        dynamic_import dep with module_path='plugins'.
+        """
+        content = (
+            "const path = require('path');\n"
+            "function load(name) {\n"
+            "  return require(path.join(__dirname, 'plugins', name));\n"
+            "}\n"
+        )
+        deps = mapper.extract_test_dependencies("dispatcher.js", content)
+        dyn = [d for d in deps if d.get("dep_type") == "dynamic_import"]
+        # Should include a dep whose module_path is 'plugins'.
+        assert any(d.get("module_path") == "plugins" for d in dyn), (
+            f"path.join require not extracted as dynamic_import; got {dyn}"
+        )
+
 
 class TestBuildEdgesEdgeCases:
     def test_unreadable_test_file(self, mapper, tmp_path):
@@ -500,6 +517,87 @@ class TestBuildEdges:
         assert len(foo_edges) > 0
         for e in foo_edges:
             assert 0.4 <= e["weight"] <= 1.0
+
+    def test_name_only_match_scoped_to_imported_files(self, tmp_path):
+        """Regression: a bare `dispatch()` call must NOT edge to a
+        same-named symbol in an unrelated file the test never imports.
+
+        Previously, build_test_edges used a global name-based fallback as
+        tier 4, producing collision edges between `dispatcher.test.js`
+        and pluginManager.js (both define `dispatch`).
+        """
+        root = tmp_path / "proj"
+        root.mkdir()
+        # Test file imports ONLY dispatcher.js and calls dispatch().
+        test_dir = root / "tests" / "services"
+        test_dir.mkdir(parents=True)
+        test_file = test_dir / "dispatcher.test.js"
+        test_file.write_text(
+            "const { dispatch } = require('../../src/services/dispatcher');\n\n"
+            "describe('dispatcher', () => {\n"
+            "  test('dispatches', () => {\n"
+            "    dispatch('msg');\n"
+            "  });\n"
+            "});\n"
+        )
+        # Two source files that BOTH define `dispatch`.
+        src_dir = root / "src" / "services"
+        src_dir.mkdir(parents=True)
+        (src_dir / "dispatcher.js").write_text(
+            "function dispatch(msg) { return msg; }\n"
+            "module.exports = { dispatch };\n"
+        )
+        (src_dir / "pluginManager.js").write_text(
+            "function dispatch(evt) { return evt; }\n"
+            "module.exports = { dispatch };\n"
+        )
+
+        mapper = TestMapper(str(root))
+        test_units = [{
+            "id": "tests/services/dispatcher.test.js:dispatches",
+            "file_path": "tests/services/dispatcher.test.js",
+            "name": "dispatches",
+            "framework": "jest",
+            "line_start": 4, "line_end": 6, "content_hash": "abc",
+        }]
+        code_units = [
+            CodeUnit("src/services/dispatcher.js", "dispatch", "function", 1, 1),
+            CodeUnit("src/services/pluginManager.js", "dispatch", "function", 1, 1),
+        ]
+        edges = mapper.build_test_edges(test_units, code_units)
+        target_files = {
+            cid.split(":")[0] for cid in (e["code_id"] for e in edges)
+        }
+        assert "src/services/dispatcher.js" in target_files
+        assert "src/services/pluginManager.js" not in target_files, (
+            "name-only fallback created an edge to an unimported file "
+            "(symbol-collision regression)"
+        )
+
+    def test_python_name_only_unscoped_when_no_imports(self, tmp_path):
+        """When a test has no resolvable module imports, name-only matching
+        still works (last-resort behavior for tests that lack import deps)."""
+        root = tmp_path / "proj"
+        root.mkdir()
+        # Pytest fixture-style test with NO `from X import Y` lines.
+        test_dir = root / "tests"
+        test_dir.mkdir()
+        (test_dir / "test_loose.py").write_text(
+            "def test_things():\n"
+            "    foo()\n"
+        )
+        mapper = TestMapper(str(root))
+        test_units = [{
+            "id": "tests/test_loose.py:test_things",
+            "file_path": "tests/test_loose.py",
+            "name": "test_things",
+            "framework": "pytest",
+            "line_start": 1, "line_end": 2, "content_hash": "abc",
+        }]
+        code_units = [CodeUnit("mymodule.py", "foo", "function", 1, 2)]
+        edges = mapper.build_test_edges(test_units, code_units)
+        # Last-resort name-only matching still produces an edge.
+        assert any("foo" in e["code_id"] for e in edges)
 
 
 class TestProximityWeight:
