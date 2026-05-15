@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Release
 
 on:
   push:
@@ -28,16 +28,19 @@ jobs:
           name: dist
           path: dist/
 
-  publish:
+  # ------------------------------------------------------------
+  # PyPI publish (trusted publishing via OIDC - no tokens)
+  # ------------------------------------------------------------
+  publish-pypi:
     needs: build
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/project/chisel-test-impact/
     permissions:
-      id-token: write  # OIDC trusted publishing
+      id-token: write
     steps:
-      - name: Download artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           name: dist
@@ -45,3 +48,60 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  # ------------------------------------------------------------
+  # GitHub Release (creates nice release + attaches wheels/sdist)
+  # This ensures GitHub Releases and PyPI stay in sync automatically.
+  # ------------------------------------------------------------
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # Required to create releases and upload assets
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Full history helps with changelog extraction
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          # Extract the section for the current version (e.g. 0.11.0 from tag v0.11.0)
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Extracting release notes for version ${VERSION}..."
+
+          awk "
+            /^## \\[${VERSION}\\]/ { flag=1; next }
+            /^## \\[/ { flag=0 }
+            flag
+          " CHANGELOG.md > release-notes.md || true
+
+          # Fallback: if nothing was extracted, create minimal notes
+          if [ ! -s release-notes.md ]; then
+            echo "No dedicated section found in CHANGELOG.md for v${VERSION}." > release-notes.md
+            echo "" >> release-notes.md
+            echo "See full [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details." >> release-notes.md
+          fi
+
+          echo "=== Release notes preview ==="
+          head -30 release-notes.md
+
+      - name: Create GitHub Release + attach built distributions
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+          # generate_release_notes: true   # can be enabled as fallback if desired

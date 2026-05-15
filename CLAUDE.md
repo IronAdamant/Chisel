@@ -80,21 +80,33 @@ chisel analyze src/                               # analyze subdirectory only
 chisel serve --port 8377                          # HTTP MCP server
 ```
 
-## Publishing to PyPI
+## Publishing (PyPI + GitHub Release)
 
-Publishing uses **GitHub Actions trusted publishing** (OIDC, no API tokens). Do **not** use `twine` — there is no `.pypirc` and none is needed.
+A single `v*` tag push now automatically handles **both** PyPI and GitHub Releases in one workflow (`.github/workflows/publish.yml`).
+
+**Steps:**
+1. Bump version in both files:
+   - `chisel/__init__.py` (`__version__`)
+   - `pyproject.toml` (`version`)
+2. Commit + push the version bump.
+3. Create and push the tag:
 
 ```bash
-# 1. Bump version in both files:
-#    chisel/__init__.py  (__version__)
-#    pyproject.toml      (version)
-# 2. Commit and push
-# 3. Tag and push the tag — this triggers the publish workflow:
-git tag v0.9.0
-git push origin v0.9.0
+git tag v0.11.0
+git push origin v0.11.0
 ```
 
-The workflow (`.github/workflows/publish.yml`) builds the package and uploads via `pypa/gh-action-pypi-publish` with `id-token: write` permissions.
+This triggers the "Release" workflow which:
+- Builds the package (`python -m build`)
+- Publishes to **PyPI** using trusted OIDC publishing (`pypa/gh-action-pypi-publish`)
+- Automatically creates a **GitHub Release** for the tag (using `softprops/action-gh-release`)
+  - Extracts the matching section from `CHANGELOG.md`
+  - Attaches the built `.whl` and `.tar.gz` as release assets
+  - Marks the release as "Latest"
+
+**Why this matters**: Previously only PyPI was automated. GitHub Releases would get out of sync (as happened with v0.10.0 vs v0.11.0). Now they are guaranteed to stay in sync.
+
+No manual `gh release create` or `twine` is ever needed.
 
 ## Module Dependency Graph
 
