@@ -342,6 +342,16 @@ class ChiselEngine:
                 self._record_job_event("phase_start", {"phase": "cleanup"})
                 stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
                 self.storage.wal_checkpoint()
+                # Wire advisory file locks into main analysis output (addresses Phase 15
+                # gap: locks appeared as disconnected subsystem; now visible in analyze
+                # responses and risk/triage _meta as "lock_claims" / "active_locks").
+                try:
+                    active_locks = self.storage.list_file_locks()
+                    stats["active_file_locks"] = len(active_locks)
+                    if active_locks:
+                        stats["locked_files_sample"] = [l["file_path"] for l in active_locks[:5]]
+                except Exception:
+                    stats["active_file_locks"] = 0
                 self._record_job_event("phase_end", {"phase": "analyze", "stats": stats})
                 return stats
 
@@ -419,6 +429,13 @@ class ChiselEngine:
                 self._record_job_event("phase_start", {"phase": "cleanup"})
                 stats["orphaned_results_cleaned"] = self.storage.cleanup_orphaned_test_results()
                 self.storage.wal_checkpoint()
+                try:
+                    active_locks = self.storage.list_file_locks()
+                    stats["active_file_locks"] = len(active_locks)
+                    if active_locks:
+                        stats["locked_files_sample"] = [l["file_path"] for l in active_locks[:5]]
+                except Exception:
+                    stats["active_file_locks"] = 0
                 self._record_job_event("phase_end", {"phase": "update", "stats": stats})
                 return stats
 
@@ -567,9 +584,30 @@ class ChiselEngine:
                         job_id, ev["event_type"], ev.get("payload"),
                     )
 
-        threading.Thread(
+        # Launch bg thread with guard: if start fails after flag set, reset to avoid
+        # permanent "busy" state (contributes to Phase 15 "background thread not returning"
+        # and job layer fragility).
+        bg_thread = threading.Thread(
             target=run, name=f"chisel-bg-{kind}", daemon=True,
-        ).start()
+        )
+        try:
+            bg_thread.start()
+        except Exception as start_exc:
+            with self._bg_jobs_lock:
+                self._bg_job_in_progress = False
+                self._active_bg_job_id = None
+            try:
+                self.storage.update_bg_job(
+                    job_id, "failed", error_message=f"Thread start failed: {start_exc}",
+                )
+            except Exception:
+                pass
+            return {
+                "status": "error",
+                "job_id": job_id,
+                "message": f"Failed to start background {kind} thread: {start_exc}",
+            }
+
         result = {
             "job_id": job_id,
             "status": "running",
@@ -869,8 +907,13 @@ class ChiselEngine:
                         return empty
                     return self.impact.get_ownership(file_path)
 
-    def tool_coupling(self, file_path, min_count=3):
-        """MCP tool: get co-change and import coupling partners."""
+    def tool_coupling(self, file_path, min_count=3, working_tree=False):
+        """MCP tool: get co-change and import coupling partners.
+
+        With working_tree=True, untracked files get import_partners computed
+        via on-disk static import scan (addresses Phase 15 0.0 coupling on new
+        polymorphic/ refactored modules before full analyze).
+        """
         shard = self._shard_for_path(file_path)
         with self._with_shard(shard):
             with self._process_lock.shared():
@@ -884,6 +927,18 @@ class ChiselEngine:
                     import_neighbors = self.storage.get_import_neighbors_batch([file_path]).get(file_path, [])
                     co_len = len(co_change_partners)
                     imp_len = len(import_neighbors)
+                    # Working-tree fallback for new/untracked files (no DB edges yet):
+                    # parse the file on disk for its import/require deps so coupling tool
+                    # returns non-zero import_coupling / import_partners (fixes 0.0 on
+                    # Phase 15/16 new modules like ImportGraphRewriter, phase15_fuzz_*).
+                    if working_tree and (not import_neighbors) and self.storage.get_file_hash(file_path) is None:
+                        try:
+                            disk_neighbors = self._compute_disk_import_neighbors(file_path)
+                            if disk_neighbors:
+                                import_neighbors = disk_neighbors
+                                imp_len = len(import_neighbors)
+                        except Exception:
+                            pass  # fall back to 0
                     co_norm = min(co_len / float(_COCHANGE_COUPLING_CAP), 1.0)
                     import_norm = min(imp_len / float(_IMPORT_COUPLING_CAP), 1.0)
                     # First-class hybrid: import-graph coupling is treated as an equal
@@ -893,7 +948,7 @@ class ChiselEngine:
                         import_norm,
                         0.5 * co_norm + 0.5 * import_norm,
                     )
-                    return {
+                    result = {
                         "co_change_partners": co_change_partners,
                         "import_partners": [{"file": path} for path in import_neighbors],
                         "co_change_breadth": co_len,
@@ -902,6 +957,9 @@ class ChiselEngine:
                         "import_coupling": round(import_norm, 4),
                         "effective_coupling": round(effective_coupling, 4),
                     }
+                    if working_tree and self.storage.get_file_hash(file_path) is None:
+                        result["note"] = "working_tree: import_partners from on-disk scan (not yet in DB import graph)"
+                    return result
 
     def _risk_map_impl(self, directory, exclude_tests, proximity_adjustment,
                        coverage_mode, extra, exclude_new_file_boost):
@@ -923,6 +981,20 @@ class ChiselEngine:
                 meta["coverage_gap_mode"] = (
                     "proximity_adjusted" if proximity_adjustment else coverage_mode
                 )
+                # Wire file locks (from Phase 15 gap: locks were invisible in main
+                # outputs like risk_map even when acquire_file_lock was used on
+                # working-tree files). Attach per-file + count to _meta.
+                try:
+                    locks = self.storage.list_file_locks()
+                    if locks:
+                        lock_map = {l["file_path"]: l["agent_id"] for l in locks}
+                        for f in files:
+                            if f["file_path"] in lock_map:
+                                f["locked_by"] = lock_map[f["file_path"]]
+                        meta["active_locks"] = len(locks)
+                        meta["lock_claims"] = len([l for l in locks if l["file_path"] in {ff["file_path"] for ff in files}])
+                except Exception:
+                    meta["active_locks"] = 0
                 # Compute cycles from the DIRECTED import graph for _meta.
                 # Tarjan's SCC must run on directed edges — undirected
                 # neighbors (used elsewhere for structural coupling) would
@@ -1056,12 +1128,16 @@ class ChiselEngine:
                     pass
         return {"files": all_files, "_meta": meta}
 
-    def tool_stale_tests(self):
+    def tool_stale_tests(self, working_tree=False):
         """MCP tool: detect stale tests.
 
         Returns a diagnostic dict (status="no_edges") when no test edges
         exist, so agents can distinguish "no stale tests" from "nothing
         to evaluate".
+
+        working_tree=True is accepted for MCP parity with test_gaps/diff_impact
+        but full untracked-test dangling-import detection is Phase 16 work;
+        currently only DB edges are considered (as before).
         """
         if not self._shard_config:
             with self._process_lock.shared():
@@ -1543,6 +1619,18 @@ class ChiselEngine:
                         "test_result_count": stats.get("test_results", 0),
                         "coupling_threshold": _coupling_threshold(commit_count),
                     }
+                    # Wire locks (acquire_file_lock etc) into triage summary + per-file
+                    # so Phase 15/16 parallel-agent scenarios show locked files in outputs.
+                    try:
+                        locks = self.storage.list_file_locks()
+                        summary["active_locks"] = len(locks)
+                        if locks:
+                            lock_map = {l["file_path"]: l["agent_id"] for l in locks}
+                            for r in risk_map:
+                                if r.get("file_path") in lock_map:
+                                    r["locked_by"] = lock_map[r["file_path"]]
+                    except Exception:
+                        summary["active_locks"] = 0
                     if auto_update:
                         summary["auto_update_performed"] = auto_update_performed
                         if not auto_update_performed:
@@ -2323,6 +2411,36 @@ class ChiselEngine:
                     "_working_tree": True,
                 })
         return gaps
+
+    def _compute_disk_import_neighbors(self, file_path):
+        """For working_tree untracked file: extract its import/require module paths
+        so coupling tool can return non-zero import_partners / import_coupling
+        without requiring prior analyze (addresses Phase 15 0.0 on new files).
+        Returns list of raw module_path strings (some may be relative or package).
+        """
+        abs_path = os.path.join(self.project_dir, file_path)
+        try:
+            content = open(abs_path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            return []
+        try:
+            deps = TestMapper.extract_test_dependencies(file_path, content)
+        except Exception:
+            return []
+        neighbors = []
+        for d in deps:
+            if d.get("dep_type") == "import":
+                mp = d.get("module_path")
+                if mp:
+                    neighbors.append(mp)
+        # Dedup preserve order
+        seen = set()
+        out = []
+        for n in neighbors:
+            if n not in seen:
+                seen.add(n)
+                out.append(n)
+        return out[:20]  # cap
 
     def _set_bg_progress(self, pct):
         """Update in-memory progress percentage for the current background job."""

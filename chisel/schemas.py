@@ -158,7 +158,9 @@ _TOOL_SCHEMAS = {
             "Import coupling is reliable in all projects; co-change coupling requires "
             "multi-author commit history with many small commits — solo projects or "
             "bulk-commit workflows will show 0.0 co-change (use import_partners instead). "
-            "Threshold scales with project maturity (see 'stats' for current value). "
+            "Pass working_tree=true for untracked files (computes import_partners from "
+            "on-disk static analysis even before analyze). Threshold scales with project "
+            "maturity (see 'stats' for current value). "
             + HEURISTIC_TRUST_NOTE
         ),
         "parameters": {
@@ -183,9 +185,11 @@ _TOOL_SCHEMAS = {
             "and/or static import graph), coverage gaps, author concentration, "
             "and test instability (failure rate + duration variance). Returns "
             "{files: [...], _meta: {effective_components, uniform_components, "
-            "reweighted, effective_weights, coverage_gap_mode, coupling_threshold, "
+            "uniform_risk_groups, max_identical_risk_files, warnings, reweighted, "
+            "effective_weights, coverage_gap_mode, coupling_threshold, "
             "total_test_edges, total_test_results}}. Check _meta.uniform_components "
-            "to identify metrics providing no signal (all files score identically). "
+            "and _meta.uniform_risk_groups to identify metrics or files with no "
+            "differentiating signal (e.g. 5+ files sharing identical 0.75 risk). "
             "Use as first step to prioritize which files need attention. "
             + HEURISTIC_TRUST_NOTE
         ),
@@ -650,12 +654,12 @@ _TOOL_DISPATCH = {
     "suggest_tests": ("tool_suggest_tests", ["file_path", "directory", "fallback_to_all", "working_tree", "auto_update"]),
     "churn": ("tool_churn", ["file_path", "unit_name"]),
     "ownership": ("tool_ownership", ["file_path"]),
-    "coupling": ("tool_coupling", ["file_path", "min_count"]),
+    "coupling": ("tool_coupling", ["file_path", "min_count", "working_tree"]),
     "risk_map": (
         "tool_risk_map",
         ["directory", "exclude_tests", "proximity_adjustment", "coverage_mode", "working_tree", "exclude_new_file_boost", "auto_update"],
     ),
-    "stale_tests": ("tool_stale_tests", []),
+    "stale_tests": ("tool_stale_tests", ["working_tree"]),
     "history": ("tool_history", ["file_path"]),
     "who_reviews": ("tool_who_reviews", ["file_path"]),
     "diff_impact": ("tool_diff_impact", ["ref", "working_tree", "auto_update"]),

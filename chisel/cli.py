@@ -88,6 +88,8 @@ def create_parser():
     p_coupling.add_argument("file", help="File path")
     p_coupling.add_argument("--min-count", type=int, default=3,
                             help="Minimum co-change count (default: 3)")
+    p_coupling.add_argument("--working-tree", action="store_true",
+                            help="Include on-disk import scan for untracked files")
 
     # risk-map
     p_risk = sub.add_parser("risk-map", parents=[shared],
@@ -397,7 +399,8 @@ def cmd_coupling(args):
             for p in imp:
                 print(f"  {p['file']}")
     return _run_tool(args, "tool_coupling",
-                     {"file_path": args.file, "min_count": args.min_count},
+                     {"file_path": args.file, "min_count": args.min_count,
+                      "working_tree": args.working_tree},
                      fmt)
 
 

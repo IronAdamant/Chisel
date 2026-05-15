@@ -579,7 +579,9 @@ class ImpactAnalyzer:
                 targets (e.g. git-untracked source files).
 
         Returns:
-            List of dicts: {test_id, file_path, name, relevance, reason, source}
+            List of dicts: {test_id, file_path, name, relevance, reason, source,
+                            failure_rate, failure_boost} — the failure_* fields make
+                            record_result effects observable (0.0 when no history).
         """
         db = self.get_impacted_tests([file_path])
         idx = self._get_static_index(
@@ -610,6 +612,8 @@ class ImpactAnalyzer:
                 "relevance": relevance,
                 "reason": item["reason"],
                 "source": src,
+                "failure_rate": round(fail_rate, 4),
+                "failure_boost": round(1.0 + 0.5 * fail_rate, 4),
             })
 
         result.sort(key=lambda x: x["relevance"], reverse=True)

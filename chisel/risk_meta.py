@@ -1,5 +1,7 @@
 """Risk map metadata, diagnostics, and dynamic reweighting of composite scores."""
 
+from collections import Counter
+
 from chisel.metrics import coupling_threshold
 
 _BASE_RISK_WEIGHTS = {
@@ -100,7 +102,24 @@ def build_risk_meta(files, stats):
         else:
             effective.append(comp)
 
-    return {
+    # Detect files sharing identical risk scores (e.g. 5+ files all scoring 0.75
+    # due to uniform components like identical churn+coverage in new/refactor modules).
+    # This surfaces low-differentiation cases that external agents (Phase 15/16
+    # probes) explicitly flagged as needing a warning flag in _meta.
+    risk_scores = [round(f.get("risk_score", 0.0), 4) for f in files]
+    score_counts = Counter(risk_scores)
+    uniform_risk_groups = {s: c for s, c in score_counts.items() if c >= 3}
+    risk_uniformity_warning = None
+    if uniform_risk_groups:
+        max_group = max(uniform_risk_groups.values())
+        if max_group >= 5:
+            risk_uniformity_warning = (
+                f"{max_group} files share an identical risk score; "
+                "risk differentiation is low (consider exclude_new_file_boost or "
+                "more test results via record_result)"
+            )
+
+    meta = {
         "total_files": len(files),
         "coupling_threshold": coupling_threshold(commit_count) if commit_count > 0 else None,
         "total_test_edges": stats.get("test_edges", 0),
@@ -108,6 +127,12 @@ def build_risk_meta(files, stats):
         "effective_components": effective,
         "uniform_components": uniform,
     }
+    if uniform_risk_groups:
+        meta["uniform_risk_groups"] = uniform_risk_groups
+        meta["max_identical_risk_files"] = max(uniform_risk_groups.values())
+    if risk_uniformity_warning:
+        meta["warnings"] = meta.get("warnings", []) + [risk_uniformity_warning]
+    return meta
 
 
 def apply_risk_reweighting(risk_map):
