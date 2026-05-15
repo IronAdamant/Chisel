@@ -22,6 +22,30 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-05-15
+
+### Added
+
+- **File lock integration with main analysis**: The 6 advisory file-lock tools are now wired into core outputs instead of appearing as a disconnected subsystem. `analyze`/`update` responses include `active_file_locks` (count) and `locked_files_sample`. `risk_map` (files + `_meta`) and `triage` (per-file + `summary`) now surface `locked_by` (agent id), `active_locks`, and `lock_claims` for files that have active locks from `acquire_file_lock`. Works with `working_tree` untracked files. Closes the Phase 15 gap reported by `ChiselJobLockFlakinessOrchestrator`.
+
+- **Observable effects from `record_result`**: `suggest_tests` result items now include `failure_rate` and `failure_boost` (the exact multiplier applied to relevance). Combined with `test_instability` already present in `risk_map` breakdowns, the impact of logging flaky test outcomes is now directly visible to LLM agents (addresses the "100+ calls accepted but no visible effect" observation).
+
+- **Uniform risk score detection**: `risk_map` `_meta` (and `triage` summary) now reports `uniform_risk_groups`, `max_identical_risk_files`, and a `warnings` entry whenever 3+ files share the exact same risk score (e.g. five Phase 15 synthetic modules all scoring 0.75 due to identical churn + coverage + complexity). This gives agents the explicit "uniform_components" / low-differentiation flag that was missing in the CrossMCP probes.
+
+### Changed
+
+- **`coupling` now supports `working_tree=true`**: For files not yet in the analysis DB, performs on-disk static import/require extraction (via `TestMapper`) and returns `import_partners` + non-zero `import_coupling` / `effective_coupling` immediately. CLI gains `--working-tree`. Dramatically improves coupling signal during active refactoring (Phase 16 `ImportGraphRewriter`, Phase 15 polymorphic fuzz, moved modules, etc.) without waiting for a full `analyze`/`start_job`.
+
+- **`stale_tests` accepts `working_tree` parameter** (MCP schema + dispatch parity with `test_gaps`, `diff_impact`, `risk_map`, `suggest_tests`, `coupling`). Full detection of dangling imports in untracked test files remains a Phase 16 target.
+
+- **Background job (`start_job` / `job_status`) robustness**: Added guard that resets the in-progress flag and marks the job failed if `threading.Thread.start()` fails after the flag has been set. Combined with existing per-phase `_set_bg_progress` / `_record_job_event` buffering, cancellation support, and 30 s SQLite `busy_timeout` + retry logic, this reduces the "job layer timeout / background thread not returning" flakiness seen on 22-file Phase 15 challenge dirs.
+
+### Fixed
+
+- Multiple MCP tool surfaces for parallel-agent + heavy working-tree use cases, as exercised by the 25-tool live probe matrix in the RecipeLab_alt Phase 15 validation campaign (`ExhaustiveMCPToolExerciser`, `CrossMCPConsensusSelfHealingOrchestrator`, 200+ file relocation waves, BaseImporter/BaseExporter, RouteLoader split, etc.).
+
+**Grok Build** edited this iteration while closing the `chisel_open.md` findings (subsequently renamed `chisel_closed.md`).
+
 ## [0.9.2] — 2026-04-17
 
 ### Fixed
