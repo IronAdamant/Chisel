@@ -158,6 +158,77 @@ def normalize_path(file_path, project_root):
     return rel.removeprefix("./")
 
 
+def git_visible_paths(project_dir, timeout=30):
+    """Return (files, dirs) of paths git considers part of the project.
+
+    ``files`` is a frozenset of project-relative paths (forward slashes)
+    covering tracked files plus untracked-but-not-ignored files
+    (``git ls-files --cached --others --exclude-standard``). ``dirs`` is a
+    frozenset of every ancestor directory of those files, for pruning
+    os.walk before it descends into ignored trees (build output, vendored
+    deps, large fixture dirs).
+
+    Returns ``(None, None)`` — meaning "do not filter" — when git is
+    unavailable, *project_dir* is not a git work tree, or the
+    ``CHISEL_INCLUDE_IGNORED`` environment variable is set.
+    """
+    if os.environ.get("CHISEL_INCLUDE_IGNORED"):
+        return None, None
+    try:
+        result = subprocess.run(
+            ["git", "-C", project_dir, "ls-files", "--cached", "--others",
+             "--exclude-standard", "-z"],
+            capture_output=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None, None
+    if result.returncode != 0:
+        return None, None
+    files = set()
+    dirs = set()
+    for rel in result.stdout.split("\0"):
+        if not rel:
+            continue
+        rel = rel.replace("\\", "/")
+        files.add(rel)
+        parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        while parent and parent not in dirs:
+            dirs.add(parent)
+            parent = parent.rsplit("/", 1)[0] if "/" in parent else ""
+    return frozenset(files), frozenset(dirs)
+
+
+def prune_walk_dirs(root, dirs, skip_dirs, project_dir, visible_dirs):
+    """Return the subdirectories an os.walk should descend into.
+
+    Drops *skip_dirs* entries always; when *visible_dirs* (from
+    ``git_visible_paths``) is not None, also drops directories that contain
+    no git-visible files, so ignored trees are never traversed.
+    """
+    kept = [d for d in dirs if d not in skip_dirs]
+    if visible_dirs is None:
+        return kept
+    rel_root = os.path.relpath(root, project_dir).replace(os.sep, "/")
+    out = []
+    for d in kept:
+        rel = d if rel_root == "." else f"{rel_root}/{d}"
+        if rel in visible_dirs:
+            out.append(d)
+    return out
+
+
+def is_git_visible_file(abs_path, project_dir, visible_files):
+    """True if *abs_path* should be analyzed under gitignore filtering.
+
+    Always True when *visible_files* is None (filtering disabled).
+    """
+    if visible_files is None:
+        return True
+    rel = os.path.relpath(abs_path, project_dir).replace(os.sep, "/")
+    return rel in visible_files
+
+
 def _validate_storage_dir(value, origin):
     """Reject SQLite URI-style values that would become literal directories.
 

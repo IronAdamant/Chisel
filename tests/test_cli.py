@@ -1070,3 +1070,35 @@ class TestNoDataCliOutput:
         output = capsys.readouterr().out
         parsed = json.loads(output)
         assert parsed["status"] == "no_data"
+
+
+class TestCliEntryExitCodes:
+    """sys.exit(main()) used to exit 1 on every successful command because
+    main() returns the result dict; cli_entry converts to real codes."""
+
+    @patch("chisel.cli.main")
+    def test_dict_result_exits_zero(self, mock_main):
+        from chisel.cli import cli_entry
+        mock_main.return_value = {"files_updated": 0}
+        assert cli_entry() == 0
+
+    @patch("chisel.cli.main")
+    def test_list_result_exits_zero(self, mock_main):
+        from chisel.cli import cli_entry
+        mock_main.return_value = [{"test_id": "t"}]
+        assert cli_entry() == 0
+
+    @patch("chisel.cli.main")
+    def test_error_status_exits_one(self, mock_main):
+        from chisel.cli import cli_entry
+        for status in ("error", "git_error"):
+            mock_main.return_value = {"status": status, "message": "boom"}
+            assert cli_entry() == 1
+
+    @patch("chisel.cli.main")
+    def test_int_and_none_pass_through(self, mock_main):
+        from chisel.cli import cli_entry
+        mock_main.return_value = 3
+        assert cli_entry() == 3
+        mock_main.return_value = None
+        assert cli_entry() is None

@@ -9,70 +9,135 @@
 > the agent wiki (file_health). The dependency graph is further below.
 
 ```text
-Chisel/  (57 files)
+Chisel/  (98 files)
+├── .chisel/
+│   ├── chisel.db — reviewed in v0.12.0 pass or runtime artifact
+│   └── chisel.lock — reviewed in v0.12.0 pass or runtime artifact
+├── .claude/
+│   └── settings.local.json — build artifact, now excluded from monitoring
+├── .coordinationhub/
+│   └── coordination.db — release state settled
+├── .github/
+│   └── workflows/
+│       ├── ci.yml — build artifact, now excluded from monitoring
+│       └── publish.yml — build artifact, now excluded from monitoring
+├── .pytest_cache/
+│   └── v/
+│       └── cache/
+│           └── nodeids — release state settled
+├── .ruff_cache/
+│   └── 0.15.6/
+│       ├── 1474866491082371723 — reviewed in v0.12.0 pass or runtime artifact
+│       └── 2918868589294341649 — reviewed in v0.12.0 pass or runtime artifact
+├── Logged_issues/
+│   └── 2026-06-11_directory-scoped-analyze-walks-all-tests.md — wiki and docs updated for v0.13.0
 ├── chisel/
-│   ├── __init__.py — wiki summary refreshed for v0.12.0 pass
-│   ├── ast_utils.py
-│   ├── bootstrap.py
-│   ├── cli.py — wiki summary refreshed for v0.12.0 pass
-│   ├── engine.py — wiki summary refreshed for v0.12.0 pass
-│   ├── git_analyzer.py
-│   ├── impact.py — wiki summary refreshed for v0.12.0 pass
-│   ├── import_graph.py
-│   ├── llm_contract.py
-│   ├── mcp_server.py
-│   ├── mcp_stdio.py
-│   ├── metrics.py
-│   ├── next_steps.py — wiki summary refreshed for v0.12.0 pass
-│   ├── project.py — wiki summary refreshed for v0.12.0 pass
-│   ├── risk_meta.py
-│   ├── rwlock.py
-│   ├── schemas.py — wiki summary refreshed for v0.12.0 pass
-│   ├── static_test_imports.py
-│   ├── storage.py — wiki summary refreshed for v0.12.0 pass
-│   └── test_mapper.py — wiki summary refreshed for v0.12.0 pass
+│   ├── __pycache__/
+│   │   └── cli.cpython-314.pyc — reviewed in v0.12.0 pass or runtime artifact
+│   ├── __init__.py — wiki and docs updated for v0.13.0
+│   ├── ast_utils.py — build artifact, now excluded from monitoring
+│   ├── bootstrap.py — build artifact, now excluded from monitoring
+│   ├── cli.py — wiki and docs updated for v0.13.0
+│   ├── engine.py — wiki and docs updated for v0.13.0
+│   ├── git_analyzer.py — build artifact, now excluded from monitoring
+│   ├── impact.py — build artifact, now excluded from monitoring
+│   ├── import_graph.py — build artifact, now excluded from monitoring
+│   ├── llm_contract.py — build artifact, now excluded from monitoring
+│   ├── mcp_server.py — build artifact, now excluded from monitoring
+│   ├── mcp_stdio.py — build artifact, now excluded from monitoring
+│   ├── metrics.py — build artifact, now excluded from monitoring
+│   ├── next_steps.py — build artifact, now excluded from monitoring
+│   ├── project.py — wiki and docs updated for v0.13.0
+│   ├── risk_meta.py — build artifact, now excluded from monitoring
+│   ├── rwlock.py — build artifact, now excluded from monitoring
+│   ├── schemas.py — build artifact, now excluded from monitoring
+│   ├── static_test_imports.py — build artifact, now excluded from monitoring
+│   ├── storage.py — build artifact, now excluded from monitoring
+│   └── test_mapper.py — wiki and docs updated for v0.13.0
+├── dist/
+│   ├── chisel_test_impact-0.8.1-py3-none-any.whl — build artifact, now excluded from monitoring
+│   └── chisel_test_impact-0.8.1.tar.gz — build artifact, now excluded from monitoring
+├── docs/
+│   ├── AGENT_PLAYBOOK.md — build artifact, now excluded from monitoring
+│   ├── CUSTOM_EXTRACTORS.md — build artifact, now excluded from monitoring
+│   ├── EXTRACTOR_ECOSYSTEM.md — build artifact, now excluded from monitoring
+│   ├── LLM_CONTRACT.md — build artifact, now excluded from monitoring
+│   ├── ZERO_DEPS.md — build artifact, now excluded from monitoring
+│   └── chisel-demo.png — build artifact, now excluded from monitoring
 ├── examples/
 │   ├── extractors/
-│   │   ├── lsp_symbol_extractor.py
-│   │   ├── swift_syntax_extractor.py
-│   │   └── tree_sitter_js_extractor.py
-│   └── chisel_bootstrap_example.py
+│   │   ├── lsp_symbol_extractor.py — build artifact, now excluded from monitoring
+│   │   ├── swift_syntax_extractor.py — build artifact, now excluded from monitoring
+│   │   └── tree_sitter_js_extractor.py — build artifact, now excluded from monitoring
+│   ├── github-actions/
+│   │   └── chisel.yml — build artifact, now excluded from monitoring
+│   └── chisel_bootstrap_example.py — build artifact, now excluded from monitoring
+├── plan/
+│   └── phase_15_agent_experience_plan_closed.md — runtime artifact or reviewed; now covered by exclude_patterns where applicable
 ├── scripts/
-│   ├── benchmark_chisel.py
-│   ├── check_version.py
-│   └── verify_static_hybrid.py
+│   ├── benchmark_chisel.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── check_version.py — reviewed in v0.12.0 pass or runtime artifact
+│   └── verify_static_hybrid.py — reviewed in v0.12.0 pass or runtime artifact
 ├── tests/
-│   ├── __init__.py
-│   ├── bootstrap_stub.py
-│   ├── conftest.py
-│   ├── test_ast_utils.py
-│   ├── test_bootstrap.py
-│   ├── test_cli.py — wiki summary refreshed for v0.12.0 pass
-│   ├── test_engine.py
-│   ├── test_engine_sharding.py — wiki summary refreshed for v0.12.0 pass
-│   ├── test_git_analyzer.py
-│   ├── test_impact.py — wiki summary refreshed for v0.12.0 pass
-│   ├── test_import_graph.py
-│   ├── test_language_frameworks.py — wiki summary refreshed for v0.12.0 pass
-│   ├── test_llm_contract.py
-│   ├── test_mcp_server.py — wiki summary refreshed for v0.12.0 pass
-│   ├── test_mcp_stdio.py
-│   ├── test_metrics.py
-│   ├── test_next_steps.py
-│   ├── test_project.py — wiki summary refreshed for v0.12.0 pass
-│   ├── test_rwlock.py
-│   ├── test_static_hybrid.py
-│   ├── test_storage.py
-│   └── test_test_mapper.py
+│   ├── __pycache__/
+│   │   └── test_cli.cpython-314-pytest-9.0.2.pyc — reviewed in v0.12.0 pass or runtime artifact
+│   ├── fixtures/
+│   │   └── languages/
+│   │       ├── csharp/
+│   │       │   └── BasicTests.cs — reviewed in v0.12.0 pass or runtime artifact
+│   │       ├── go/
+│   │       │   ├── basic_test.go — reviewed in v0.12.0 pass or runtime artifact
+│   │       │   └── go.mod — reviewed in v0.12.0 pass or runtime artifact
+│   │       ├── java/
+│   │       │   └── BasicTest.java — reviewed in v0.12.0 pass or runtime artifact
+│   │       ├── rust/
+│   │       │   └── basic.rs — reviewed in v0.12.0 pass or runtime artifact
+│   │       └── swift/
+│   │           └── BasicTests.swift — reviewed in v0.12.0 pass or runtime artifact
+│   ├── __init__.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── bootstrap_stub.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── conftest.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_ast_utils.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_bootstrap.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_cli.py — wiki and docs updated for v0.13.0
+│   ├── test_engine.py — wiki and docs updated for v0.13.0
+│   ├── test_engine_sharding.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_git_analyzer.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_gitignore_filter.py — wiki and docs updated for v0.13.0
+│   ├── test_impact.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_import_graph.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_language_frameworks.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_llm_contract.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_mcp_server.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_mcp_stdio.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_metrics.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_next_steps.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_project.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_rwlock.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_static_hybrid.py — reviewed in v0.12.0 pass or runtime artifact
+│   ├── test_storage.py — reviewed in v0.12.0 pass or runtime artifact
+│   └── test_test_mapper.py — reviewed in v0.12.0 pass or runtime artifact
 ├── wiki-local/
-│   └── spec-project.md — wiki summary refreshed for v0.12.0 pass
-├── ARCHITECTURE.md — wiki summary refreshed for v0.12.0 pass
-├── CHANGELOG.md — wiki summary refreshed for v0.12.0 pass
-├── CLAUDE.md — wiki summary refreshed for v0.12.0 pass
-├── COMPLETE_PROJECT_DOCUMENTATION.md — wiki summary refreshed for v0.12.0 pass
-├── LLM_Development.md — wiki summary refreshed for v0.12.0 pass
-├── README.md — wiki summary refreshed for v0.12.0 pass
-└── pyproject.toml — wiki summary refreshed for v0.12.0 pass
+│   ├── glossary.md — runtime artifact or reviewed; now covered by exclude_patterns where applicable
+│   ├── index.md — runtime artifact or reviewed; now covered by exclude_patterns where applicable
+│   └── spec-project.md — reviewed in v0.12.0 pass or runtime artifact
+├── .gitignore — release state settled
+├── ARCHITECTURE.md — build artifact, now excluded from monitoring
+├── CHANGELOG.md — wiki and docs updated for v0.13.0
+├── CLAUDE.md — wiki and docs updated for v0.13.0
+├── COMPLETE_PROJECT_DOCUMENTATION.md — wiki and docs updated for v0.13.0
+├── CONTRIBUTING.md — build artifact, now excluded from monitoring
+├── GROK_CONNECTORS.md — build artifact, now excluded from monitoring
+├── LICENSE — reviewed in v0.12.0 pass or runtime artifact
+├── LLM_Development.md — wiki and docs updated for v0.13.0
+├── PLAN_NEXT.md — reviewed in v0.12.0 pass or runtime artifact
+├── README.md — reviewed in v0.12.0 pass or runtime artifact
+├── exclude_patterns.txt — wikifier state file, self-referential
+├── file_health.md — release state settled
+├── library.md — reviewed in v0.12.0 pass or runtime artifact
+├── monitored_paths.txt — reviewed in v0.12.0 pass or runtime artifact
+├── pending_updates.md — release state settled
+└── pyproject.toml — wiki and docs updated for v0.13.0
 ```
 
 ## Dependency Graph (Mermaid)
@@ -119,6 +184,7 @@ graph TD
         tests_test_engine_py["test_engine.py"]
         tests_test_engine_sharding_py["test_engine_sharding.py"]
         tests_test_git_analyzer_py["test_git_analyzer.py"]
+        tests_test_gitignore_filter_py["test_gitignore_filter.py"]
         tests_test_impact_py["test_impact.py"]
         tests_test_import_graph_py["test_import_graph.py"]
         tests_test_language_frameworks_py["test_language_frameworks.py"]
@@ -426,6 +492,11 @@ graph TD
     tests_test_test_mapper_py -.-> pytest
     tests_test_test_mapper_py -.-> chisel_ast_utils
     tests_test_test_mapper_py -.-> chisel_test_mapper
+    tests_test_gitignore_filter_py -.-> os
+    tests_test_gitignore_filter_py -.-> pytest
+    tests_test_gitignore_filter_py -.-> chisel_engine
+    tests_test_gitignore_filter_py -.-> chisel_project
+    tests_test_gitignore_filter_py -.-> chisel_test_mapper
     classDef external fill:#eeeeee,stroke:#888888,stroke-dasharray: 3 3
     class argparse,ast,asyncio,builtins,chisel,chisel_ast_utils,chisel_bootstrap,chisel_cli,chisel_engine,chisel_git_analyzer,chisel_impact,chisel_import_graph,chisel_llm_contract,chisel_mcp_server,chisel_mcp_stdio,chisel_metrics,chisel_next_steps,chisel_project,chisel_risk_meta,chisel_rwlock,chisel_schemas,chisel_static_test_imports,chisel_storage,chisel_test_mapper,collections,concurrent_futures,contextlib,ctypes,ctypes_wintypes,dataclasses,datetime,fcntl,functools,hashlib,http_server,importlib,itertools,json,logging,math,mcp_server,mcp_server_stdio,mcp_types,msvcrt,os,pathlib,pytest,re,sqlite3,statistics,subprocess,swift_syntax,swift_syntax_parser,sys,tempfile,textwrap,threading,time,tomllib,tree_sitter,tree_sitter_javascript,tree_sitter_typescript,types,unittest,unittest_mock,urllib_error,urllib_parse,urllib_request,uuid external
 ```
@@ -605,6 +676,11 @@ graph TD
 | tests/test_git_analyzer.py | chisel.metrics → chisel.metrics | medium |
 | tests/test_git_analyzer.py | datetime → datetime | medium |
 | tests/test_git_analyzer.py | pytest → pytest | medium |
+| tests/test_gitignore_filter.py | chisel.engine → chisel.engine | medium |
+| tests/test_gitignore_filter.py | chisel.project → chisel.project | medium |
+| tests/test_gitignore_filter.py | chisel.test_mapper → chisel.test_mapper | medium |
+| tests/test_gitignore_filter.py | os → os | medium |
+| tests/test_gitignore_filter.py | pytest → pytest | medium |
 | tests/test_impact.py | chisel.impact → chisel.impact | medium |
 | tests/test_impact.py | pytest → pytest | medium |
 | tests/test_impact.py | unittest.mock → unittest.mock | medium |

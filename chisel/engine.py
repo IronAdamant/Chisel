@@ -29,7 +29,10 @@ from chisel.impact import (
     ImpactAnalyzer,
 )
 from chisel.metrics import compute_churn, compute_co_changes, coupling_threshold as _coupling_threshold
-from chisel.project import ProcessLock, detect_project_root, normalize_path, resolve_storage_dir
+from chisel.project import (
+    ProcessLock, detect_project_root, git_visible_paths, is_git_visible_file,
+    normalize_path, prune_walk_dirs, resolve_storage_dir,
+)
 from chisel.risk_meta import apply_risk_reweighting, build_risk_meta
 from chisel.rwlock import RWLock
 from chisel.storage import Storage
@@ -433,8 +436,18 @@ class ChiselEngine:
                     self._check_job_cancelled()
 
                     if new_commits or changed_files:
+                        # Per-function git log -L churn only for files that
+                        # actually changed (on disk or in new commits) — the
+                        # full pass costs one subprocess per function.
+                        unit_scope = {
+                            rel for _abs_path, rel, _hash in changed_files
+                        }
+                        for c in new_commits:
+                            unit_scope.update(
+                                f["path"] for f in c.get("files", []))
                         self._record_job_event("phase_start", {"phase": "churn_and_coupling"})
-                        self._compute_churn_and_coupling(all_commits, code_files)
+                        self._compute_churn_and_coupling(
+                            all_commits, code_files, unit_churn_files=unit_scope)
                         self._check_job_cancelled()
                     self._record_job_event("phase_start", {"phase": "blame"})
                     self._store_blame(changed_files)
@@ -446,12 +459,21 @@ class ChiselEngine:
                     )
                 self._set_bg_progress(60)
 
-                self._record_job_event("phase_start", {"phase": "discover_and_build_edges"})
-                self._discover_and_build_edges(code_files)
-                self._check_job_cancelled()
-                self._record_job_event("phase_start", {"phase": "rebuild_import_edges"})
-                self._rebuild_import_edges(code_files, changed_files)
-                self._check_job_cancelled()
+                if changed_files or stats["new_commits"]:
+                    self._record_job_event("phase_start", {"phase": "discover_and_build_edges"})
+                    self._discover_and_build_edges(code_files)
+                    self._check_job_cancelled()
+                    self._record_job_event("phase_start", {"phase": "rebuild_import_edges"})
+                    self._rebuild_import_edges(code_files, changed_files)
+                    self._check_job_cancelled()
+                else:
+                    # No changed files and no new commits: test/import edges
+                    # cannot have changed (test files are code files, so any
+                    # edit or addition lands in changed_files; deletions are
+                    # left in place on purpose — stale_tests detects them).
+                    # Re-parsing every test file here made a no-op update
+                    # scale with project size instead of change size.
+                    stats["edge_rebuild_skipped"] = True
                 self._record_job_event("phase_start", {"phase": "backfill_heuristic_edges"})
                 self._backfill_heuristic_edges()
                 self.storage.set_meta("project_fingerprint", self.project_dir)
@@ -2075,8 +2097,16 @@ class ChiselEngine:
     # serial subprocess overhead. Limit workers to keep system load reasonable.
     _UNIT_CHURN_WORKERS = 8
 
-    def _compute_churn_and_coupling(self, commits, code_files):
-        """Compute file-level and unit-level churn stats, plus co-change coupling."""
+    def _compute_churn_and_coupling(self, commits, code_files, unit_churn_files=None):
+        """Compute file-level and unit-level churn stats, plus co-change coupling.
+
+        Args:
+            unit_churn_files: Optional set of *relative* paths to restrict the
+                per-function ``git log -L`` churn pass to. File-level churn is
+                always computed for all files (cheap, in-memory), but the
+                unit pass spawns one git subprocess per function — on
+                incremental updates only changed files need it.
+        """
         from concurrent.futures import ThreadPoolExecutor
 
         # Batch file-level churn
@@ -2096,6 +2126,8 @@ class ChiselEngine:
         unit_tasks = []
         for fpath in code_files:
             rel = normalize_path(fpath, self.project_dir)
+            if unit_churn_files is not None and rel not in unit_churn_files:
+                continue
             for cu in self.storage.get_code_units_by_file(rel):
                 if cu["unit_type"] in ("function", "async_function"):
                     bare_name = cu["name"].rsplit(".", 1)[-1]
@@ -2532,6 +2564,11 @@ class ChiselEngine:
     def _scan_code_files(self, directory=None):
         """Walk project tree and return all code file paths.
 
+        Respects .gitignore: only files git tracks or would track
+        (untracked but not ignored) are returned, and ignored trees are
+        never traversed. Set CHISEL_INCLUDE_IGNORED=1 to disable; without
+        git the walk is unfiltered.
+
         Args:
             directory: Optional subdirectory to scope the scan.
                        Resolved relative to project_dir.
@@ -2541,10 +2578,15 @@ class ChiselEngine:
             candidate = os.path.normpath(os.path.join(self.project_dir, directory))
             if os.path.isdir(candidate):
                 start_dir = candidate
+        visible_files, visible_dirs = git_visible_paths(self.project_dir)
         files = []
         for root, dirs, filenames in os.walk(start_dir):
-            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+            dirs[:] = prune_walk_dirs(
+                root, dirs, _SKIP_DIRS, self.project_dir, visible_dirs)
             for fname in filenames:
-                if os.path.splitext(fname)[1].lower() in _CODE_EXTENSIONS:
-                    files.append(os.path.join(root, fname))
+                if os.path.splitext(fname)[1].lower() not in _CODE_EXTENSIONS:
+                    continue
+                fpath = os.path.join(root, fname)
+                if is_git_visible_file(fpath, self.project_dir, visible_files):
+                    files.append(fpath)
         return sorted(files)

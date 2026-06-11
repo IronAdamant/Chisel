@@ -8,7 +8,9 @@ from pathlib import Path
 from chisel.ast_utils import (
     CodeUnit, _SKIP_DIRS, compute_file_hash, detect_language, extract_code_units,
 )
-from chisel.project import normalize_path
+from chisel.project import (
+    git_visible_paths, is_git_visible_file, normalize_path, prune_walk_dirs,
+)
 
 # Framework detection patterns: (regex pattern, framework name)
 _FRAMEWORK_PATTERNS = [
@@ -76,12 +78,22 @@ class TestMapper:
     # ------------------------------------------------------------------ #
 
     def discover_test_files(self):
-        """Walk the project tree and return paths to all detected test files."""
+        """Walk the project tree and return paths to all detected test files.
+
+        Respects .gitignore the same way as the engine's code scan: ignored
+        files are skipped and ignored trees are never traversed (large
+        fixture dirs, vendored deps). CHISEL_INCLUDE_IGNORED=1 disables the
+        filter; without git the walk is unfiltered.
+        """
+        visible_files, visible_dirs = git_visible_paths(self.project_dir)
         test_files = []
         for root, dirs, files in os.walk(self.project_dir):
-            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+            dirs[:] = prune_walk_dirs(
+                root, dirs, _SKIP_DIRS, self.project_dir, visible_dirs)
             for fname in files:
                 fpath = os.path.join(root, fname)
+                if not is_git_visible_file(fpath, self.project_dir, visible_files):
+                    continue
                 fw = self.detect_framework(fpath)
                 if fw is not None:
                     test_files.append(fpath)
@@ -180,9 +192,10 @@ class TestMapper:
         Returns:
             List of edge dicts: {test_id, code_id, edge_type, weight}
         """
-        # Build lookup: name -> list of code unit ids
+        # Build lookups: name -> ids, id -> file, file -> ids
         name_to_ids = {}
         id_to_file = {}
+        file_to_ids = {}
         for cu in code_units:
             if isinstance(cu, CodeUnit):
                 name = cu.name
@@ -194,6 +207,34 @@ class TestMapper:
                 cfile = cu.get("file_path", "")
             name_to_ids.setdefault(name, []).append(cid)
             id_to_file[cid] = cfile
+            file_to_ids.setdefault(cfile, []).append(cid)
+        all_code_files = list(file_to_ids)
+
+        # Matching depends only on (module_path, code file) — never on the
+        # individual test unit — so memoize per module path. Without this,
+        # the tier loops scan every code unit for every dep of every test
+        # unit (tens of millions of _matches_import_path calls on mid-size
+        # repos; edge rebuild dominated update time).
+        py_match_cache = {}
+
+        def _py_match_files(module_path):
+            hit = py_match_cache.get(module_path)
+            if hit is None:
+                hit = [f for f in all_code_files
+                       if _matches_import_path(f, module_path)]
+                py_match_cache[module_path] = hit
+            return hit
+
+        _MISS = object()
+        js_resolve_cache = {}
+        js_match_cache = {}
+        go_resolve_cache = {}
+        go_match_cache = {}
+        # Deps and import targets are a per-FILE property; test files hold
+        # many units each, so cache per file instead of recomputing per unit.
+        deps_cache = {}
+        resolved_imports_cache = {}
+        lang_cache = {}
 
         edges = []
         file_cache = {}
@@ -210,16 +251,24 @@ class TestMapper:
             if content is None:
                 continue
 
-            deps = self.extract_test_dependencies(file_path, content)
-
-            # Pre-pass: collect the set of code files that this test file's
-            # imports resolve to. Restricting tier-4 (name-only) matches to
-            # this scope eliminates symbol-name collisions across unrelated
-            # files (e.g. a generic `dispatch()` call leaking into edges of
-            # every file that happens to define a `dispatch` symbol).
-            resolved_import_files = self._resolve_import_targets(
-                file_path, deps, id_to_file,
-            )
+            if file_path in deps_cache:
+                deps = deps_cache[file_path]
+                resolved_import_files = resolved_imports_cache[file_path]
+            else:
+                deps = self.extract_test_dependencies(file_path, content)
+                # Pre-pass: collect the set of code files that this test
+                # file's imports resolve to. Restricting tier-4 (name-only)
+                # matches to this scope eliminates symbol-name collisions
+                # across unrelated files (e.g. a generic `dispatch()` call
+                # leaking into edges of every file that happens to define a
+                # `dispatch` symbol).
+                resolved_import_files = self._resolve_import_targets(
+                    file_path, deps, id_to_file,
+                )
+                deps_cache[file_path] = deps
+                resolved_imports_cache[file_path] = resolved_import_files
+            if file_path not in lang_cache:
+                lang_cache[file_path] = detect_language(file_path)
 
             seen = set()
             for dep in deps:
@@ -227,39 +276,57 @@ class TestMapper:
                 matched_ids = []
                 if module_path:
                     # 1. Python import-path matching (module.path + name)
-                    for cid, cfile in id_to_file.items():
-                        if _matches_import_path(cfile, module_path):
-                            # Only match if the code unit name also matches
-                            if cid in name_to_ids.get(dep["name"], []):
-                                matched_ids.append(cid)
+                    name_ids = set(name_to_ids.get(dep["name"], []))
+                    if name_ids:
+                        for cfile in _py_match_files(module_path):
+                            for cid in file_to_ids[cfile]:
+                                if cid in name_ids:
+                                    matched_ids.append(cid)
                     # 2. JS/TS path-based matching (resolve relative path,
                     #    match ALL code units in the resolved file)
                     if not matched_ids and module_path.startswith("."):
-                        resolved = _resolve_js_module_path(
-                            file_path, module_path,
-                        )
+                        rkey = (file_path, module_path)
+                        resolved = js_resolve_cache.get(rkey, _MISS)
+                        if resolved is _MISS:
+                            resolved = _resolve_js_module_path(
+                                file_path, module_path,
+                            )
+                            js_resolve_cache[rkey] = resolved
                         if resolved:
-                            for cid, cfile in id_to_file.items():
-                                if _matches_js_import_path(cfile, resolved):
-                                    matched_ids.append(cid)
+                            mfiles = js_match_cache.get(resolved)
+                            if mfiles is None:
+                                mfiles = [f for f in all_code_files
+                                          if _matches_js_import_path(f, resolved)]
+                                js_match_cache[resolved] = mfiles
+                            for cfile in mfiles:
+                                matched_ids.extend(file_to_ids[cfile])
                     # 3. Go import-path matching (resolve full module path to dir)
-                    if not matched_ids and detect_language(file_path) == "go":
-                        resolved = _resolve_go_import_path(
-                            self.project_dir, module_path,
-                        )
+                    if not matched_ids and lang_cache[file_path] == "go":
+                        resolved = go_resolve_cache.get(module_path, _MISS)
+                        if resolved is _MISS:
+                            resolved = _resolve_go_import_path(
+                                self.project_dir, module_path,
+                            )
+                            go_resolve_cache[module_path] = resolved
                         if resolved:
-                            resolved_norm = resolved.replace("\\", "/")
-                            for cid, cfile in id_to_file.items():
-                                cfile_norm = cfile.replace("\\", "/")
-                                # Match any file inside the resolved directory
-                                if resolved_norm == ".":
-                                    if "/" not in cfile_norm:
-                                        matched_ids.append(cid)
-                                elif (
-                                    cfile_norm == resolved_norm
-                                    or cfile_norm.startswith(resolved_norm + "/")
-                                ):
-                                    matched_ids.append(cid)
+                            mfiles = go_match_cache.get(resolved)
+                            if mfiles is None:
+                                resolved_norm = resolved.replace("\\", "/")
+                                mfiles = []
+                                for cfile in all_code_files:
+                                    cfile_norm = cfile.replace("\\", "/")
+                                    # Match any file inside the resolved dir
+                                    if resolved_norm == ".":
+                                        if "/" not in cfile_norm:
+                                            mfiles.append(cfile)
+                                    elif (
+                                        cfile_norm == resolved_norm
+                                        or cfile_norm.startswith(resolved_norm + "/")
+                                    ):
+                                        mfiles.append(cfile)
+                                go_match_cache[resolved] = mfiles
+                            for cfile in mfiles:
+                                matched_ids.extend(file_to_ids[cfile])
                 # 4. Fall back to name-based matching
                 if not matched_ids:
                     candidate_ids = name_to_ids.get(dep["name"], [])

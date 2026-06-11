@@ -7,6 +7,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-06-11
+
+### Fixed
+
+- **gitignore-aware scanning** (resolves `Logged_issues/2026-06-11_directory-scoped-analyze-walks-all-tests.md`): the engine code scan and test discovery walked everything under the project root, including gitignored trees (vendored deps, build output, bulk fixture dirs) — on a repo with a 10k-file ignored fixture tree, test discovery found 3,895 test files and updates ran 18+ minutes. Both walks now filter through `git ls-files --cached --others --exclude-standard` (tracked + untracked-but-not-ignored, so working-tree analysis still sees new files) and never traverse ignored trees. Set `CHISEL_INCLUDE_IGNORED=1` to disable; non-git projects are unfiltered as before.
+- **CLI exit codes**: the console script ran `sys.exit(main())`, and `main()` returns the result dict — so every successful `chisel` command exited 1 and dumped the raw dict to stderr, breaking `chisel analyze && ...` scripting. The new `cli_entry` entry point converts results to real exit codes (`status: error|git_error` → 1, everything else → 0; `chisel run` passes through the test runner's code).
+
+### Changed
+
+- **`build_test_edges` is ~76× faster with byte-identical output** (A/B-verified against the previous algorithm on the same input: 14,667 edges, 17.6s → 0.23s). Match results are memoized per module path and dependency extraction per test file; previously every dep of every test *unit* scanned every code unit (33M `_matches_import_path` calls on this repo alone — the dominant cost of `analyze`/`update`, and the real culprit behind multi-minute updates on monorepos).
+- **`update()` skips edge rebuilding when nothing changed**: with no changed files and no new commits, the discover/rebuild phases are skipped and the result includes `edge_rebuild_skipped: true`. Per-function `git log -L` churn is now restricted to changed files (plus files touched by new commits) instead of every function in the project. Net on this repo: no-op update ~18s → 0.14s; single-file update ~19s → 1.4s; full analyze 19.4s → 2.3s.
+
 ## [0.12.0] — 2026-06-11
 
 ### Added

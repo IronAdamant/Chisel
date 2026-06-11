@@ -513,3 +513,26 @@ this repo (exclude_patterns.txt added; library.md + health matrix now live).
   refreshed (was v0.9.0, missing 5 modules + 8 test files).
 
 Result: 810 tests passing (794 + 17 new − 1 pre-existing failure fixed), ruff clean.
+
+## 2026-06-11 — v0.13.0 performance pass (Claude Code + wikifier)
+
+Resolved the logged directory-scoped-analyze issue by fixing the actual root
+causes rather than scoping test discovery (tests legitimately live outside
+the scoped dir):
+
+- **gitignore-aware scanning**: `git_visible_paths()` in project.py; both
+  walks filter through `git ls-files --cached --others --exclude-standard`
+  and prune ignored trees. Opt-out: `CHISEL_INCLUDE_IGNORED=1`. Non-git →
+  unfiltered. Test files found on this repo: 3,895 → 26.
+- **build_test_edges memoization**: per-module-path match caching +
+  per-file dep extraction. 33M `_matches_import_path` calls → thousands.
+  A/B-verified byte-identical edges (14,667), 17.6s → 0.23s (76×).
+- **update() gating**: edge rebuild skipped when no changes
+  (`edge_rebuild_skipped: true`); per-function `git log -L` churn limited
+  to changed files. No-op update ~18s → 0.14s; full analyze 19.4s → 2.3s.
+- **CLI exit codes** (discovered while dogfooding): `sys.exit(main())`
+  exited 1 on every successful command and dumped the result dict to
+  stderr. New `cli_entry` console entry point converts results to codes.
+
+826 tests passing (15 new), ruff clean. Profiled with cProfile; verified
+with stash-based A/B at function level.

@@ -1300,3 +1300,22 @@ class TestIncrementalImportEdgePerformance:
         assert stats["files_updated"] == 1
         # Must complete in < 3 seconds even with 1k files
         assert elapsed_ms < 3000, f"incremental update took {elapsed_ms:.1f} ms"
+
+
+class TestUpdateEdgeRebuildGating:
+    """A no-op update must not re-parse every test file in the project."""
+
+    def test_noop_update_skips_edge_rebuild(self, engine):
+        engine.analyze()
+        stats = engine.update()
+        assert stats["files_updated"] == 0
+        assert stats["new_commits"] == 0
+        assert stats.get("edge_rebuild_skipped") is True
+
+    def test_changed_file_still_rebuilds_edges(self, engine, git_project):
+        engine.analyze()
+        app = git_project / "app.py"
+        app.write_text(app.read_text() + "\ndef fresh_func():\n    return 9\n")
+        stats = engine.update()
+        assert stats["files_updated"] == 1
+        assert "edge_rebuild_skipped" not in stats

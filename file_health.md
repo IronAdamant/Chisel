@@ -6,13 +6,13 @@
 | wiki-local/spec-project.md | 🟢 Green | 2026-06-11 13:55:11 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | wiki-local/glossary.md | 🟢 Green | 2026-06-11 13:42:03 AEST | runtime artifact or reviewed; now covered by exclude_patterns where applicable |
 | wiki-local/index.md | 🟢 Green | 2026-06-11 13:42:04 AEST | runtime artifact or reviewed; now covered by exclude_patterns where applicable |
-| tests/test_engine.py | 🟢 Green | 2026-06-11 13:42:05 AEST | runtime artifact or reviewed; now covered by exclude_patterns where applicable |
+| tests/test_engine.py | 🟢 Green | 2026-06-11 14:31:29 AEST | wiki and docs updated for v0.13.0 |
 | tests/test_next_steps.py | 🟢 Green | 2026-06-11 13:55:06 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | tests/conftest.py | 🟢 Green | 2026-06-11 13:54:49 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | tests/test_import_graph.py | 🟢 Green | 2026-06-11 13:55:01 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | tests/test_engine_sharding.py | 🟢 Green | 2026-06-11 13:54:58 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | tests/test_test_mapper.py | 🟢 Green | 2026-06-11 13:55:10 AEST | reviewed in v0.12.0 pass or runtime artifact |
-| tests/test_cli.py | 🟢 Green | 2026-06-11 13:54:58 AEST | reviewed in v0.12.0 pass or runtime artifact |
+| tests/test_cli.py | 🟢 Green | 2026-06-11 14:31:31 AEST | wiki and docs updated for v0.13.0 |
 | tests/test_storage.py | 🟢 Green | 2026-06-11 13:55:09 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | tests/test_impact.py | 🟢 Green | 2026-06-11 13:55:00 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | tests/test_bootstrap.py | 🟢 Green | 2026-06-11 13:54:57 AEST | reviewed in v0.12.0 pass or runtime artifact |
@@ -34,18 +34,18 @@
 | tests/test_metrics.py | 🟢 Green | 2026-06-11 13:55:05 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | tests/test_static_hybrid.py | 🟢 Green | 2026-06-11 13:55:08 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | tests/test_rwlock.py | 🟢 Green | 2026-06-11 13:55:07 AEST | reviewed in v0.12.0 pass or runtime artifact |
-| file_health.md | 🟢 Green | 2026-06-11 13:55:22 AEST | wikifier state file, self-referential |
+| file_health.md | 🟢 Green | 2026-06-11 14:01:07 AEST | release state settled |
 | examples/chisel_bootstrap_example.py | 🟢 Green | 2026-06-11 13:45:51 AEST | build artifact, now excluded from monitoring |
 | examples/extractors/lsp_symbol_extractor.py | 🟢 Green | 2026-06-11 13:45:52 AEST | build artifact, now excluded from monitoring |
 | examples/extractors/swift_syntax_extractor.py | 🟢 Green | 2026-06-11 13:45:53 AEST | build artifact, now excluded from monitoring |
 | examples/extractors/tree_sitter_js_extractor.py | 🟢 Green | 2026-06-11 13:45:54 AEST | build artifact, now excluded from monitoring |
 | examples/github-actions/chisel.yml | 🟢 Green | 2026-06-11 13:45:54 AEST | build artifact, now excluded from monitoring |
-| CLAUDE.md | 🟢 Green | 2026-06-11 13:45:40 AEST | build artifact, now excluded from monitoring |
+| CLAUDE.md | 🟢 Green | 2026-06-11 14:31:23 AEST | wiki and docs updated for v0.13.0 |
 | CONTRIBUTING.md | 🟢 Green | 2026-06-11 13:45:43 AEST | build artifact, now excluded from monitoring |
 | .github/workflows/ci.yml | 🟢 Green | 2026-06-11 13:46:02 AEST | build artifact, now excluded from monitoring |
 | .github/workflows/publish.yml | 🟢 Green | 2026-06-11 13:46:03 AEST | build artifact, now excluded from monitoring |
-| COMPLETE_PROJECT_DOCUMENTATION.md | 🟢 Green | 2026-06-11 13:45:42 AEST | build artifact, now excluded from monitoring |
-| .gitignore | 🟢 Green | 2026-06-11 13:46:03 AEST | build artifact, now excluded from monitoring |
+| COMPLETE_PROJECT_DOCUMENTATION.md | 🟢 Green | 2026-06-11 14:31:25 AEST | wiki and docs updated for v0.13.0 |
+| .gitignore | 🟢 Green | 2026-06-11 14:01:08 AEST | release state settled |
 | GROK_CONNECTORS.md | 🟢 Green | 2026-06-11 13:46:04 AEST | build artifact, now excluded from monitoring |
 | ARCHITECTURE.md | 🟢 Green | 2026-06-11 13:44:56 AEST | build artifact, now excluded from monitoring |
 | scripts/check_version.py | 🟢 Green | 2026-06-11 13:54:46 AEST | reviewed in v0.12.0 pass or runtime artifact |
@@ -57,44 +57,46 @@
 | docs/LLM_CONTRACT.md | 🟢 Green | 2026-06-11 13:45:49 AEST | build artifact, now excluded from monitoring |
 | docs/chisel-demo.png | 🟢 Green | 2026-06-11 13:45:47 AEST | build artifact, now excluded from monitoring |
 | docs/AGENT_PLAYBOOK.md | 🟢 Green | 2026-06-11 13:45:46 AEST | build artifact, now excluded from monitoring |
-| LLM_Development.md | 🟢 Green | 2026-06-11 13:54:38 AEST | reviewed in v0.12.0 pass or runtime artifact |
+| LLM_Development.md | 🟢 Green | 2026-06-11 14:31:26 AEST | wiki and docs updated for v0.13.0 |
 | PLAN_NEXT.md | 🟢 Green | 2026-06-11 13:54:41 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | chisel/import_graph.py | 🟢 Green | 2026-06-11 13:45:06 AEST | build artifact, now excluded from monitoring |
 | chisel/ast_utils.py | 🟢 Green | 2026-06-11 13:44:58 AEST | build artifact, now excluded from monitoring |
 | chisel/llm_contract.py | 🟢 Green | 2026-06-11 13:45:08 AEST | build artifact, now excluded from monitoring |
-| chisel/test_mapper.py | 🟢 Green | 2026-06-11 13:45:40 AEST | build artifact, now excluded from monitoring |
+| chisel/test_mapper.py | 🟢 Green | 2026-06-11 14:31:15 AEST | wiki and docs updated for v0.13.0 |
 | chisel/mcp_stdio.py | 🟢 Green | 2026-06-11 13:45:09 AEST | build artifact, now excluded from monitoring |
 | chisel/risk_meta.py | 🟢 Green | 2026-06-11 13:45:30 AEST | build artifact, now excluded from monitoring |
 | chisel/next_steps.py | 🟢 Green | 2026-06-11 13:45:11 AEST | build artifact, now excluded from monitoring |
-| chisel/engine.py | 🟢 Green | 2026-06-11 13:45:03 AEST | build artifact, now excluded from monitoring |
+| chisel/engine.py | 🟢 Green | 2026-06-11 14:31:14 AEST | wiki and docs updated for v0.13.0 |
 | chisel/schemas.py | 🟢 Green | 2026-06-11 13:45:32 AEST | build artifact, now excluded from monitoring |
 | chisel/mcp_server.py | 🟢 Green | 2026-06-11 13:45:09 AEST | build artifact, now excluded from monitoring |
 | chisel/bootstrap.py | 🟢 Green | 2026-06-11 13:44:58 AEST | build artifact, now excluded from monitoring |
 | chisel/metrics.py | 🟢 Green | 2026-06-11 13:45:10 AEST | build artifact, now excluded from monitoring |
-| chisel/__init__.py | 🟢 Green | 2026-06-11 13:45:07 AEST | build artifact, now excluded from monitoring |
+| chisel/__init__.py | 🟢 Green | 2026-06-11 14:31:20 AEST | wiki and docs updated for v0.13.0 |
 | chisel/rwlock.py | 🟢 Green | 2026-06-11 13:45:31 AEST | build artifact, now excluded from monitoring |
 | chisel/git_analyzer.py | 🟢 Green | 2026-06-11 13:45:04 AEST | build artifact, now excluded from monitoring |
 | chisel/storage.py | 🟢 Green | 2026-06-11 13:45:34 AEST | build artifact, now excluded from monitoring |
 | chisel/impact.py | 🟢 Green | 2026-06-11 13:45:05 AEST | build artifact, now excluded from monitoring |
 | chisel/static_test_imports.py | 🟢 Green | 2026-06-11 13:45:33 AEST | build artifact, now excluded from monitoring |
-| chisel/project.py | 🟢 Green | 2026-06-11 13:45:12 AEST | build artifact, now excluded from monitoring |
-| chisel/cli.py | 🟢 Green | 2026-06-11 13:54:32 AEST | reviewed in v0.12.0 pass or runtime artifact |
-| pyproject.toml | 🟢 Green | 2026-06-11 13:54:41 AEST | reviewed in v0.12.0 pass or runtime artifact |
-| CHANGELOG.md | 🟢 Green | 2026-06-11 13:54:30 AEST | reviewed in v0.12.0 pass or runtime artifact |
+| chisel/project.py | 🟢 Green | 2026-06-11 14:31:12 AEST | wiki and docs updated for v0.13.0 |
+| chisel/cli.py | 🟢 Green | 2026-06-11 14:31:17 AEST | wiki and docs updated for v0.13.0 |
+| pyproject.toml | 🟢 Green | 2026-06-11 14:31:18 AEST | wiki and docs updated for v0.13.0 |
+| CHANGELOG.md | 🟢 Green | 2026-06-11 14:31:22 AEST | wiki and docs updated for v0.13.0 |
 | dist/chisel_test_impact-0.8.1.tar.gz | 🟢 Green | 2026-06-11 13:45:45 AEST | build artifact, now excluded from monitoring |
 | dist/chisel_test_impact-0.8.1-py3-none-any.whl | 🟢 Green | 2026-06-11 13:45:44 AEST | build artifact, now excluded from monitoring |
 | README.md | 🟢 Green | 2026-06-11 13:54:43 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | LICENSE | 🟢 Green | 2026-06-11 13:54:37 AEST | reviewed in v0.12.0 pass or runtime artifact |
-| pending_updates.md | 🟢 Green | 2026-06-11 13:55:23 AEST | wikifier state file, self-referential |
+| pending_updates.md | 🟢 Green | 2026-06-11 14:01:09 AEST | release state settled |
 | monitored_paths.txt | 🟢 Green | 2026-06-11 13:54:39 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | .claude/settings.local.json | 🟢 Green | 2026-06-11 13:45:41 AEST | build artifact, now excluded from monitoring |
 | exclude_patterns.txt | 🟢 Green | 2026-06-11 13:55:22 AEST | wikifier state file, self-referential |
 | library.md | 🟢 Green | 2026-06-11 13:54:37 AEST | reviewed in v0.12.0 pass or runtime artifact |
-| .coordinationhub/coordination.db | 🟢 Green | 2026-06-11 13:54:34 AEST | reviewed in v0.12.0 pass or runtime artifact |
+| .coordinationhub/coordination.db | 🟢 Green | 2026-06-11 14:01:07 AEST | release state settled |
 | tests/__pycache__/test_cli.cpython-314-pytest-9.0.2.pyc | 🟢 Green | 2026-06-11 13:54:55 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | .ruff_cache/0.15.6/2918868589294341649 | 🟢 Green | 2026-06-11 13:54:45 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | .ruff_cache/0.15.6/1474866491082371723 | 🟢 Green | 2026-06-11 13:54:44 AEST | reviewed in v0.12.0 pass or runtime artifact |
-| .pytest_cache/v/cache/nodeids | 🟢 Green | 2026-06-11 13:54:42 AEST | reviewed in v0.12.0 pass or runtime artifact |
+| .pytest_cache/v/cache/nodeids | 🟢 Green | 2026-06-11 14:01:10 AEST | release state settled |
 | .chisel/chisel.lock | 🟢 Green | 2026-06-11 13:54:32 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | .chisel/chisel.db | 🟢 Green | 2026-06-11 13:54:31 AEST | reviewed in v0.12.0 pass or runtime artifact |
 | chisel/__pycache__/cli.cpython-314.pyc | 🟢 Green | 2026-06-11 13:54:33 AEST | reviewed in v0.12.0 pass or runtime artifact |
+| tests/test_gitignore_filter.py | 🟢 Green | 2026-06-11 14:31:28 AEST | wiki and docs updated for v0.13.0 |
+| Logged_issues/2026-06-11_directory-scoped-analyze-walks-all-tests.md | 🟢 Green | 2026-06-11 14:31:33 AEST | wiki and docs updated for v0.13.0 |

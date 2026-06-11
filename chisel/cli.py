@@ -875,5 +875,25 @@ def main(argv=None):
     return handler(args)
 
 
+_ERROR_STATUSES = ("error", "git_error")
+
+
+def cli_entry():
+    """Console-script entry point.
+
+    ``main()`` returns the tool result (dict/list) for programmatic use and
+    tests. setuptools wraps this function in ``sys.exit()``, and
+    ``sys.exit(<dict>)`` prints the object to stderr and exits 1 — so every
+    successful command used to fail in shell terms. Convert results to real
+    exit codes here instead.
+    """
+    result = main()
+    if result is None or isinstance(result, int):
+        return result
+    if isinstance(result, dict) and result.get("status") in _ERROR_STATUSES:
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(cli_entry())

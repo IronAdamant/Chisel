@@ -3,6 +3,31 @@
 **Severity:** moderate
 **Date:** 2026-06-11
 **Found by:** Claude Code v0.12.0 modernization pass (dogfooding on this repo)
+**Status:** RESOLVED in v0.13.0 (same day)
+
+## Resolution
+
+Root cause was gitignore-blind scanning plus an O(units × deps × all_units)
+edge-matching loop, not the directory scoping itself (tests legitimately
+live outside the scoped directory, so scoping discovery would break the
+main use case). Three fixes:
+
+1. **gitignore-aware scanning** (`git_visible_paths` in `project.py`): both
+   the engine code scan and `TestMapper.discover_test_files` filter through
+   `git ls-files --cached --others --exclude-standard` and never traverse
+   ignored trees. `CHISEL_INCLUDE_IGNORED=1` opts out; non-git projects are
+   unfiltered. Test files discovered here: 3,895 → 26.
+2. **`build_test_edges` memoization**: matching depends only on
+   (module_path, code file), so match results are cached per module path
+   and deps per file. 17.6s → 0.23s on identical input, byte-identical
+   output (A/B verified against the pre-change algorithm).
+3. **`update()` gating**: edge rebuild skipped entirely when no files
+   changed and no new commits (`edge_rebuild_skipped: true`); per-function
+   `git log -L` churn restricted to changed files.
+
+Net effect on this repo: full analyze 19.4s → 2.3s; no-op update ~18s →
+0.14s; single-file update ~19s → 1.4s. Regression tests:
+`tests/test_gitignore_filter.py`, `TestUpdateEdgeRebuildGating`.
 
 ## Symptom
 

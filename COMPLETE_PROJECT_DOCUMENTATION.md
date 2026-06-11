@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence for **LLM agents** in **solo-maintainer** workflows, with **multi-process / multi-agent** safety (shared `.chisel/` storage, locks). Zero external dependencies.
 
-**Version:** 0.12.0
+**Version:** 0.13.0
 **PyPI:** `chisel-test-impact`
 **License:** MIT
 **Python:** >= 3.11
@@ -79,6 +79,7 @@ Test impact analysis and code intelligence for **LLM agents** in **solo-maintain
 | `tests/test_next_steps.py` | Tests for next-step hint functions per tool | `pytest`, `chisel.next_steps` | -- |
 | `tests/test_llm_contract.py` | Tests for agent vocabulary constants and schema cross-references | `pytest`, `chisel.llm_contract` | -- |
 | `tests/test_bootstrap.py` | Tests for CHISEL_BOOTSTRAP user-module loading | `pytest`, `chisel.bootstrap` | -- |
+| `tests/test_gitignore_filter.py` | Tests for gitignore-aware scanning (git_visible_paths, walk pruning, CHISEL_INCLUDE_IGNORED opt-out, non-git fallback) | `pytest`, `chisel.engine`, `chisel.project`, `chisel.test_mapper` | -- |
 | `tests/bootstrap_stub.py` | Stub module loaded by bootstrap tests | -- | -- |
 | `tests/conftest.py` | Shared pytest fixtures: temp git repos, `run_git` helper | `pytest`, `os`, `subprocess` | -- |
 
@@ -109,5 +110,5 @@ mcp_stdio.py --> engine.py, mcp_server.py, schemas.py
 
 | Script | Target | Description |
 |--------|--------|-------------|
-| `chisel` | `chisel.cli:main` | CLI with 28 subcommands |
+| `chisel` | `chisel.cli:cli_entry` | CLI with 28 subcommands (cli_entry converts results to exit codes) |
 | `chisel-mcp` | `chisel.mcp_stdio:main` | stdio MCP server |
