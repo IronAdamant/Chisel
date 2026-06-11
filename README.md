@@ -67,6 +67,8 @@ Run `analyze` first to build the project graph, then `diff_impact` after edits t
 
 After running tests, call `record_result` so Chisel can track failure rates and test instability over time. Or use `chisel run -- pytest tests/` to run tests and record results automatically.
 
+There is also an installable Claude Code **skill** with the distilled agent protocol: copy [`skills/SKILL.md`](skills/SKILL.md) to `~/.claude/skills/chisel/SKILL.md`.
+
 ## Use with Cursor, Windsurf, Cline, or other MCP clients
 
 Chisel exposes a standard MCP interface. For stdio-based clients:
@@ -103,7 +105,10 @@ chisel test-gaps
 # Who owns this code?
 chisel ownership engine.py
 
-# Incremental update (only re-process changed files)
+# Run tests AND record pass/fail results in one step
+chisel run -- pytest tests/
+
+# Incremental update (near-instant when nothing changed)
 chisel update
 ```
 
@@ -152,12 +157,13 @@ chisel test-gaps
 
 - **Zero dependencies** — stdlib only, Python 3.11+, works anywhere
 - **Multi-language** — Python, JavaScript/TypeScript, Go, Rust, C#, Java, Kotlin, C/C++, Swift, PHP, Ruby, Dart
-- **Framework-aware** — pytest, Jest, Go test, Rust #[test], Playwright, xUnit/NUnit/MSTest, JUnit, XCTest, PHPUnit, RSpec, Minitest, gtest, Dart test
+- **Framework-aware** — pytest, Jest, Go test, Rust #[test], Playwright, xUnit/NUnit/MSTest, JUnit (incl. parameterized), XCTest + Swift Testing, PHPUnit, RSpec, Minitest, gtest, Dart test
 - **Incremental** — only re-processes changed files, not the whole repo; a no-change `update` is near-instant
 - **gitignore-aware** — ignored trees (vendored deps, build output, fixtures) are never scanned; untracked files still are (`CHISEL_INCLUDE_IGNORED=1` to override)
 - **Branch-aware** — `diff_impact` auto-detects feature branch vs main
 - **Multi-agent safe** — cross-process locks so parallel agents don't corrupt the graph
 - **MCP + CLI** — stdio and HTTP MCP servers, plus a full CLI with 28 subcommands
+- **CI-friendly** — real exit codes (`chisel analyze && pytest` just works); copy-paste GitHub Actions example in `examples/github-actions/`
 - **Monorepo sharding** — split analysis across per-directory SQLite databases (`CHISEL_SHARDS`)
 - **Custom extractors** — plug in tree-sitter or LSP via `register_extractor()` if you need it
 

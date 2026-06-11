@@ -27,7 +27,7 @@
 | LLM_Development.md | 🟢 Green | 2026-06-11 14:33:41 AEST | released in v0.13.0; docs current |
 | Logged_issues/2026-06-11_directory-scoped-analyze-walks-all-tests.md | 🟢 Green | 2026-06-11 14:31:33 AEST | wiki and docs updated for v0.13.0 |
 | PLAN_NEXT.md | 🟢 Green | 2026-06-11 13:54:41 AEST | reviewed in v0.12.0 pass or runtime artifact |
-| README.md | 🟢 Green | 2026-06-11 16:03:02 AEST | docs current for v0.14.0 |
+| README.md | 🟢 Green | 2026-06-11 16:16:21 AEST | README current for v0.14.0 tag |
 | chisel/__init__.py | 🟢 Green | 2026-06-11 16:03:04 AEST | docs current for v0.14.0 |
 | chisel/__pycache__/__init__.cpython-314.pyc | 🟢 Green | 2026-06-11 14:33:17 AEST | release state settled for v0.13.0 |
 | chisel/__pycache__/cli.cpython-314.pyc | 🟢 Green | 2026-06-11 14:33:15 AEST | release state settled for v0.13.0 |
