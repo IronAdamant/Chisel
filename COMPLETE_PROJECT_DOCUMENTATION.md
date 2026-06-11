@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence for **LLM agents** in **solo-maintainer** workflows, with **multi-process / multi-agent** safety (shared `.chisel/` storage, locks). Zero external dependencies.
 
-**Version:** 0.13.0
+**Version:** 0.14.0
 **PyPI:** `chisel-test-impact`
 **License:** MIT
 **Python:** >= 3.11
@@ -15,7 +15,8 @@ Test impact analysis and code intelligence for **LLM agents** in **solo-maintain
 | `LICENSE` | MIT license text | -- | -- |
 | `.gitignore` | Git ignore rules for caches, DBs, virtualenvs | -- | -- |
 | `.github/workflows/ci.yml` | GitHub Actions CI (version check, benchmark, lint, test, Python 3.11-3.14) | -- | -- |
-| `docs/AGENT_PLAYBOOK.md` | Short MCP/agent workflow: analyze, diff_impact, start_job, source field | -- | -- |
+| `docs/AGENT_PLAYBOOK.md` | Short MCP/agent workflow: analyze, diff_impact, start_job, source field; v0.13 behavior notes | -- | -- |
+| `skills/SKILL.md` | Installable Claude Code skill (copy to ~/.claude/skills/chisel/) — distilled agent protocol | -- | -- |
 | `docs/ZERO_DEPS.md` | Strict stdlib-only policy; optional extras; tree-sitter vs register_extractor | -- | -- |
 | `docs/CUSTOM_EXTRACTORS.md` | `register_extractor`, `CHISEL_BOOTSTRAP`, user-installed tree-sitter / LSP | -- | -- |
 | `examples/github-actions/chisel.yml` | Sample workflow for consumers to copy into their repos | -- | -- |

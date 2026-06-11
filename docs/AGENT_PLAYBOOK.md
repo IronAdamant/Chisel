@@ -2,6 +2,13 @@
 
 Short guide for **LLM agents** using Chisel (MCP or CLI). Solo maintainer, multiple sessions — one `.chisel/` database per project; use **`--project-dir`** when the cwd is not the repo root.
 
+An installable Claude Code skill distilled from this playbook ships in **`skills/SKILL.md`** — copy to `~/.claude/skills/chisel/SKILL.md`.
+
+**v0.13 behavior notes:**
+- Scanning is **gitignore-aware**: ignored trees (vendored deps, build output, fixture dirs) are never scanned or traversed; untracked-but-not-ignored files remain visible, so `working_tree=true` analysis is unaffected. `CHISEL_INCLUDE_IGNORED=1` disables the filter; non-git projects are unfiltered.
+- **CLI exit codes are real**: `chisel analyze && pytest` scripting works (`status: error|git_error` → exit 1, success → 0).
+- A no-change **`update`** skips edge rebuilding entirely and reports `edge_rebuild_skipped: true` — safe to call frequently.
+
 **Security / trust:** Chisel defaults to **stdlib-only** analysis (minimal supply-chain surface). See **`LLM_CONTRACT.md`** for status codes, how to read `_meta`, and **`source`** trust ordering on `suggest_tests`.
 
 ## 1. First-time or after big structural changes

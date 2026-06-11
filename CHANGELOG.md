@@ -7,6 +7,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-06-11
+
+### Added
+
+- **Claude Code skill** (`skills/SKILL.md`): an installable agent skill distilling the day-to-day Chisel protocol (analyze → diff_impact → `chisel run` → triage), v0.13 behavior notes, `source` trust ordering, and empty-result remedies. Copy to `~/.claude/skills/chisel/SKILL.md`; mirrors the Wikifier skill pattern.
+
+### Changed
+
+- **Agent-facing docs refreshed for v0.13**: `docs/AGENT_PLAYBOOK.md` gains v0.13 behavior notes (gitignore-aware scanning + `CHISEL_INCLUDE_IGNORED`, real CLI exit codes, `edge_rebuild_skipped`) and links the skill; README features list now documents gitignore-aware scanning.
+
 ## [0.13.0] — 2026-06-11
 
 ### Fixed

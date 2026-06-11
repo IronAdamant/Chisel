@@ -153,7 +153,8 @@ chisel test-gaps
 - **Zero dependencies** — stdlib only, Python 3.11+, works anywhere
 - **Multi-language** — Python, JavaScript/TypeScript, Go, Rust, C#, Java, Kotlin, C/C++, Swift, PHP, Ruby, Dart
 - **Framework-aware** — pytest, Jest, Go test, Rust #[test], Playwright, xUnit/NUnit/MSTest, JUnit, XCTest, PHPUnit, RSpec, Minitest, gtest, Dart test
-- **Incremental** — only re-processes changed files, not the whole repo
+- **Incremental** — only re-processes changed files, not the whole repo; a no-change `update` is near-instant
+- **gitignore-aware** — ignored trees (vendored deps, build output, fixtures) are never scanned; untracked files still are (`CHISEL_INCLUDE_IGNORED=1` to override)
 - **Branch-aware** — `diff_impact` auto-detects feature branch vs main
 - **Multi-agent safe** — cross-process locks so parallel agents don't corrupt the graph
 - **MCP + CLI** — stdio and HTTP MCP servers, plus a full CLI with 28 subcommands
@@ -164,7 +165,7 @@ chisel test-gaps
 
 Chisel sits in the agent loop: impact -> tests -> record results -> refresh analysis. It works standalone or alongside [Stele](https://github.com/IronAdamant/Stele) for semantic code context.
 
-**Docs:** [Agent playbook](docs/AGENT_PLAYBOOK.md) | [Zero-dependency policy](docs/ZERO_DEPS.md) | [Custom extractors](docs/CUSTOM_EXTRACTORS.md)
+**Docs:** [Agent playbook](docs/AGENT_PLAYBOOK.md) | [Claude Code skill](skills/SKILL.md) | [Zero-dependency policy](docs/ZERO_DEPS.md) | [Custom extractors](docs/CUSTOM_EXTRACTORS.md)
 
 ## License
 
