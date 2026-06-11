@@ -151,3 +151,58 @@ class TestGoModuleResolution:
         edges = mapper.build_test_edges(test_units, code_units)
         imported = {e["code_id"] for e in edges}
         assert any("utils.go" in cid for cid in imported)
+
+
+class TestAnnotationParameterSupport:
+    """Parameterized/stacked annotations must not hide test methods."""
+
+    def test_java_annotations_with_parameters(self, mapper, tmp_path):
+        src = tmp_path / "CalcTest.java"
+        src.write_text(
+            "public class CalcTest {\n"
+            "    @ParameterizedTest\n"
+            "    @ValueSource(ints = {1, 2, 3})\n"
+            "    void worksForAll(int n) {\n"
+            "    }\n"
+            "\n"
+            "    @Test(expected = RuntimeException.class)\n"
+            "    void explodes() {\n"
+            "    }\n"
+            "}\n"
+        )
+        units = mapper.parse_test_file(str(src))
+        bare = {u["name"].rsplit(".", 1)[-1] for u in units}
+        assert "worksForAll" in bare
+        assert "explodes" in bare
+
+    def test_csharp_fact_with_trait_attribute(self, mapper, tmp_path):
+        src = tmp_path / "OrderTests.cs"
+        src.write_text(
+            "public class OrderTests {\n"
+            "    [Fact]\n"
+            "    [Trait(\"category\", \"unit\")]\n"
+            "    public void CreatesOrder() {\n"
+            "    }\n"
+            "}\n"
+        )
+        units = mapper.parse_test_file(str(src))
+        bare = {u["name"].rsplit(".", 1)[-1] for u in units}
+        assert "CreatesOrder" in bare
+
+    def test_swift_testing_with_description_args(self, mapper, tmp_path):
+        src = tmp_path / "FancyTests.swift"
+        src.write_text(
+            'import Testing\n\n'
+            '@Test("addition works")\n'
+            'func additionWorks() {\n'
+            '    #expect(1 + 1 == 2)\n'
+            '}\n\n'
+            '@Test\n'
+            '@MainActor\n'
+            'func mainActorCase() {\n'
+            '}\n'
+        )
+        units = mapper.parse_test_file(str(src))
+        names = {u["name"] for u in units}
+        assert "additionWorks" in names
+        assert "mainActorCase" in names

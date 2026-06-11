@@ -121,9 +121,17 @@ def _hints_diff_impact(result):
             {"tool": "update", "args": {}, "reason": "Re-analyze if working tree has new files"},
         ]
     if isinstance(result, list) and result:
+        first_test = result[0].get("test_id", "") if isinstance(result[0], dict) else ""
         return [
             {"action": "run_tests", "reason": "Execute impacted tests to verify changes"},
-            {"tool": "record_result", "args": {}, "reason": "Log outcomes for future prioritization"},
+            {
+                "tool": "record_result",
+                "args": {"test_id": first_test, "passed": True},
+                "reason": (
+                    "After running, log each outcome (test_id + passed) "
+                    "for future prioritization"
+                ),
+            },
             {"tool": "coupling", "args": {}, "reason": "Check changed files for hidden dependents"},
         ]
     if isinstance(result, list):

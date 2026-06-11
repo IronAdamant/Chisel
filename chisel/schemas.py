@@ -1,6 +1,6 @@
 """Tool schemas and dispatch tables for Chisel MCP servers.
 
-Contains the JSON Schema definitions for all 16 engine tools and the
+Contains the JSON Schema definitions for all engine tools and the
 dispatch mapping used by both the HTTP and stdio MCP servers.
 
 Agent-facing vocabulary and trust rules: ``chisel.llm_contract`` and
@@ -10,7 +10,7 @@ Agent-facing vocabulary and trust rules: ``chisel.llm_contract`` and
 from chisel.llm_contract import HEURISTIC_TRUST_NOTE
 
 # ------------------------------------------------------------------ #
-# Tool schemas — JSON Schema definitions for all 16 engine tools
+# Tool schemas — JSON Schema definitions for all engine tools
 # ------------------------------------------------------------------ #
 
 _TOOL_SCHEMAS = {
@@ -35,6 +35,14 @@ _TOOL_SCHEMAS = {
                 "force": {
                     "type": "boolean",
                     "description": "Force re-analysis of all files even if unchanged.",
+                },
+                "shard": {
+                    "type": "string",
+                    "description": (
+                        "Optional shard key to scope analysis to one shard DB "
+                        "(sharded monorepos via CHISEL_SHARDS or .chisel/shards.toml). "
+                        "Omit to rely on automatic path-based routing."
+                    ),
                 },
             },
             "required": [],
@@ -360,7 +368,15 @@ _TOOL_SCHEMAS = {
         ),
         "parameters": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "shard": {
+                    "type": "string",
+                    "description": (
+                        "Optional shard key to scope the update to one shard DB. "
+                        "Omit to rely on automatic path-based routing."
+                    ),
+                },
+            },
             "required": [],
         },
     },
@@ -507,6 +523,13 @@ _TOOL_SCHEMAS = {
                     "type": "boolean",
                     "description": "Force full re-analysis (analyze only).",
                 },
+                "shard": {
+                    "type": "string",
+                    "description": (
+                        "Optional shard key to scope the job to one shard DB. "
+                        "Omit to rely on automatic path-based routing."
+                    ),
+                },
             },
             "required": ["kind"],
         },
@@ -516,6 +539,25 @@ _TOOL_SCHEMAS = {
         "description": (
             "Poll a job started with start_job. Returns status running | completed "
             "| failed | not_found; completed includes result dict; failed includes error."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "Job id returned by start_job.",
+                },
+            },
+            "required": ["job_id"],
+        },
+    },
+    "cancel_job": {
+        "name": "cancel_job",
+        "description": (
+            "Request cooperative cancellation of a running background job started "
+            "with start_job. Returns ok (cancellation requested), error (job already "
+            "completed/failed), or not_found. Poll job_status to confirm the job "
+            "stopped."
         ),
         "parameters": {
             "type": "object",
@@ -649,7 +691,7 @@ _TOOL_SCHEMAS = {
 # ------------------------------------------------------------------ #
 
 _TOOL_DISPATCH = {
-    "analyze": ("tool_analyze", ["directory", "force"]),
+    "analyze": ("tool_analyze", ["directory", "force", "shard"]),
     "impact": ("tool_impact", ["files", "functions"]),
     "suggest_tests": ("tool_suggest_tests", ["file_path", "directory", "fallback_to_all", "working_tree", "auto_update"]),
     "churn": ("tool_churn", ["file_path", "unit_name"]),
@@ -663,13 +705,13 @@ _TOOL_DISPATCH = {
     "history": ("tool_history", ["file_path"]),
     "who_reviews": ("tool_who_reviews", ["file_path"]),
     "diff_impact": ("tool_diff_impact", ["ref", "working_tree", "auto_update"]),
-    "update": ("tool_update", []),
+    "update": ("tool_update", ["shard"]),
     "test_gaps": ("tool_test_gaps", ["file_path", "directory", "exclude_tests", "working_tree", "limit", "auto_update"]),
     "record_result": ("tool_record_result", ["test_id", "passed", "duration_ms"]),
     "triage": ("tool_triage", ["directory", "top_n", "exclude_tests", "working_tree", "exclude_new_file_boost", "auto_update"]),
     "stats": ("tool_stats", []),
     "optimize_storage": ("tool_optimize_storage", []),
-    "start_job": ("tool_start_job", ["kind", "directory", "force"]),
+    "start_job": ("tool_start_job", ["kind", "directory", "force", "shard"]),
     "job_status": ("tool_job_status", ["job_id"]),
     "cancel_job": ("tool_cancel_job", ["job_id"]),
     # --- file_locks ---
@@ -682,6 +724,9 @@ _TOOL_DISPATCH = {
 }
 
 # Inject 'limit' parameter into all list-returning tool schemas.
+# 'limit' is intentionally absent from the _TOOL_DISPATCH arg lists:
+# dispatch_tool() pops it and truncates the result after the engine call,
+# so engine methods never need to accept it.
 _LIMIT_PROP = {
     "type": "integer",
     "description": "Maximum number of results to return.",
@@ -689,7 +734,7 @@ _LIMIT_PROP = {
 for _name, _schema in _TOOL_SCHEMAS.items():
     if _name not in (
         "analyze", "update", "record_result", "stats", "triage",
-        "start_job", "job_status",
+        "start_job", "job_status", "cancel_job",
         "acquire_file_lock", "release_file_lock", "refresh_file_lock",
         "check_file_lock",
     ):

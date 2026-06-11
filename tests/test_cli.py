@@ -647,13 +647,13 @@ class TestHandlerOutputFormats:
         # Mock subprocess stdout
         proc = MagicMock()
         proc.stdout = [
-            b"tests/test_app.py::test_foo PASSED\n",
+            b"tests/test_app.py::test_foo PASSED   [ 50%]\n",
             b"tests/test_app.py::test_bar FAILED\n",
         ]
         proc.returncode = 1
         mock_popen.return_value = proc
 
-        args = _make_args(command=["pytest"], project_dir=str(tmp_path))
+        args = _make_args(test_command=["pytest"], project_dir=str(tmp_path))
         exit_code = cmd_run(args)
 
         assert exit_code == 1
@@ -667,8 +667,21 @@ class TestHandlerOutputFormats:
     def test_cmd_run_unknown_framework_no_record(self, mock_run, capsys):
         mock_run.return_value = MagicMock(returncode=0)
 
-        args = _make_args(command=["make", "test"])
+        args = _make_args(test_command=["make", "test"])
         exit_code = cmd_run(args)
+
+        assert exit_code == 0
+        mock_run.assert_called_once_with(["make", "test"])
+
+    @patch("chisel.cli.subprocess.run")
+    def test_main_run_dispatch_does_not_collide_with_subcommand_dest(
+            self, mock_run):
+        """`chisel run -- make test` once crashed: the run positional was
+        named "command", overwriting the subparser dest with a list."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        exit_code = main(["run", "--project-dir", "/tmp/p", "--",
+                          "make", "test"])
 
         assert exit_code == 0
         mock_run.assert_called_once_with(["make", "test"])
@@ -736,7 +749,8 @@ class TestMain:
         main(["analyze", "--project-dir", "/tmp/p"])
 
         mock_cls.assert_called_once_with("/tmp/p", storage_dir=None)
-        engine.tool_analyze.assert_called_once_with(directory=".", force=False)
+        engine.tool_analyze.assert_called_once_with(
+            directory=".", force=False, shard=None)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_impact(self, mock_cls):
@@ -769,7 +783,8 @@ class TestMain:
 
         main(["coupling", "--project-dir", "/tmp/p", "f.py", "--min-count", "7"])
 
-        engine.tool_coupling.assert_called_once_with(file_path="f.py", min_count=7)
+        engine.tool_coupling.assert_called_once_with(
+            file_path="f.py", min_count=7, working_tree=False)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_json_flag(self, mock_cls, capsys):
@@ -903,7 +918,8 @@ class TestMain:
 
         main(["analyze", "--project-dir", "/tmp/p", "--force"])
 
-        engine.tool_analyze.assert_called_once_with(directory=".", force=True)
+        engine.tool_analyze.assert_called_once_with(
+            directory=".", force=True, shard=None)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_analyze_with_directory(self, mock_cls):
@@ -913,7 +929,8 @@ class TestMain:
 
         main(["analyze", "--project-dir", "/tmp/p", "src/"])
 
-        engine.tool_analyze.assert_called_once_with(directory="src/", force=False)
+        engine.tool_analyze.assert_called_once_with(
+            directory="src/", force=False, shard=None)
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_triage(self, mock_cls):

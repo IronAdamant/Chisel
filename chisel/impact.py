@@ -83,7 +83,7 @@ def _quantize_gap(value, steps=20):
     Uses 20 steps (0.05 increments) for finer granularity than the
     original 4 steps (0.25 increments).
     """
-    return round(value * steps) / steps
+    return min(1.0, round(value * steps) / steps)
 
 
 def _import_hops_to_tested(all_files, tested_files, neighbors_batch):
@@ -229,12 +229,6 @@ class ImpactAnalyzer:
             )
             self._static_index_cache_key = cache_key
         return self._static_index_cache
-
-    def _import_graph_undirected_neighbors(self, file_path):
-        """One-hop neighbors on the static import graph (both directions)."""
-        im = self.storage.get_importers(file_path)
-        out = self.storage.get_imported_files(file_path)
-        return set(im) | set(out)
 
     def _import_graph_neighbors_with_confidence(self, file_path):
         """Return ``{neighbor: best_confidence}`` for one-hop neighbors.
@@ -746,7 +740,15 @@ class ImpactAnalyzer:
                 covered_files.add(fp)
         if not covered_files:
             return gaps
-        return [g for g in gaps if g["file_path"] not in covered_files]
+        # Static-import resolution is a coverage *heuristic*: in re-export /
+        # barrel-heavy projects it can claim every gap file is covered and
+        # empty the list entirely, turning real gaps into a false "all code
+        # units have test coverage". If the filter would drop everything,
+        # keep the original gaps instead.
+        filtered = [g for g in gaps if g["file_path"] not in covered_files]
+        if not filtered and gaps:
+            return gaps
+        return filtered
 
     # ------------------------------------------------------------------ #
     # Risk map

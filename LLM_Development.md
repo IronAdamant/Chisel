@@ -474,3 +474,42 @@ Full codebase audit using parallel agents to review every module, cross-validate
 ### Test suite
 
 - 334 tests (removed 2 tests for deleted methods, adjusted 3 assertions).
+
+## 2026-06-11 — v0.12.0 modernization pass (Claude Code + wikifier)
+
+Full-codebase survey via five parallel review agents, with wikifier activated on
+this repo (exclude_patterns.txt added; library.md + health matrix now live).
+
+### Interface parity
+
+- `cancel_job` gained a `_TOOL_SCHEMAS` entry — it was dispatch-only, so MCP
+  clients never saw it in tool listings. Parity test added.
+- `shard` exposed end-to-end (MCP schemas/dispatch + CLI `--shard` for
+  analyze/update/start-job); `start_job` validates unknown shards.
+
+### Bug fixes
+
+- `_with_shard()` swapped shared engine attributes — cross-thread shard leak
+  under the threaded HTTP server. Now thread-local properties.
+- Unknown-shard error paths raised `TypeError` (`sorted()` over `None` + str keys).
+- Swift Testing `@Test` regex was unreachable (`swift_test` vs `xctest` naming);
+  Java/Kotlin parameterized annotations and C# stacked attributes hid tests.
+- `test_gaps` static-import filter could erase all gaps (barrel/re-export false
+  "all covered"); WIP working-tree diff cleaned up, kept, and tested.
+- Constant ternary in `_working_tree_suggest` (source always "working_tree").
+- `:memory:`/`file:` URIs rejected as storage dirs (stray `:memory:/` dir removed).
+- `_quantize_gap` clamped to 1.0; 5 ruff E741s; stale CLI test expectation.
+
+### Removed
+
+- Dead `Storage._ensure_main_conn()`, `ImpactAnalyzer._import_graph_undirected_neighbors()`,
+  duplicated conditional in `_suggest_tests_impl`.
+
+### Docs
+
+- README de-smart-quoted (MCP JSON example now valid); cancel_job/optimize_storage
+  rows added. CHANGELOG reordered (0.9.0 was above Unreleased), missing 0.10.0
+  entry reconstructed, 0.12.0 entry added. COMPLETE_PROJECT_DOCUMENTATION.md
+  refreshed (was v0.9.0, missing 5 modules + 8 test files).
+
+Result: 810 tests passing (794 + 17 new − 1 pre-existing failure fixed), ruff clean.

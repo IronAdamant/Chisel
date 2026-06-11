@@ -119,14 +119,17 @@ class ChiselEngine:
 
     def __init__(self, project_dir, storage_dir=None):
         load_user_bootstrap()
+        # Must exist before anything touches the storage/lock/impact
+        # properties below.
+        self._shard_local = threading.local()
         self.project_dir = detect_project_root(str(project_dir))
         resolved_storage = resolve_storage_dir(self.project_dir, storage_dir)
-        self.storage = Storage(base_dir=resolved_storage)
+        self._default_storage = Storage(base_dir=resolved_storage)
         self.git = GitAnalyzer(self.project_dir)
         self.mapper = TestMapper(self.project_dir)
-        self.impact = ImpactAnalyzer(self.storage, self.project_dir)
-        self.lock = RWLock()
-        self._process_lock = ProcessLock(resolved_storage)
+        self._default_impact = ImpactAnalyzer(self._default_storage, self.project_dir)
+        self._default_lock = RWLock()
+        self._default_process_lock = ProcessLock(resolved_storage)
         self._bg_jobs_lock = threading.Lock()
         self._bg_job_in_progress = False
         self._bg_job_progress = {}
@@ -143,6 +146,34 @@ class ChiselEngine:
     # ------------------------------------------------------------------ #
     # Shard routing
     # ------------------------------------------------------------------ #
+    # storage/lock/impact/_process_lock resolve through a thread-local
+    # override set by _with_shard(). A plain attribute swap would leak the
+    # shard redirect to concurrent threads (HTTP MCP server threads,
+    # background jobs), so the override is per-thread by construction.
+
+    @property
+    def storage(self):
+        ctx = getattr(self._shard_local, "ctx", None)
+        return ctx[0] if ctx else self._default_storage
+
+    @property
+    def lock(self):
+        ctx = getattr(self._shard_local, "ctx", None)
+        return ctx[1] if ctx else self._default_lock
+
+    @property
+    def _process_lock(self):
+        ctx = getattr(self._shard_local, "ctx", None)
+        return ctx[2] if ctx else self._default_process_lock
+
+    @property
+    def impact(self):
+        ctx = getattr(self._shard_local, "ctx", None)
+        return ctx[3] if ctx else self._default_impact
+
+    def _known_shards(self):
+        """Shard keys for error messages (excludes the default None entry)."""
+        return sorted(k for k in self._shard_engines if k is not None)
 
     def _load_shard_config(self):
         """Load shard definitions from env var or .chisel/shards.toml."""
@@ -184,7 +215,8 @@ class ChiselEngine:
     def _init_shard_engines(self, storage_dir):
         """Initialize per-shard storage, locks, and impact analyzers."""
         self._shard_engines = {
-            None: (self.storage, self.lock, self._process_lock, self.impact),
+            None: (self._default_storage, self._default_lock,
+                   self._default_process_lock, self._default_impact),
         }
         for shard in self._shard_config:
             shard_dir = resolve_storage_dir(self.project_dir, storage_dir, shard=shard)
@@ -196,22 +228,21 @@ class ChiselEngine:
 
     @contextmanager
     def _with_shard(self, shard):
-        """Temporarily swap self.storage/lock/process_lock/impact to a shard."""
+        """Route storage/lock/process_lock/impact to a shard for this thread.
+
+        The override is thread-local: a background job analyzing one shard
+        must not redirect concurrent tool calls running on other threads of
+        the same engine.
+        """
         if shard is None or shard not in self._shard_engines:
             yield
             return
-        old_storage = self.storage
-        old_lock = self.lock
-        old_process_lock = self._process_lock
-        old_impact = self.impact
-        self.storage, self.lock, self._process_lock, self.impact = self._shard_engines[shard]
+        prev = getattr(self._shard_local, "ctx", None)
+        self._shard_local.ctx = self._shard_engines[shard]
         try:
             yield
         finally:
-            self.storage = old_storage
-            self.lock = old_lock
-            self._process_lock = old_process_lock
-            self.impact = old_impact
+            self._shard_local.ctx = prev
 
     def _shard_for_path(self, file_path):
         """Return the shard key for a project-relative file path."""
@@ -349,7 +380,7 @@ class ChiselEngine:
                     active_locks = self.storage.list_file_locks()
                     stats["active_file_locks"] = len(active_locks)
                     if active_locks:
-                        stats["locked_files_sample"] = [l["file_path"] for l in active_locks[:5]]
+                        stats["locked_files_sample"] = [lk["file_path"] for lk in active_locks[:5]]
                 except Exception:
                     stats["active_file_locks"] = 0
                 self._record_job_event("phase_end", {"phase": "analyze", "stats": stats})
@@ -433,7 +464,7 @@ class ChiselEngine:
                     active_locks = self.storage.list_file_locks()
                     stats["active_file_locks"] = len(active_locks)
                     if active_locks:
-                        stats["locked_files_sample"] = [l["file_path"] for l in active_locks[:5]]
+                        stats["locked_files_sample"] = [lk["file_path"] for lk in active_locks[:5]]
                 except Exception:
                     stats["active_file_locks"] = 0
                 self._record_job_event("phase_end", {"phase": "update", "stats": stats})
@@ -510,7 +541,7 @@ class ChiselEngine:
         if target_shard is not None and target_shard not in self._shard_engines:
             return {
                 "status": "error",
-                "message": f"Unknown shard: {target_shard!r}. Known: {sorted(self._shard_engines)}",
+                "message": f"Unknown shard: {target_shard!r}. Known: {self._known_shards()}",
             }
         with self._with_shard(target_shard):
             result = self.analyze(directory=directory, force=force)
@@ -535,6 +566,11 @@ class ChiselEngine:
             return {
                 "status": "error",
                 "message": f"kind must be 'analyze' or 'update', got {kind!r}",
+            }
+        if shard is not None and shard not in self._shard_engines:
+            return {
+                "status": "error",
+                "message": f"Unknown shard: {shard!r}. Known: {self._known_shards()}",
             }
         with self._bg_jobs_lock:
             if self._bg_job_in_progress:
@@ -738,9 +774,7 @@ class ChiselEngine:
         )
         if not result and not fallback_to_all:
             result = self.impact._fallback_suggest_tests(file_path)
-        if not result and not working_tree:
-            result = self._working_tree_suggest(file_path, disk_test_files=disk)
-        if working_tree and not result:
+        if not result:
             result = self._working_tree_suggest(file_path, disk_test_files=disk)
         return result[:_WORKING_TREE_SUGGEST_LIMIT] if len(result) > _WORKING_TREE_SUGGEST_LIMIT else result
 
@@ -987,12 +1021,12 @@ class ChiselEngine:
                 try:
                     locks = self.storage.list_file_locks()
                     if locks:
-                        lock_map = {l["file_path"]: l["agent_id"] for l in locks}
+                        lock_map = {lk["file_path"]: lk["agent_id"] for lk in locks}
                         for f in files:
                             if f["file_path"] in lock_map:
                                 f["locked_by"] = lock_map[f["file_path"]]
                         meta["active_locks"] = len(locks)
-                        meta["lock_claims"] = len([l for l in locks if l["file_path"] in {ff["file_path"] for ff in files}])
+                        meta["lock_claims"] = len([lk for lk in locks if lk["file_path"] in {ff["file_path"] for ff in files}])
                 except Exception:
                     meta["active_locks"] = 0
                 # Compute cycles from the DIRECTED import graph for _meta.
@@ -1481,7 +1515,7 @@ class ChiselEngine:
         if target_shard is not None and target_shard not in self._shard_engines:
             return {
                 "status": "error",
-                "message": f"Unknown shard: {target_shard!r}. Known: {sorted(self._shard_engines)}",
+                "message": f"Unknown shard: {target_shard!r}. Known: {self._known_shards()}",
             }
         with self._with_shard(target_shard):
             result = self.update()
@@ -1625,7 +1659,7 @@ class ChiselEngine:
                         locks = self.storage.list_file_locks()
                         summary["active_locks"] = len(locks)
                         if locks:
-                            lock_map = {l["file_path"]: l["agent_id"] for l in locks}
+                            lock_map = {lk["file_path"]: lk["agent_id"] for lk in locks}
                             for r in risk_map:
                                 if r.get("file_path") in lock_map:
                                     r["locked_by"] = lock_map[r["file_path"]]
@@ -2348,7 +2382,7 @@ class ChiselEngine:
                     score = min(1.0, score + 0.3)
 
             for name in test_names:
-                src = "working_tree" if (disk_test_files and test_file in disk_test_files) else "working_tree"
+                src = "working_tree" if (disk_test_files and test_file in disk_test_files) else "fallback"
                 scored.append({
                     "test_id": f"{test_file}:{name}",
                     "file_path": test_file,

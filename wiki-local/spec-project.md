@@ -234,3 +234,11 @@ This reduces false positive edges in projects where multiple modules export iden
 | `acquire-lock`, `release-lock`, `refresh-lock`, `check-lock`, `check-locks`, `list-locks` | per subcommand | Advisory multi-agent file locks |
 
 All subcommands accept `--project-dir`, `--storage-dir`, `--json`, and `--limit` flags (where applicable).
+
+## Sharding & Interface Parity (v0.12.0)
+
+- **Monorepo sharding**: configured via `CHISEL_SHARDS` env var or `.chisel/shards.toml`; each shard has its own SQLite DB under `.chisel/shards/<shard>/`. Writes route by longest path prefix; unscoped queries aggregate across shards.
+- **Thread-local shard routing**: `engine.storage/lock/impact/_process_lock` are properties resolving through a thread-local override set by `_with_shard()`. This prevents a background job scoped to one shard from redirecting concurrent tool calls on other threads.
+- **`shard` parameter** is exposed end-to-end since v0.12.0: MCP schemas + dispatch for `analyze`/`update`/`start_job`, and CLI `--shard` flags. Unknown shard keys return `{"status": "error", ...}` listing known shards.
+- **Schema/dispatch parity** is enforced by `tests/test_mcp_server.py::TestSchemaDispatchParity` — every dispatchable tool must be advertised in `GET /tools` and the stdio tool list (`cancel_job` regression).
+- **Storage dir validation**: `resolve_storage_dir()` rejects `:memory:` and `file:` SQLite URIs with `ValueError` — Chisel needs a real directory for its cross-process lock file.

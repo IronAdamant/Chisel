@@ -5,22 +5,36 @@ All notable changes to Chisel are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.0] — 2026-04-15
+## [Unreleased]
+
+## [0.12.0] — 2026-06-11
 
 ### Added
 
-- **Monorepo SQLite sharding**: Large repos can now shard analysis data across multiple SQLite databases. Set `CHISEL_SHARDS=frontend,backend` (or create `.chisel/shards.toml`) to split data by top-level directory. Query tools (`risk_map`, `triage`, `diff_impact`, `impact`, `test_gaps`, `stale_tests`, `suggest_tests`, `stats`) automatically aggregate results across shards. Write tools (`analyze`, `update`, `record_result`) route to the correct shard based on file path.
-- **`analyze` auto-fallback to background job**: `tool_analyze` now scans the repo before starting a full forced analysis. If `force=True` and the repository contains more than 300 code files, it automatically queues a background job via `start_job` and returns `{"status": "auto_queued", "job_id": ..., "kind": "analyze"}` to avoid MCP timeouts on large repos.
-- **`exclude_new_file_boost` parameter**: Both `risk_map` and `triage` now accept `exclude_new_file_boost=True`. When set, the 0.5 additive boost for files with zero churn and zero coverage is suppressed, making long-term risk rankings more stable.
-- **`auto_update` parameter for read-only tools**: `diff_impact`, `suggest_tests`, `risk_map`, `test_gaps`, and `triage` now accept `auto_update=True`. When the DB is stale (missing changed files), Chisel attempts a lightweight inline `update()` before returning results. Capped at 50 changed files and skipped when a background job is already running.
-- **`chisel run` CLI subcommand**: `chisel run -- <test-command>` runs tests and automatically calls `record_result` for each detected test. Supports pytest (via `-v` output parsing) and Jest (via `--json` output file). Go and Rust are scaffolded for future extension.
-- **Extractor plugin examples**: Added `examples/extractors/tree_sitter_js_extractor.py`, `swift_syntax_extractor.py`, and `lsp_symbol_extractor.py`, plus `docs/EXTRACTOR_ECOSYSTEM.md` with install instructions and bootstrap snippets.
+- **`cancel_job` MCP schema**: the tool existed in the dispatch table but had no `_TOOL_SCHEMAS` entry, so it was invisible in `GET /tools` and stdio tool listings (callable only if an agent already knew it existed). All 26 tools are now advertised; a regression test enforces schema/dispatch parity.
+- **`shard` parameter exposed end-to-end**: `analyze`, `update`, and `start_job` now accept `shard` through the MCP schemas + dispatch table, and the CLI gains `--shard` on `analyze`, `update`, and `start-job`. Previously the engine supported it but neither interface forwarded it, despite `docs/AGENT_PLAYBOOK.md` documenting the usage. `start_job` also validates unknown shard keys up front and returns a clean error.
+
+### Fixed
+
+- **`chisel run` was completely broken** (two independent bugs, found by dogfooding): (1) its positional argument was named `command`, which collided with the subparser dest — `main()` then crashed with `TypeError: unhashable type: 'list'` on every invocation; (2) `_PYTEST_RESULT_RE` anchored the status at end-of-line, but real `pytest -v` output appends a progress suffix (`PASSED [ 16%]`), so even a direct call never parsed real output. Both fixed; `chisel run -- pytest tests/` now records results end-to-end, with regression tests through `main()` and against real-format output.
+- **Cross-thread shard leak**: `_with_shard()` mutated shared engine attributes (`storage`/`lock`/`impact`/process lock), so a background job analyzing one shard could silently redirect concurrent tool calls on other threads (HTTP MCP server, parallel agents) to the wrong shard DB. The override is now thread-local via properties; a regression test exercises two threads concurrently.
+- **Unknown-shard errors crashed**: the error path used `sorted(self._shard_engines)` over keys containing `None`, raising `TypeError` instead of returning the error dict.
+- **Swift Testing `@Test` detection was dead code**: a framework-name mismatch (`swift_test` vs the actual `xctest`) made the Swift regex unreachable — Swift `@Test` functions were only matched by accident via the Java regex. Now routed correctly, with support for `@Test("description", ...)` arguments, stacked attributes (`@MainActor`, `@available(...)`), and same-line `@Test func f()` declarations.
+- **Java/Kotlin parameterized annotations hid test methods**: `@ValueSource(ints = {1, 2, 3})`, `@CsvSource(...)`, and `@Test(expected = ...)` broke the annotation regex, so common JUnit 5 parameterized tests were not detected.
+- **C# stacked attributes hid test methods**: `[Fact]` followed by `[Trait("a", "b")]` (standard xUnit categorization) was not matched.
+- **`test_gaps` could erase all gaps in barrel/re-export-heavy projects**: when static-import resolution claimed every gap file was covered, the filter emptied the list and reported a false "all code units have test coverage". If filtering would drop everything, the original gaps are now preserved.
+- **`suggest_tests` working-tree source labeling**: a constant ternary labeled every stem-matched suggestion `working_tree`; DB-known tests matched by stem now correctly report `source: "fallback"`.
+- **Storage dir validation**: passing `:memory:` (or a `file:` URI) as `CHISEL_STORAGE_DIR` / `storage_dir` silently created a literal `:memory:` directory on disk. These are now rejected with a clear `ValueError` (multi-process coordination requires an on-disk lock file).
+- **`_quantize_gap` clamps to 1.0** to guard against float rounding pushing coverage gap above the documented bound.
+- **README**: replaced 23 typographic smart quotes — the MCP config JSON example was not copy-paste valid.
 
 ### Changed
 
-- **Documentation**: `README.md`, `docs/LLM_CONTRACT.md`, `docs/AGENT_PLAYBOOK.md`, `docs/CUSTOM_EXTRACTORS.md`, and `ARCHITECTURE.md` updated for sharding, auto-fallback, and extractor ecosystem.
+- **`next_steps`**: the `diff_impact` hint for `record_result` now includes concrete `test_id`/`passed` arguments instead of an empty args dict (record_result has required fields).
 
-## [Unreleased]
+### Removed
+
+- Dead code: `Storage._ensure_main_conn()`, `ImpactAnalyzer._import_graph_undirected_neighbors()`, the unreachable `swift_test` branches, and a redundant duplicated conditional in `_suggest_tests_impl`.
 
 ## [0.11.0] — 2026-05-15
 
@@ -46,6 +60,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 **Grok Build** edited this iteration while closing the `chisel_open.md` findings (subsequently renamed `chisel_closed.md`).
 
+## [0.10.0] — 2026-04-29
+
+> Reconstructed from the release commit — the original entry was never added
+> to this file, which is why the v0.10.0 GitHub release had no notes.
+
+### Added
+
+- **Dynamic `require()` detection** (`DynamicRequireChainTracer`): variable refs, template literals, string concatenation, conditional and eval-based loading. Variable taint tracking upgrades resolvable variables to `tainted_import` (confidence 1.0); confidence blends into edge weights; dynamic/eval edge density feeds `hidden_risk_factor` in risk scoring. `shadow_edge_count` / `dynamic_edge_count` exposed in `risk_map`.
+- **Circular dependency reporting**: Tarjan SCC-based cycle detection surfaced via risk-map `_meta`.
+
+### Fixed
+
+- Symbol-collision fix in test edge matching.
+
 ## [0.9.2] — 2026-04-17
 
 ### Fixed
@@ -63,6 +91,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - **Documentation parity sweep**: Tool count (`22`/`24` → `26` = 20 functional + 6 file-lock), CLI subcommand count (`17`/`18` → `28`), and SQLite table count (`10`/`13` → `17`) corrected across `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `ARCHITECTURE.md`, `COMPLETE_PROJECT_DOCUMENTATION.md`, and `wiki-local/spec-project.md`. `ARCHITECTURE.md` tool table gained `optimize_storage` and `cancel_job` and fixed the file-lock tool names (`acquire_lock` → `acquire_file_lock`, etc.) to match `schemas.py`.
+
+## [0.9.0] — 2026-04-15
+
+### Added
+
+- **Monorepo SQLite sharding**: Large repos can now shard analysis data across multiple SQLite databases. Set `CHISEL_SHARDS=frontend,backend` (or create `.chisel/shards.toml`) to split data by top-level directory. Query tools (`risk_map`, `triage`, `diff_impact`, `impact`, `test_gaps`, `stale_tests`, `suggest_tests`, `stats`) automatically aggregate results across shards. Write tools (`analyze`, `update`, `record_result`) route to the correct shard based on file path.
+- **`analyze` auto-fallback to background job**: `tool_analyze` now scans the repo before starting a full forced analysis. If `force=True` and the repository contains more than 300 code files, it automatically queues a background job via `start_job` and returns `{"status": "auto_queued", "job_id": ..., "kind": "analyze"}` to avoid MCP timeouts on large repos.
+- **`exclude_new_file_boost` parameter**: Both `risk_map` and `triage` now accept `exclude_new_file_boost=True`. When set, the 0.5 additive boost for files with zero churn and zero coverage is suppressed, making long-term risk rankings more stable.
+- **`auto_update` parameter for read-only tools**: `diff_impact`, `suggest_tests`, `risk_map`, `test_gaps`, and `triage` now accept `auto_update=True`. When the DB is stale (missing changed files), Chisel attempts a lightweight inline `update()` before returning results. Capped at 50 changed files and skipped when a background job is already running.
+- **`chisel run` CLI subcommand**: `chisel run -- <test-command>` runs tests and automatically calls `record_result` for each detected test. Supports pytest (via `-v` output parsing) and Jest (via `--json` output file). Go and Rust are scaffolded for future extension.
+- **Extractor plugin examples**: Added `examples/extractors/tree_sitter_js_extractor.py`, `swift_syntax_extractor.py`, and `lsp_symbol_extractor.py`, plus `docs/EXTRACTOR_ECOSYSTEM.md` with install instructions and bootstrap snippets.
+
+### Changed
+
+- **Documentation**: `README.md`, `docs/LLM_CONTRACT.md`, `docs/AGENT_PLAYBOOK.md`, `docs/CUSTOM_EXTRACTORS.md`, and `ARCHITECTURE.md` updated for sharding, auto-fallback, and extractor ecosystem.
 
 ## [0.8.3] — 2026-04-14
 

@@ -202,3 +202,22 @@ class TestCrossPlatformLock:
         """Module-level _flock and _funlock should be callable."""
         assert callable(_flock)
         assert callable(_funlock)
+
+
+class TestStorageDirValidation:
+    def test_rejects_memory_uri_explicit(self):
+        with pytest.raises(ValueError, match="not a filesystem directory"):
+            resolve_storage_dir(explicit_dir=":memory:")
+
+    def test_rejects_file_uri_explicit(self):
+        with pytest.raises(ValueError, match="not a filesystem directory"):
+            resolve_storage_dir(explicit_dir="file:foo.db?mode=memory")
+
+    def test_rejects_memory_uri_env(self, monkeypatch):
+        monkeypatch.setenv("CHISEL_STORAGE_DIR", ":memory:")
+        with pytest.raises(ValueError, match="CHISEL_STORAGE_DIR"):
+            resolve_storage_dir()
+
+    def test_normal_dirs_still_accepted(self, tmp_path):
+        out = resolve_storage_dir(explicit_dir=str(tmp_path / "store"))
+        assert out.endswith("store")

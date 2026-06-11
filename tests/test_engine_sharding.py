@@ -194,3 +194,56 @@ class TestShardingQueries:
                 "SELECT * FROM test_results WHERE test_id = ?", (test_id,)
             )
             assert len(rows) == 0
+
+
+class TestShardInterfaceExposure:
+    """shard must be reachable through the MCP dispatch layer (parity with engine)."""
+
+    def test_dispatch_and_schemas_expose_shard(self):
+        from chisel.schemas import _TOOL_DISPATCH, _TOOL_SCHEMAS
+        for tool in ("analyze", "update", "start_job"):
+            assert "shard" in _TOOL_DISPATCH[tool][1]
+            assert "shard" in _TOOL_SCHEMAS[tool]["parameters"]["properties"]
+
+    def test_unknown_shard_returns_clean_error(self, sharded_engine):
+        for res in (
+            sharded_engine.tool_update(shard="nope"),
+            sharded_engine.tool_analyze(shard="nope"),
+            sharded_engine.tool_start_job("update", shard="nope"),
+        ):
+            assert res["status"] == "error"
+            assert "nope" in res["message"]
+            assert "frontend" in res["message"]
+
+
+class TestShardThreadIsolation:
+    def test_with_shard_does_not_leak_across_threads(self, sharded_engine):
+        import threading
+
+        default_storage = sharded_engine.storage
+        shard_storage = sharded_engine._shard_engines["frontend"][0]
+        assert default_storage is not shard_storage
+
+        entered = threading.Event()
+        release = threading.Event()
+        observed = {}
+
+        def hold_shard():
+            with sharded_engine._with_shard("frontend"):
+                observed["worker"] = sharded_engine.storage is shard_storage
+                entered.set()
+                release.wait(timeout=10)
+
+        t = threading.Thread(target=hold_shard)
+        t.start()
+        assert entered.wait(timeout=10)
+        # While the worker thread holds the frontend shard, this thread
+        # must still resolve to the default storage.
+        observed["main"] = sharded_engine.storage is default_storage
+        release.set()
+        t.join(timeout=10)
+
+        assert observed["worker"] is True
+        assert observed["main"] is True
+        # And the worker's override must be gone after the context exits.
+        assert sharded_engine.storage is default_storage

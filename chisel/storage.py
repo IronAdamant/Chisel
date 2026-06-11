@@ -66,10 +66,6 @@ class Storage:
             self._local.conn = conn
         return conn
 
-    def _ensure_main_conn(self):
-        """Deprecated — kept for backward compat; returns current thread conn."""
-        return self._conn
-
     def _init_database(self):
         # executescript auto-commits; no need for a context manager.
         self._conn.executescript("""

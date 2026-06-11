@@ -158,6 +158,23 @@ def normalize_path(file_path, project_root):
     return rel.removeprefix("./")
 
 
+def _validate_storage_dir(value, origin):
+    """Reject SQLite URI-style values that would become literal directories.
+
+    Chisel storage must be a real filesystem directory (it also holds the
+    cross-process lock file), so ':memory:' and 'file:' URIs are configuration
+    errors — without this guard they silently create a literal ':memory:'
+    directory in the working directory.
+    """
+    stripped = str(value).strip()
+    if stripped == ":memory:" or stripped.startswith("file:"):
+        raise ValueError(
+            f"{origin}={value!r} is not a filesystem directory. Chisel storage "
+            "requires a real directory; in-memory SQLite is not supported "
+            "because multi-process coordination needs an on-disk lock file."
+        )
+
+
 def resolve_storage_dir(project_dir=None, explicit_dir=None, shard=None):
     """Resolve the storage directory for Chisel's database.
 
@@ -180,9 +197,12 @@ def resolve_storage_dir(project_dir=None, explicit_dir=None, shard=None):
         Absolute path to the storage directory.
     """
     if explicit_dir is not None:
+        _validate_storage_dir(explicit_dir, "storage_dir")
         base = os.path.abspath(explicit_dir)
     elif os.environ.get("CHISEL_STORAGE_DIR"):
-        base = os.path.abspath(os.environ.get("CHISEL_STORAGE_DIR"))
+        env_dir = os.environ.get("CHISEL_STORAGE_DIR")
+        _validate_storage_dir(env_dir, "CHISEL_STORAGE_DIR")
+        base = os.path.abspath(env_dir)
     elif project_dir:
         root = detect_project_root(project_dir)
         base = os.path.join(root, ".chisel")

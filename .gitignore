@@ -27,3 +27,7 @@ lang_any_sample_project_for_testing_10k_monorep/
 PLAN_NEXT.md
 PLAN_COMPLETED.md
 plan/
+
+# Wikifier runtime cache (state files like file_health.md ARE versioned)
+.wikifier_staging/
+.coordinationhub/

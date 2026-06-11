@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence built for AI coding agents. Zero external dependencies, open source, MIT licensed.
 
-Chisel maps tests to code, code to git history, and answers: **what to run, what’s risky, and who touched it.** It runs as an MCP server alongside your agent — Claude Code, Cursor, Windsurf, Cline, or any MCP-compatible client.
+Chisel maps tests to code, code to git history, and answers: **what to run, what's risky, and who touched it.** It runs as an MCP server alongside your agent — Claude Code, Cursor, Windsurf, Cline, or any MCP-compatible client.
 
 ![Chisel analyzing a real project — risk map, churn, ownership, test gaps, and agent interpretation](docs/chisel-demo.png)
 
@@ -12,11 +12,11 @@ Chisel builds a graph connecting your code, tests, and git history, then answers
 
 ### 1. What to run
 
-You change `engine.py:store_document()`. Instead of running all 287 tests or guessing with `-k “test_store”`, Chisel tells the agent exactly which tests are impacted — through direct edges and transitive import-chain coupling.
+You change `engine.py:store_document()`. Instead of running all 287 tests or guessing with `-k "test_store"`, Chisel tells the agent exactly which tests are impacted — through direct edges and transitive import-chain coupling.
 
-### 2. What’s risky
+### 2. What's risky
 
-Risk scores per file based on churn rate, coupling breadth, test coverage gaps, author concentration, and test instability. A file that changes often, has one author, and no tests? That’s your highest risk.
+Risk scores per file based on churn rate, coupling breadth, test coverage gaps, author concentration, and test instability. A file that changes often, has one author, and no tests? That's your highest risk.
 
 ### 3. Who touched it
 
@@ -26,7 +26,7 @@ Blame-based ownership (who wrote it) and commit-activity-based reviewer suggesti
 
 When multiple LLM agents (or agents + humans) work on the same codebase, changes in one area can silently break another.
 
-Chisel gives AI coding assistants the intelligence to understand the blast radius of their changes before they commit. One agent’s refactor doesn’t silently regress another agent’s work — automated code quality checks that work at the speed of your agent.
+Chisel gives AI coding assistants the intelligence to understand the blast radius of their changes before they commit. One agent's refactor doesn't silently regress another agent's work — automated code quality checks that work at the speed of your agent.
 
 ## Install
 
@@ -50,11 +50,11 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.j
 
 ```json
 {
-  “mcpServers”: {
-    “chisel”: {
-      “command”: “chisel-mcp”,
-      “env”: {
-        “CHISEL_PROJECT_DIR”: “/path/to/your/project”
+  "mcpServers": {
+    "chisel": {
+      "command": "chisel-mcp",
+      "env": {
+        "CHISEL_PROJECT_DIR": "/path/to/your/project"
       }
     }
   }
@@ -143,8 +143,10 @@ chisel test-gaps
 | `record_result` | Log test pass/fail outcomes for future prioritization |
 | `run` | CLI-only: run tests and auto-record results (pytest, Jest) |
 | `stats` | Database summary and diagnostic counts |
-| `start_job` | Run analyze/update in background (avoids MCP timeouts) |
+| `start_job` | Run analyze/update in background (avoids MCP timeouts). Optional `shard` param |
 | `job_status` | Poll a background job until complete |
+| `cancel_job` | Request cooperative cancellation of a running background job |
+| `optimize_storage` | Compact and vacuum the SQLite database |
 
 ## Features
 
@@ -153,7 +155,7 @@ chisel test-gaps
 - **Framework-aware** — pytest, Jest, Go test, Rust #[test], Playwright, xUnit/NUnit/MSTest, JUnit, XCTest, PHPUnit, RSpec, Minitest, gtest, Dart test
 - **Incremental** — only re-processes changed files, not the whole repo
 - **Branch-aware** — `diff_impact` auto-detects feature branch vs main
-- **Multi-agent safe** — cross-process locks so parallel agents don’t corrupt the graph
+- **Multi-agent safe** — cross-process locks so parallel agents don't corrupt the graph
 - **MCP + CLI** — stdio and HTTP MCP servers, plus a full CLI with 28 subcommands
 - **Monorepo sharding** — split analysis across per-directory SQLite databases (`CHISEL_SHARDS`)
 - **Custom extractors** — plug in tree-sitter or LSP via `register_extractor()` if you need it

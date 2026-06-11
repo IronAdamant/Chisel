@@ -649,3 +649,50 @@ class TestDetectPluginSignals:
         content = "function processData(input) { return input.map(x => x * 2); }"
         signals = detect_plugin_signals(content)
         assert all(v is False for v in signals.values())
+
+
+class TestQuantizeGapClamp:
+    def test_quantize_clamps_to_one(self):
+        from chisel.impact import _quantize_gap
+        assert _quantize_gap(1.04) == 1.0
+        assert _quantize_gap(2.0) == 1.0
+
+    def test_quantize_normal_values_unchanged(self):
+        from chisel.impact import _quantize_gap
+        assert _quantize_gap(0.5) == 0.5
+        assert _quantize_gap(0.0) == 0.0
+        assert _quantize_gap(1.0) == 1.0
+
+
+class TestGapStaticFilterFallback:
+    """Static-import filtering must not erase ALL gaps (barrel/re-export case)."""
+
+    def _analyzer_with_gaps(self, gaps, covered):
+        from unittest.mock import Mock
+        storage = Mock()
+        storage.get_untested_code_units.return_value = list(gaps)
+        storage.get_files_with_test_edges.return_value = set()
+        analyzer = ImpactAnalyzer(storage, "/tmp/p")
+        idx = Mock()
+        idx.find_tests.side_effect = (
+            lambda fp, **kw: [{"test_id": "t"}] if fp in covered else []
+        )
+        analyzer._get_static_index = Mock(return_value=idx)
+        return analyzer
+
+    def test_filter_emptying_all_gaps_preserves_originals(self):
+        gaps = [
+            {"id": "a.js:f", "file_path": "a.js", "name": "f"},
+            {"id": "b.js:g", "file_path": "b.js", "name": "g"},
+        ]
+        analyzer = self._analyzer_with_gaps(gaps, covered={"a.js", "b.js"})
+        assert analyzer.get_test_gaps() == gaps
+
+    def test_partial_filter_still_filters(self):
+        gaps = [
+            {"id": "a.js:f", "file_path": "a.js", "name": "f"},
+            {"id": "b.js:g", "file_path": "b.js", "name": "g"},
+        ]
+        analyzer = self._analyzer_with_gaps(gaps, covered={"a.js"})
+        out = analyzer.get_test_gaps()
+        assert [g["file_path"] for g in out] == ["b.js"]

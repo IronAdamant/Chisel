@@ -128,7 +128,7 @@ class TestMapper:
         for unit in units:
             if unit.unit_type in _TEST_UNIT_TYPES:
                 keep = True
-            elif framework in ("rust", "junit", "xctest", "swift_test", "csharp_test"):
+            elif framework in ("rust", "junit", "xctest", "csharp_test"):
                 bare = unit.name.rsplit(".", 1)[-1]
                 keep = bare in annotated or _is_test_name(unit.name, framework)
             else:
@@ -410,10 +410,12 @@ _RUST_TEST_FN_RE = re.compile(
     re.MULTILINE,
 )
 
-# Regex to find Java/Kotlin methods preceded by @Test
+# Regex to find Java/Kotlin methods preceded by @Test.
+# The trigger annotation and any stacked annotations may carry parameters,
+# e.g. @Test(expected = ...), @ValueSource(ints = {1, 2, 3}).
 _JAVA_TEST_METHOD_RE = re.compile(
-    r"@(?:Test|ParameterizedTest|RepeatedTest)\s*\n\s*"
-    r"(?:@[A-Za-z]+\s*\n\s*)*"
+    r"@(?:Test|ParameterizedTest|RepeatedTest)(?:\s*\([^)]*\))?\s*\n\s*"
+    r"(?:@[A-Za-z]+(?:\s*\([^)]*\))?\s*\n\s*)*"
     r"(?:public\s+|private\s+|protected\s+)?"
     r"(?:static\s+)?"
     r"(?:<[\w\s,<>?]+>\s+)?"
@@ -422,18 +424,24 @@ _JAVA_TEST_METHOD_RE = re.compile(
     re.MULTILINE,
 )
 
-# Regex to find Swift functions preceded by @Test
+# Regex to find Swift Testing functions preceded by @Test.
+# Handles @Test("description", .tags(...)), same-line `@Test func f()`,
+# and stacked attributes such as @MainActor or @available(...).
 _SWIFT_TEST_FN_RE = re.compile(
-    r"@Test\s*\n\s*"
+    r"@Test(?:\s*\([^)]*\))?\s+"
+    r"(?:@[A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?\s+)*"
     r"(?:async\s+)?"
     r"(?:func\s+)?"
     r"([A-Za-z_][A-Za-z0-9_]*)\s*\(",
     re.MULTILINE,
 )
 
-# Regex to find C# methods preceded by [Fact], [Theory], [Test], [TestMethod]
+# Regex to find C# methods preceded by [Fact], [Theory], [Test], [TestMethod].
+# Additional attributes such as [Trait("a", "b")] may sit between the test
+# attribute and the method signature.
 _CS_TEST_METHOD_RE = re.compile(
-    r"\[(?:Fact|Theory|Test|TestMethod)\s*(?:\([^)]*\))?\]\s*\n\s*"
+    r"\[(?:Fact|Theory|Test|TestMethod)\s*(?:\([^)]*\))?\]\s*"
+    r"(?:\[[^\]\n]*\]\s*)*"
     r"(?:public\s+|private\s+|protected\s+|internal\s+)?"
     r"(?:static\s+)?"
     r"(?:async\s+)?"
@@ -447,9 +455,11 @@ def _annotated_test_names(content, framework):
     """Return a set of function/method names marked with test annotations."""
     if framework == "rust":
         return set(_RUST_TEST_FN_RE.findall(content))
-    if framework in ("junit", "xctest"):
+    if framework == "junit":
         return set(_JAVA_TEST_METHOD_RE.findall(content))
-    if framework == "swift_test":
+    if framework == "xctest":
+        # Swift test files may mix XCTest (name-based, handled by
+        # _is_test_name) and Swift Testing @Test annotations.
         return set(_SWIFT_TEST_FN_RE.findall(content))
     if framework == "csharp_test":
         return set(_CS_TEST_METHOD_RE.findall(content))

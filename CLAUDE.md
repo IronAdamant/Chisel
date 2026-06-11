@@ -14,8 +14,9 @@ When editing behavior or docs, prefer: **structured tool results**, **explicit s
 
 ```
 chisel/
-  engine.py         — Orchestrator. Owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock, ProcessLock.
-  project.py        — Multi-agent safety: project root detection, path normalization, storage resolution, cross-process file lock.
+  engine.py         — Orchestrator. Owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock, ProcessLock. Shard routing (_with_shard, _shard_for_path) and auto-update (_try_auto_update).
+  project.py        — Multi-agent safety: project root detection, path normalization, storage resolution (incl. per-shard dirs), cross-process file lock.
+  bootstrap.py      — CHISEL_BOOTSTRAP user-module loader (custom extractor registration at engine startup).
   storage.py        — SQLite persistence (WAL mode, 30s busy timeout, write retry). 17 tables (incl. meta, import_edges, branch_co_changes, file_locks, bg_jobs, job_events, static_test_imports).
   ast_utils.py      — Multi-lang AST extraction (12 languages). CodeUnit dataclass. _extract_brace_lang() shared by brace-delimited langs.
   git_analyzer.py   — Parses git log/blame via subprocess. Branch/diff queries.
@@ -23,9 +24,10 @@ chisel/
   import_graph.py   — Static import_edges between source files (structural coupling).
   test_mapper.py    — Test file discovery, framework detection, dependency extraction, edge building.
   impact.py         — Impact analysis, risk scoring, stale test detection, reviewer suggestions.
+  static_test_imports.py — StaticImportIndex: maps code paths → covering tests via DB static imports + disk overlay. Powers working-tree fallbacks in suggest_tests/diff_impact.
   risk_meta.py      — Risk-map _meta diagnostics and dynamic reweighting when components are uniform.
   cli.py            — argparse CLI (28 subcommands). _run_tool() shared handler. Entry point: chisel.cli:main
-  schemas.py        — JSON Schema definitions for all 26 tools (20 functional + 6 file-lock) + dispatch table. Shared by HTTP and stdio servers.
+  schemas.py        — JSON Schema definitions + dispatch table for all 26 tools (parity enforced by test). Shared by HTTP and stdio servers.
   mcp_server.py     — HTTP MCP server (GET /tools, /health, POST /call). ThreadedHTTPServer. dispatch_tool() shared by both servers.
   mcp_stdio.py      — stdio MCP server (requires optional 'mcp' package). _configure_server() for engine lifecycle mgmt.
   next_steps.py     — Contextual next-step suggestions for MCP tool responses. compute_next_steps() dispatched per tool.
@@ -43,7 +45,7 @@ chisel/
 - **Blame caching**: Cached by file content hash, invalidated on change.
 - **Incremental updates**: File content hashes tracked in `file_hashes` table.
 - **Persistent connection**: Storage uses a single SQLite connection (`check_same_thread=False`) with RWLock for thread safety.
-- **Multi-agent / multi-process safety** (solo dev + parallel agents): `project.py` provides: (1) `detect_project_root()` canonicalizes via git common dir so worktrees share identity, (2) `normalize_path()` ensures consistent relative paths, (3) `resolve_storage_dir()` defaults to project-local `.chisel/` (priority: explicit > env > project-local > ~/.chisel/), (4) `ProcessLock` for cross-process coordination — shared locks for reads, exclusive for writes — so concurrent agent runs and CLI `analyze`/`update` do not interleave destructive storage operations. Cross-platform: `fcntl.flock` on Unix, `LockFileEx` on Windows.
+- **Multi-agent / multi-process safety** (solo dev + parallel agents): `project.py` provides: (1) `detect_project_root()` canonicalizes via git common dir so worktrees share identity, (2) `normalize_path()` ensures consistent relative paths, (3) `resolve_storage_dir()` defaults to project-local `.chisel/` (priority: explicit > env > project-local > ~/.chisel/) and rejects `:memory:`/`file:` SQLite URIs (they would become literal directories; multi-process locks need a real dir), (4) `ProcessLock` for cross-process coordination — shared locks for reads, exclusive for writes — so concurrent agent runs and CLI `analyze`/`update` do not interleave destructive storage operations. Cross-platform: `fcntl.flock` on Unix, `LockFileEx` on Windows.
 - **SQLite concurrency**: 30s `busy_timeout` + exponential-backoff retry on `_execute` for cross-process SQLITE_BUSY.
 - **Ownership vs Reviewers**: `ownership` = blame-based (`role: "original_author"`). `who_reviews` = commit-activity-based (`role: "suggested_reviewer"`). Both are **git-derived signals** for agents (lineage, hot spots); they are not substitutes for team assignment in a solo workflow.
 - **Shared constants**: `_SKIP_DIRS` and `_EXTENSION_MAP` live in `ast_utils.py`. `_CODE_EXTENSIONS` in `engine.py` is derived from `_EXTENSION_MAP`. `_SKIP_DIRS` includes `coverage`, `.next`, `.nuxt` to exclude build/test output artifacts.
@@ -69,14 +71,20 @@ chisel/
 - **Triage tool**: Composite `triage` runs `risk_map` (top-N) + `test_gaps` (filtered to top-N files) + `stale_tests` in a single read lock. Returns a dict, not a list, so `limit` is not injected. Summary includes `test_edge_count`, `test_result_count`, and `coupling_threshold` for data quality visibility. Accepts `working_tree=true` to include untracked files in risk_map and test_gaps.
 - **Risk-map `_meta` envelope**: `tool_risk_map()` returns `{"files": [...], "_meta": {...}}`. `_meta` includes `effective_components`, `uniform_components`, `reweighted`, `effective_weights`, `coverage_gap_mode`, `coupling_threshold`, `total_test_edges`, `total_test_results`. Built by `build_risk_meta()` / `apply_risk_reweighting()` in `risk_meta.py`. `apply_risk_reweighting` triggers on 2+ uniform components or any zero-valued uniform (provably absent data), down from the previous threshold of 3. `dispatch_tool()` applies `limit` to `result["files"]` for dict-wrapped responses.
 - **Risk-map test-file exclusion**: `risk_map` and `triage` exclude test files by default (`exclude_tests=True`). Test files always score `coverage_gap=1.0` because edges go FROM test units, never TO test-file code units — including them adds noise and masks real coverage differences between source files. `storage.get_test_file_paths()` fetches distinct test file paths from `test_units`. CLI flag: `--no-exclude-tests`. Aligns with `test_gaps` which already excludes test files by default.
+- **Monorepo sharding**: shard config from `CHISEL_SHARDS` env var (comma-separated dirs; `dir/*` expands to subdirectories) or `.chisel/shards.toml` (`shards = [...]`); env wins. Each shard gets its own SQLite DB + RWLock + ProcessLock + ImpactAnalyzer at `.chisel/shards/<shard>/` (`resolve_storage_dir(shard=...)`). `storage`/`lock`/`impact`/`_process_lock` are properties resolving through a **thread-local** override set by `_with_shard()` — a plain attribute swap would redirect concurrent threads (HTTP MCP server, background jobs) to the wrong shard. Writes route by longest path prefix (`_shard_for_path`); directory-scoped queries use `_shards_for_directory`; unscoped queries iterate all shards and aggregate. The `shard` kwarg on `analyze`/`update`/`start_job` is exposed through MCP schemas + dispatch and CLI `--shard` (since v0.12); unknown shard keys return a clean error. Tests: `tests/test_engine_sharding.py`.
+- **Inline auto-update**: `diff_impact`, `suggest_tests`, `risk_map`, `test_gaps`, `triage` accept `auto_update=true` — when the DB is stale, `_try_auto_update()` in `engine.py` runs an incremental `update()` inline. Skipped when a background job is running or when >`_AUTO_UPDATE_MAX_FILES` (50) files changed; the skip reason is surfaced as `auto_update_skip_reason` with a human-readable hint from `_AUTO_UPDATE_SKIP_HINTS` so agents can distinguish "DB current" from "stale but refresh skipped".
 
 ## Dev Commands
 
 ```bash
 pip install -e ".[dev]" --break-system-packages   # Arch Linux
 pytest tests/ -v --tb=short                       # full suite
+pytest tests/test_engine.py -v                    # single test file
+pytest tests/test_engine.py::test_name -v         # single test
+ruff check chisel/ tests/                         # lint (line-length 100, see pyproject.toml)
 chisel analyze .                                  # analyze current project
 chisel analyze src/                               # analyze subdirectory only
+chisel run -- pytest tests/                       # run tests AND auto-record results (pytest/Jest)
 chisel serve --port 8377                          # HTTP MCP server
 ```
 
@@ -111,11 +119,13 @@ No manual `gh release create` or `twine` is ever needed.
 ## Module Dependency Graph
 
 ```
-engine.py → project.py, storage.py, ast_utils.py, git_analyzer.py, metrics.py, import_graph.py, test_mapper.py, impact.py, risk_meta.py, rwlock.py
+engine.py → project.py, storage.py, ast_utils.py, git_analyzer.py, metrics.py, import_graph.py, test_mapper.py, impact.py, risk_meta.py, rwlock.py, bootstrap.py
 project.py → (no internal deps, uses subprocess for git)
+bootstrap.py → (no internal deps)
 import_graph.py → test_mapper.py
 test_mapper.py → ast_utils.py, project.py
-impact.py → metrics.py
+impact.py → metrics.py, ast_utils.py, static_test_imports.py
+static_test_imports.py → ast_utils.py, import_graph.py, test_mapper.py
 risk_meta.py → metrics.py
 metrics.py → (no internal deps)
 cli.py → engine.py, mcp_server.py, mcp_stdio.py
@@ -129,7 +139,9 @@ next_steps.py → (no internal deps)
 
 `analyze`, `impact`, `suggest_tests`, `churn`, `ownership`, `coupling`, `risk_map`, `stale_tests`, `history`, `who_reviews`, `diff_impact`, `update`, `test_gaps`, `record_result`, `stats`, `triage`, `optimize_storage`, `start_job`, `job_status`, `cancel_job`, plus 6 advisory file lock tools (`acquire_file_lock`, `release_file_lock`, `refresh_file_lock`, `check_file_lock`, `check_locks`, `list_file_locks`)
 
-Each wired through: engine.tool_*() → CLI subcommand, HTTP POST /call, stdio MCP.
+Each wired through: engine.tool_*() → CLI subcommand, HTTP POST /call, stdio MCP. Schema/dispatch parity is enforced by `tests/test_mcp_server.py::TestSchemaDispatchParity` (cancel_job was once dispatch-only and invisible to MCP clients).
+
+The CLI additionally has `run` (no MCP equivalent): `chisel run -- pytest tests/` executes the test command, parses pytest/Jest output, and auto-calls `record_result` per test — preferred over manual `record_result` calls after local runs.
 
 - **`diff_impact`**: Combines `git diff` changed files with untracked code files (`ls-files --others`) and returns impacted tests. Branch-aware: on feature branches diffs against main; on main diffs against HEAD. Untracked paths use whole-file impact (no function-level diff); untracked files with no DB edges fall back to stem-matching (`source: "working_tree"`). With `working_tree=True`, performs full static import scanning for untracked files via `StaticImportIndex` (matching `suggest_tests` behavior) to find tests that import new files by path. Returns diagnostic dict (`status: "no_changes"`) when neither diff nor untracked code files exist. Returns `status: "stale_db"` when changed files are missing from the database.
 - **`update`**: Incremental re-analysis — only re-processes changed files and new commits.
@@ -144,4 +156,5 @@ Each wired through: engine.tool_*() → CLI subcommand, HTTP POST /call, stdio M
 - **Coverage gap modes**: `risk_map` accepts `coverage_mode="unit"` (default, equal weight per code unit) or `"line"` (weighted by line count so large untested units have proportionally higher gap). `_quantize_gap` uses 20 steps (0.05 increments) for fine-grained coverage differentiation. `proximity_adjustment` now applies to any file with `coverage_gap > 0.0` (not just completely untested files), giving partial credit to files imported by tested code.
 - **Working-tree mode**: `risk_map`, `suggest_tests`, `test_gaps`, and `diff_impact` analyze untracked files directly from disk, enabling coverage insights during active development before files are committed. `diff_impact` uses stem-matching fallback for changed files with no DB edges, and `suggest_tests` prefers same-directory tests. `test_gaps` elevates working-tree gaps to the top of the list.
 - **Git warnings**: `analyze` and `update` include `git_warning` in their stats when git is unavailable. `diff_impact` returns `status: "git_error"` with `error`, `cwd`, and `project_dir`.
-- **MCP timeout hints / auto-fallback**: `tool_analyze` and `tool_update` return a `hint` suggesting `start_job` for large repos. Additionally, `tool_analyze` with `force=True` automatically detects repositories with >300 code files and queues a background job, returning `{"status": "auto_queued", "job_id": ..., "kind": "analyze"}` instead of timing out.
+- **MCP timeout hints / auto-fallback**: `tool_analyze` and `tool_update` return a `hint` suggesting `start_job` for large repos. Additionally, `tool_analyze` with `force=True` automatically detects repositories with >300 code files (`_AUTO_BG_JOB_THRESHOLD`) and queues a background job, returning `{"status": "auto_queued", "job_id": ..., "kind": "analyze"}` instead of timing out.
+- **`auto_update` parameter**: `diff_impact`, `suggest_tests`, `risk_map`, `test_gaps`, and `triage` accept `auto_update=true` to refresh a stale DB inline before answering (see "Inline auto-update" in Key Design Decisions).

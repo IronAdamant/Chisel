@@ -92,7 +92,7 @@ class TestToolDiscovery:
 
     def test_tool_count(self, base_url):
         status, body = _request(base_url, "GET", "/tools")
-        assert len(body["tools"]) == 25
+        assert len(body["tools"]) == 26
 
 
 # ------------------------------------------------------------------ #
@@ -432,3 +432,10 @@ class TestToolCall:
         assert status == 200
         assert isinstance(body["result"], list)
         assert len(body["result"]) <= 1
+
+
+class TestSchemaDispatchParity:
+    def test_every_dispatch_tool_has_schema(self):
+        """cancel_job was once dispatch-only and invisible to MCP clients."""
+        from chisel.schemas import _TOOL_DISPATCH
+        assert set(_TOOL_SCHEMAS.keys()) == set(_TOOL_DISPATCH.keys())

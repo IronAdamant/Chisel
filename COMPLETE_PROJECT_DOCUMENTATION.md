@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence for **LLM agents** in **solo-maintainer** workflows, with **multi-process / multi-agent** safety (shared `.chisel/` storage, locks). Zero external dependencies.
 
-**Version:** 0.9.0
+**Version:** 0.12.0
 **PyPI:** `chisel-test-impact`
 **License:** MIT
 **Python:** >= 3.11
@@ -41,7 +41,12 @@ Test impact analysis and code intelligence for **LLM agents** in **solo-maintain
 | `chisel/git_analyzer.py` | Git log/blame parsing via subprocess, branch/diff queries, function-level log | `re`, `subprocess`, `datetime` | [glossary: churn score](wiki-local/glossary.md) |
 | `chisel/metrics.py` | Pure computation: churn scoring, ownership aggregation, co-change detection | `collections`, `datetime`, `itertools` | [glossary: churn score](wiki-local/glossary.md) |
 | `chisel/test_mapper.py` | Test file discovery, framework detection (pytest/Jest/Go/Rust/Playwright), dependency extraction, test edge building | `ast`, `os`, `re`, `pathlib`, `chisel.ast_utils`, `chisel.project` | [glossary: test edge](wiki-local/glossary.md) |
-| `chisel/impact.py` | Impact analysis, risk scoring (20-step coverage quantization, proximity for partial coverage), stale test detection, ownership queries, reviewer suggestions | `collections`, `datetime`, `chisel.metrics`, `chisel.storage` (via constructor injection) | [glossary: risk score](wiki-local/glossary.md) |
+| `chisel/impact.py` | Impact analysis, risk scoring (20-step coverage quantization, proximity for partial coverage), stale test detection, ownership queries, reviewer suggestions | `collections`, `datetime`, `chisel.metrics`, `chisel.ast_utils`, `chisel.static_test_imports`, `chisel.storage` (via constructor injection) | [glossary: risk score](wiki-local/glossary.md) |
+| `chisel/import_graph.py` | Static import_edges between source files (structural coupling) | `chisel.test_mapper` | -- |
+| `chisel/static_test_imports.py` | StaticImportIndex: maps code paths to covering tests via DB static imports + disk overlay; powers working-tree fallbacks | `chisel.ast_utils`, `chisel.import_graph`, `chisel.test_mapper` | -- |
+| `chisel/risk_meta.py` | Risk-map _meta diagnostics and dynamic reweighting when components are uniform | `chisel.metrics` | -- |
+| `chisel/next_steps.py` | Contextual next-step suggestions appended to MCP tool responses | -- (pure functions) | -- |
+| `chisel/llm_contract.py` | Agent vocabulary: trust note, status/source constants shared by schemas and docs | -- (pure data) | [LLM_CONTRACT](docs/LLM_CONTRACT.md) |
 | `chisel/project.py` | Multi-process / multi-agent safety: project root detection (worktree-aware), path normalization, storage dir resolution, cross-platform file lock (ProcessLock) for concurrent agents and CLI | `os`, `subprocess`, `sys`, `contextlib`; Unix: `fcntl`; Windows: `ctypes`, `msvcrt` | -- |
 | `chisel/engine.py` | Orchestrator -- owns Storage, GitAnalyzer, TestMapper, ImpactAnalyzer, RWLock, ProcessLock; exposes `tool_*()` methods for all MCP tools. Single-author co-change threshold halving, diff_impact working_tree support via StaticImportIndex | `os`, `chisel.ast_utils`, `chisel.git_analyzer`, `chisel.impact`, `chisel.project`, `chisel.rwlock`, `chisel.storage`, `chisel.static_test_imports`, `chisel.test_mapper` | [spec-project](wiki-local/spec-project.md) |
 | `chisel/cli.py` | argparse CLI with 28 subcommands, dispatch table, output formatting | `argparse`, `json`, `os`, `chisel.engine` | [spec-project: CLI](wiki-local/spec-project.md) |
@@ -67,19 +72,32 @@ Test impact analysis and code intelligence for **LLM agents** in **solo-maintain
 | `tests/test_rwlock.py` | Tests for RWLock concurrent reader/writer semantics, ordering, starvation | `pytest`, `threading`, `time`, `chisel.rwlock` | -- |
 | `tests/test_metrics.py` | Tests for churn computation, co-change detection, date parsing | `pytest`, `chisel.metrics` | -- |
 | `tests/test_project.py` | Tests for project root detection, path normalization, storage resolution, ProcessLock | `pytest`, `os`, `subprocess`, `chisel.project` | -- |
+| `tests/test_engine_sharding.py` | Tests for monorepo sharding: per-shard DBs, aggregation, dispatch/CLI shard exposure, thread-local shard isolation | `pytest`, `threading`, `chisel.engine`, `chisel.schemas` | -- |
+| `tests/test_language_frameworks.py` | Per-language framework detection tests (JUnit, xUnit, XCTest/Swift Testing, gtest, PHPUnit, RSpec, Dart, Go), incl. parameterized/stacked annotations | `pytest`, `chisel.test_mapper` | -- |
+| `tests/test_import_graph.py` | Tests for static import edge building | `pytest`, `chisel.import_graph` | -- |
+| `tests/test_static_hybrid.py` | Tests for hybrid static-import + DB edge suggestions | `pytest`, `chisel.engine` | -- |
+| `tests/test_next_steps.py` | Tests for next-step hint functions per tool | `pytest`, `chisel.next_steps` | -- |
+| `tests/test_llm_contract.py` | Tests for agent vocabulary constants and schema cross-references | `pytest`, `chisel.llm_contract` | -- |
+| `tests/test_bootstrap.py` | Tests for CHISEL_BOOTSTRAP user-module loading | `pytest`, `chisel.bootstrap` | -- |
+| `tests/bootstrap_stub.py` | Stub module loaded by bootstrap tests | -- | -- |
 | `tests/conftest.py` | Shared pytest fixtures: temp git repos, `run_git` helper | `pytest`, `os`, `subprocess` | -- |
 
 ## Module Dependency Graph
 
 ```
-engine.py --> project.py, storage.py, ast_utils.py, git_analyzer.py, metrics.py, test_mapper.py, impact.py, rwlock.py
+engine.py --> project.py, storage.py, ast_utils.py, git_analyzer.py, metrics.py, import_graph.py, test_mapper.py, impact.py, risk_meta.py, rwlock.py, bootstrap.py
+import_graph.py --> test_mapper.py
 test_mapper.py --> ast_utils.py, project.py
-impact.py --> storage.py (injected), metrics.py
+impact.py --> storage.py (injected), metrics.py, ast_utils.py, static_test_imports.py
+static_test_imports.py --> ast_utils.py, import_graph.py, test_mapper.py
+risk_meta.py --> metrics.py
 metrics.py --> (no internal deps)
 project.py --> (no internal deps)
-schemas.py --> (no internal deps)
+bootstrap.py --> (no internal deps)
+schemas.py --> llm_contract.py
+next_steps.py --> (no internal deps)
 cli.py --> engine.py, mcp_server.py (lazy), mcp_stdio.py (lazy)
-mcp_server.py --> engine.py, schemas.py
+mcp_server.py --> engine.py, next_steps.py, schemas.py
 mcp_stdio.py --> engine.py, mcp_server.py, schemas.py
 ```
 

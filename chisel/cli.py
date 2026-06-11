@@ -50,6 +50,8 @@ def create_parser():
                            help="Directory to analyze (default: .)")
     p_analyze.add_argument("--force", action="store_true",
                            help="Force full re-analysis")
+    p_analyze.add_argument("--shard", default=None,
+                           help="Shard key to scope analysis (sharded monorepos)")
 
     # impact
     p_impact = sub.add_parser("impact", parents=[shared],
@@ -126,8 +128,10 @@ def create_parser():
                         help="Full static import scan for untracked files")
 
     # update
-    sub.add_parser("update", parents=[shared],
-                   help="Incremental re-analysis of changed files")
+    p_update = sub.add_parser("update", parents=[shared],
+                              help="Incremental re-analysis of changed files")
+    p_update.add_argument("--shard", default=None,
+                          help="Shard key to scope the update (sharded monorepos)")
 
     # test-gaps
     p_gaps = sub.add_parser("test-gaps", parents=[shared],
@@ -156,7 +160,11 @@ def create_parser():
     # run
     p_run = sub.add_parser("run", parents=[shared],
                            help="Run tests and automatically record results")
-    p_run.add_argument("command", nargs="+", help="Test command to execute")
+    # dest must NOT be "command" — that is the subparser dest, and a
+    # positional named "command" overwrites it with the test-command list,
+    # crashing main()'s _COMMANDS lookup.
+    p_run.add_argument("test_command", nargs="+", metavar="command",
+                       help="Test command to execute")
 
     # stats
     sub.add_parser("stats", parents=[shared],
@@ -176,6 +184,10 @@ def create_parser():
     p_sjob.add_argument(
         "--force", action="store_true",
         help="Force full re-analysis (analyze only)",
+    )
+    p_sjob.add_argument(
+        "--shard", default=None,
+        help="Shard key to scope the job (sharded monorepos)",
     )
 
     p_jstat = sub.add_parser("job-status", parents=[shared],
@@ -324,7 +336,8 @@ def _fmt_list(empty_msg, header, line_fn):
 
 def cmd_analyze(args):
     return _run_tool(args, "tool_analyze",
-                     {"directory": args.directory, "force": args.force},
+                     {"directory": args.directory, "force": args.force,
+                      "shard": args.shard},
                      _fmt_kv("Analysis complete:"), use_limit=False)
 
 
@@ -463,7 +476,7 @@ def cmd_diff_impact(args):
 
 
 def cmd_update(args):
-    return _run_tool(args, "tool_update", {},
+    return _run_tool(args, "tool_update", {"shard": args.shard},
                      _fmt_kv("Incremental update complete:"), use_limit=False)
 
 
@@ -528,7 +541,7 @@ def cmd_stats(args):
 
 
 def cmd_start_job(args):
-    kwargs = {"kind": args.kind, "force": args.force}
+    kwargs = {"kind": args.kind, "force": args.force, "shard": args.shard}
     if args.kind == "analyze":
         kwargs["directory"] = args.directory
     return _run_tool(args, "tool_start_job", kwargs,
@@ -677,8 +690,9 @@ def _detect_test_framework(command):
 
 
 # Pytest verbose output: "tests/test_app.py::test_foo PASSED"
+# Real `pytest -v` lines end with a progress suffix: "... PASSED [ 16%]".
 _PYTEST_RESULT_RE = re.compile(
-    r"^(.+?)\s+(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)$"
+    r"^(.+?)\s+(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?:\s+\[\s*\d+%\])?\s*$"
 )
 
 
@@ -747,14 +761,14 @@ def _collect_run_results(framework, stdout_lines, temp_files, project_dir):
 
 def cmd_run(args):
     """Run a test command and record results automatically."""
-    framework = _detect_test_framework(args.command)
+    framework = _detect_test_framework(args.test_command)
     if framework is None:
         print("Warning: could not detect test framework; results will not be recorded.")
-        print(f"Running: {' '.join(args.command)}")
-        proc = subprocess.run(args.command)
+        print(f"Running: {' '.join(args.test_command)}")
+        proc = subprocess.run(args.test_command)
         return proc.returncode
 
-    augmented = _augment_command(args.command, framework)
+    augmented = _augment_command(args.test_command, framework)
     temp_files = []
     if framework == "jest":
         # Jest needs a temp file for JSON output
