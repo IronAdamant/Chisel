@@ -7,6 +7,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-07-09
+
+### Fixed
+
+- **Doc honesty for `risk_map` defaults**: `ImpactAnalyzer.get_risk_map` Args docstring and `CLAUDE.md` coverage-mode bullet still said `coverage_mode="unit"` was the default after 0.15.0 switched runtime/CLI/schema to `"line"`. Docs and a regression test now match the shipped signature.
+
 ## [0.15.0] — 2026-07-09
 
 ### Changed

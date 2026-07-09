@@ -2,7 +2,7 @@
 
 Test impact analysis and code intelligence for **LLM agents** in **solo-maintainer** workflows, with **multi-process / multi-agent** safety (shared `.chisel/` storage, locks). Zero external dependencies.
 
-**Version:** 0.15.0
+**Version:** 0.15.1
 **PyPI:** `chisel-test-impact`
 **License:** MIT
 **Python:** >= 3.11

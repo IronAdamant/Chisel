@@ -1175,6 +1175,17 @@ class TestCliEngineMcpParity:
         assert "'line' (default)" in desc
         assert "'unit' (default)" not in desc
 
+    def test_get_risk_map_docstring_matches_line_default(self):
+        """Shipped Args docs must not claim unit-default (audit criterion 1)."""
+        import inspect
+        from chisel.impact import ImpactAnalyzer
+
+        sig = inspect.signature(ImpactAnalyzer.get_risk_map)
+        assert sig.parameters["coverage_mode"].default == "line"
+        doc = ImpactAnalyzer.get_risk_map.__doc__ or ""
+        assert '"line" (default)' in doc
+        assert '"unit" (default)' not in doc
+
     def test_stale_tests_does_not_advertise_working_tree(self):
         from chisel.schemas import _TOOL_DISPATCH, _TOOL_SCHEMAS
 

@@ -772,11 +772,12 @@ class ImpactAnalyzer:
                 risk map.  Test files always score coverage_gap=1.0 (edges
                 go *from* tests, never *to* test-file code units), which
                 adds noise and masks real coverage differences.
-            proximity_adjustment: If True, reduce ``coverage_gap`` slightly for
-                files that are a few import hops from tested code.
-            coverage_mode: "unit" (default) weights each code unit equally;
-                "line" weights by line count so large untested units have
-                proportionally higher coverage_gap.
+            proximity_adjustment: If True (default), reduce ``coverage_gap``
+                slightly for files that are a few import hops from tested code.
+            coverage_mode: "line" (default) weights by line count so large
+                untested units have proportionally higher coverage_gap;
+                "unit" weights each code unit equally (pass explicitly to
+                override the default).
             extra_files: Optional list of additional file paths to include
                 (e.g. untracked working-tree files).
             exclude_new_file_boost: If True, do not apply the 0.5 new-file
