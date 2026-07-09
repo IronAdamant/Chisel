@@ -71,6 +71,8 @@ def create_parser():
                            help="Also return all test files if no edges found")
     p_suggest.add_argument("--working-tree", action="store_true",
                            help="Include untracked files on disk in analysis")
+    p_suggest.add_argument("--auto-update", action="store_true",
+                           help="Incremental update when the analysis DB is stale")
 
     # churn
     p_churn = sub.add_parser("churn", parents=[shared],
@@ -93,20 +95,42 @@ def create_parser():
     p_coupling.add_argument("--working-tree", action="store_true",
                             help="Include on-disk import scan for untracked files")
 
-    # risk-map
+    # risk-map (defaults match engine.tool_risk_map: line + proximity on)
     p_risk = sub.add_parser("risk-map", parents=[shared],
                             help="Show risk scores for all files")
     p_risk.add_argument("directory", nargs="?", default=None,
                         help="Directory to scope (default: all)")
     p_risk.add_argument("--no-exclude-tests", action="store_true", default=False,
                         help="Include test files in risk map")
-    p_risk.add_argument("--proximity", action="store_true", default=False,
-                        help="Adjust coverage_gap by import distance to tested code")
-    p_risk.add_argument("--coverage-mode", choices=["unit", "line"],
-                        default="unit",
-                        help="Coverage mode: 'unit' weights units equally, 'line' weights by line count")
+    p_risk.add_argument(
+        "--proximity",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Adjust coverage_gap by import distance to tested code "
+            "(default: on; use --no-proximity to disable)"
+        ),
+    )
+    p_risk.add_argument(
+        "--coverage-mode",
+        choices=["unit", "line"],
+        default="line",
+        help=(
+            "Coverage mode: 'line' (default) weights by line count; "
+            "'unit' weights units equally"
+        ),
+    )
+    p_risk.add_argument("--working-tree", action="store_true",
+                        help="Include untracked code files in the risk map")
+    p_risk.add_argument("--auto-update", action="store_true",
+                        help="Incremental update before scoring when DB is stale")
+    p_risk.add_argument(
+        "--exclude-new-file-boost",
+        action="store_true",
+        help="Suppress the new-file risk boost for stable long-term audits",
+    )
 
-    # stale-tests
+    # stale-tests (DB edges only — no working-tree scan)
     sub.add_parser("stale-tests", parents=[shared], help="Detect stale tests")
 
     # history
@@ -126,6 +150,8 @@ def create_parser():
                         help="Git ref to diff against (default: auto-detect)")
     p_diff.add_argument("--working-tree", action="store_true", default=False,
                         help="Full static import scan for untracked files")
+    p_diff.add_argument("--auto-update", action="store_true",
+                        help="Incremental update when changed files are missing from DB")
 
     # update
     p_update = sub.add_parser("update", parents=[shared],
@@ -144,6 +170,8 @@ def create_parser():
                         help="Include test file units in results")
     p_gaps.add_argument("--working-tree", action="store_true",
                         help="Include untracked files on disk as gaps with churn=0")
+    p_gaps.add_argument("--auto-update", action="store_true",
+                        help="Incremental update when the analysis DB is stale")
 
     # record-result
     p_record = sub.add_parser("record-result", parents=[shared],
@@ -207,6 +235,15 @@ def create_parser():
                            help="Number of top-risk files (default: 10)")
     p_triage.add_argument("--no-exclude-tests", action="store_true", default=False,
                            help="Include test files in risk ranking")
+    p_triage.add_argument("--working-tree", action="store_true",
+                          help="Include untracked files in risk_map and test_gaps")
+    p_triage.add_argument("--auto-update", action="store_true",
+                          help="Incremental update before triage when DB is stale")
+    p_triage.add_argument(
+        "--exclude-new-file-boost",
+        action="store_true",
+        help="Suppress the new-file risk boost for stable long-term audits",
+    )
 
     # serve
     p_serve = sub.add_parser("serve", parents=[shared],
@@ -351,7 +388,11 @@ def cmd_impact(args):
 
 
 def cmd_suggest_tests(args):
-    kwargs = {"fallback_to_all": args.fallback, "working_tree": args.working_tree}
+    kwargs = {
+        "fallback_to_all": args.fallback,
+        "working_tree": args.working_tree,
+        "auto_update": args.auto_update,
+    }
     if args.directory:
         kwargs["directory"] = args.directory
     else:
@@ -440,7 +481,10 @@ def cmd_risk_map(args):
                      {"directory": args.directory,
                       "exclude_tests": not args.no_exclude_tests,
                       "proximity_adjustment": args.proximity,
-                      "coverage_mode": args.coverage_mode}, fmt)
+                      "coverage_mode": args.coverage_mode,
+                      "working_tree": args.working_tree,
+                      "exclude_new_file_boost": args.exclude_new_file_boost,
+                      "auto_update": args.auto_update}, fmt)
 
 
 def cmd_stale_tests(args):
@@ -469,10 +513,14 @@ def cmd_who_reviews(args):
 
 
 def cmd_diff_impact(args):
-    return _run_tool(args, "tool_diff_impact", {"ref": args.ref, "working_tree": args.working_tree},
-                     _fmt_list("No impacted tests (or no changes detected).",
-                               "Impacted tests from diff:",
-                               lambda i: f"{i['test_id']}  ({i['reason']})"))
+    return _run_tool(
+        args, "tool_diff_impact",
+        {"ref": args.ref, "working_tree": args.working_tree,
+         "auto_update": args.auto_update},
+        _fmt_list("No impacted tests (or no changes detected).",
+                  "Impacted tests from diff:",
+                  lambda i: f"{i['test_id']}  ({i['reason']})"),
+    )
 
 
 def cmd_update(args):
@@ -485,7 +533,8 @@ def cmd_test_gaps(args):
         args, "tool_test_gaps",
         {"file_path": args.file, "directory": args.directory,
          "exclude_tests": not args.no_exclude_tests,
-         "working_tree": args.working_tree},
+         "working_tree": args.working_tree,
+         "auto_update": args.auto_update},
         _fmt_list(
             "No untested code units found.",
             lambda r, a: f"Untested code units ({len(r)}):",
@@ -531,7 +580,10 @@ def cmd_triage(args):
             print("\nNo stale tests found.")
     return _run_tool(args, "tool_triage",
                      {"directory": args.directory, "top_n": args.top_n,
-                      "exclude_tests": not args.no_exclude_tests},
+                      "exclude_tests": not args.no_exclude_tests,
+                      "working_tree": args.working_tree,
+                      "exclude_new_file_boost": args.exclude_new_file_boost,
+                      "auto_update": args.auto_update},
                      fmt, use_limit=False)
 
 

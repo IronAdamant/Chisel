@@ -4,6 +4,13 @@ import pytest
 from datetime import datetime, timezone
 
 from chisel.metrics import _parse_iso_date, compute_co_changes, _MAX_CO_CHANGE_FILES
+from chisel.risk_meta import (
+    _BASE_RISK_WEIGHTS,
+    _HIDDEN_RISK_SCALE,
+    _NEW_FILE_BOOST,
+    compose_risk_score,
+    hidden_risk_from_dynamic_edges,
+)
 
 
 # ------------------------------------------------------------------ #
@@ -64,3 +71,34 @@ class TestComputeCoChangesCap:
         commit = self._make_commit(_MAX_CO_CHANGE_FILES)
         result = compute_co_changes([commit], min_count=1)
         assert len(result) > 0
+
+
+# ------------------------------------------------------------------ #
+# Risk weight single source (risk_meta.compose_risk_score)
+# ------------------------------------------------------------------ #
+
+class TestComposeRiskScore:
+    def test_weights_sum_to_one(self):
+        assert abs(sum(_BASE_RISK_WEIGHTS.values()) - 1.0) < 1e-9
+
+    def test_full_churn_only(self):
+        score = compose_risk_score(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        assert score == pytest.approx(_BASE_RISK_WEIGHTS["churn"])
+
+    def test_all_base_components_one(self):
+        score = compose_risk_score(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+        assert score == pytest.approx(1.0)
+
+    def test_hidden_and_new_file_additive(self):
+        base = compose_risk_score(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        with_extras = compose_risk_score(
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            hidden_risk_factor=_HIDDEN_RISK_SCALE,
+            new_file_boost=_NEW_FILE_BOOST,
+        )
+        assert with_extras == pytest.approx(base + _HIDDEN_RISK_SCALE + _NEW_FILE_BOOST)
+
+    def test_hidden_risk_from_dynamic_edges_caps(self):
+        assert hidden_risk_from_dynamic_edges(0) == 0.0
+        assert hidden_risk_from_dynamic_edges(20) == pytest.approx(_HIDDEN_RISK_SCALE)
+        assert hidden_risk_from_dynamic_edges(100) == pytest.approx(_HIDDEN_RISK_SCALE)

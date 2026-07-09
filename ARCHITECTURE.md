@@ -1,6 +1,6 @@
 # Chisel — Architecture
 
-**Version:** 0.12.0 | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
+**Version:** 0.15.0 | **Python:** >= 3.11 | **Dependencies:** zero (stdlib only)
 
 Test impact analysis and code intelligence **for LLM agents**. The design target is **solo-maintained repos** where **multiple agent sessions or processes** (MCP clients, terminals, CI) may run `analyze` / read tools concurrently — hence **ProcessLock**, **WAL SQLite**, and **normalized paths** as core mechanics, not optional extras.
 
@@ -141,7 +141,7 @@ All list-returning tools accept a `limit` parameter to cap result size.
 - **Zero deps**: stdlib only. `ast` for Python, regex for 11 other languages. `subprocess.run(["git", ...])` for git. Requires Python >= 3.11.
 - **Pluggable extractors**: `register_extractor(lang, fn)` overrides built-in regex with tree-sitter/LSP. Zero-dep — just callable hooks.
 - **Proximity-based edge weights**: 0.4-1.0 based on directory distance. Python import-path matching (`from myapp.utils import foo` → `myapp/utils.py:foo`) takes priority.
-- **Risk formula**: `0.35*churn + 0.25*coupling + 0.15*coverage_gap + 0.10*coverage_depth + 0.10*author_concentration + 0.05*test_instability + hidden_risk_factor + new_file_boost`
+- **Risk formula**: weights live in `risk_meta._BASE_RISK_WEIGHTS` and are applied via `compose_risk_score()` — `0.35*churn + 0.25*coupling + 0.15*coverage_gap + 0.10*coverage_depth + 0.10*author_concentration + 0.05*test_instability + hidden_risk_factor + new_file_boost`. Defaults for `risk_map`: `coverage_mode=line`, `proximity_adjustment=true` (CLI and engine match).
 - **Batch queries**: `get_risk_map()` fetches all data in ~5 queries. `_chunked()` helper stays under SQLite's 999-variable limit.
 - **Working-tree support**: `risk_map`, `test_gaps`, `diff_impact`, `suggest_tests`, and `triage` can analyze uncommitted files on disk.
 - **Heuristic edge backfill**: `analyze`/`update` automatically creates filename-based heuristic test edges for test files missing static edges.

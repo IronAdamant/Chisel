@@ -96,11 +96,13 @@ chisel diff-impact
 # What tests should I run for this file?
 chisel suggest-tests engine.py
 
-# Risk heatmap across the project
+# Risk heatmap (defaults: line-weighted coverage + proximity adjustment)
 chisel risk-map
+chisel risk-map --working-tree --auto-update
+chisel risk-map --no-proximity --coverage-mode unit   # override defaults
 
 # Find code with no test coverage, sorted by risk
-chisel test-gaps
+chisel test-gaps --working-tree
 
 # Who owns this code?
 chisel ownership engine.py
@@ -136,14 +138,14 @@ chisel test-gaps
 | `diff_impact` | Detects your changes from `git diff` and returns impacted tests. `working_tree=true` enables full static import scanning for untracked files. `auto_update=true` refreshes stale DB inline |
 | `suggest_tests` | Ranks tests by relevance for a given file. Prefers same-directory tests via stem matching. `auto_update=true` refreshes stale DB inline |
 | `impact` | Which tests cover these files or functions? |
-| `risk_map` | Risk scores for all files (churn + coupling + coverage gaps). `working_tree=true` includes untracked files. `exclude_new_file_boost=true` suppresses the temporary boost. `auto_update=true` refreshes stale DB inline |
+| `risk_map` | Risk scores for all files (churn + coupling + coverage gaps). Defaults: line-weighted coverage + proximity. `working_tree=true` includes untracked files. `exclude_new_file_boost=true` suppresses the temporary boost. `auto_update=true` refreshes stale DB inline |
 | `test_gaps` | Code with zero test coverage, sorted by risk. `working_tree=true` elevates uncommitted files to the top. `auto_update=true` refreshes stale DB inline |
 | `triage` | Top risks + gaps + stale tests in one call. Supports `exclude_new_file_boost` and `auto_update` |
 | `churn` | How often does this file or function change? |
 | `coupling` | Files that change together or import each other |
 | `ownership` | Blame-based — who wrote this code? |
 | `who_reviews` | Commit-activity-based — who maintains this code? |
-| `stale_tests` | Tests pointing at code that no longer exists |
+| `stale_tests` | Tests pointing at code that no longer exists (analyzed DB edges only) |
 | `history` | Commit history for a file |
 | `record_result` | Log test pass/fail outcomes for future prioritization |
 | `run` | CLI-only: run tests and auto-record results (pytest, Jest) |

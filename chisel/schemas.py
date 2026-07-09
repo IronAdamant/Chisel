@@ -226,9 +226,9 @@ _TOOL_SCHEMAS = {
                     "type": "string",
                     "enum": ["unit", "line"],
                     "description": (
-                        "'unit' (default) weights each code unit equally when "
-                        "computing coverage_gap; 'line' weights by line count "
-                        "so large untested units have proportionally higher gap."
+                        "'line' (default) weights by line count so large untested "
+                        "units have proportionally higher coverage_gap; 'unit' "
+                        "weights each code unit equally."
                     ),
                 },
                 "working_tree": {
@@ -258,7 +258,11 @@ _TOOL_SCHEMAS = {
     },
     "stale_tests": {
         "name": "stale_tests",
-        "description": "Find tests whose source targets have changed since last analysis. Use to identify tests that may need updating.",
+        "description": (
+            "Find tests whose source targets have changed since last analysis. "
+            "Uses analyzed DB test edges only (not a working-tree scan of "
+            "untracked tests). Use to identify tests that may need updating."
+        ),
         "parameters": {
             "type": "object",
             "properties": {},
@@ -701,7 +705,7 @@ _TOOL_DISPATCH = {
         "tool_risk_map",
         ["directory", "exclude_tests", "proximity_adjustment", "coverage_mode", "working_tree", "exclude_new_file_boost", "auto_update"],
     ),
-    "stale_tests": ("tool_stale_tests", ["working_tree"]),
+    "stale_tests": ("tool_stale_tests", []),
     "history": ("tool_history", ["file_path"]),
     "who_reviews": ("tool_who_reviews", ["file_path"]),
     "diff_impact": ("tool_diff_impact", ["ref", "working_tree", "auto_update"]),

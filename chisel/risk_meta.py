@@ -13,7 +13,47 @@ _BASE_RISK_WEIGHTS = {
     "test_instability": 0.05,
 }
 
+# Max contribution from dynamic/eval import density (added outside base weights).
+_HIDDEN_RISK_SCALE = 0.15
+# Boost for files with zero churn and zero test coverage (added outside base weights).
+_NEW_FILE_BOOST = 0.5
+
 _COMPONENTS = tuple(_BASE_RISK_WEIGHTS.keys())
+
+
+def compose_risk_score(
+    churn_norm,
+    coupling_norm,
+    coverage_gap,
+    coverage_depth,
+    author_concentration,
+    test_instability,
+    *,
+    hidden_risk_factor=0.0,
+    new_file_boost=0.0,
+):
+    """Combine risk components using the canonical weight table.
+
+    Base components use ``_BASE_RISK_WEIGHTS``. ``hidden_risk_factor`` and
+    ``new_file_boost`` are additive terms outside that table (same as the
+    documented formula in CLAUDE.md / ARCHITECTURE.md).
+    """
+    w = _BASE_RISK_WEIGHTS
+    return (
+        w["churn"] * churn_norm
+        + w["coupling"] * coupling_norm
+        + w["coverage_gap"] * coverage_gap
+        + w["coverage_depth"] * coverage_depth
+        + w["author_concentration"] * author_concentration
+        + w["test_instability"] * test_instability
+        + hidden_risk_factor
+        + new_file_boost
+    )
+
+
+def hidden_risk_from_dynamic_edges(dynamic_edge_count):
+    """Scale dynamic/eval edge count into a 0–``_HIDDEN_RISK_SCALE`` additive factor."""
+    return min(dynamic_edge_count / 20.0, 1.0) * _HIDDEN_RISK_SCALE
 
 
 def _diagnose_uniform(comp, value, stats):

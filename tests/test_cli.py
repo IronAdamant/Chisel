@@ -81,15 +81,46 @@ class TestCreateParser:
         assert args.min_count == 5
 
     def test_risk_map_defaults(self):
+        """CLI defaults must match engine.tool_risk_map (line + proximity on)."""
         parser = create_parser()
         args = parser.parse_args(["risk-map"])
         assert args.command == "risk-map"
         assert args.directory is None
+        assert args.coverage_mode == "line"
+        assert args.proximity is True
+        assert args.working_tree is False
+        assert args.auto_update is False
+        assert args.exclude_new_file_boost is False
 
     def test_risk_map_with_directory(self):
         parser = create_parser()
         args = parser.parse_args(["risk-map", "src/"])
         assert args.directory == "src/"
+
+    def test_risk_map_override_defaults(self):
+        parser = create_parser()
+        args = parser.parse_args([
+            "risk-map",
+            "--no-proximity",
+            "--coverage-mode", "unit",
+            "--working-tree",
+            "--auto-update",
+            "--exclude-new-file-boost",
+        ])
+        assert args.proximity is False
+        assert args.coverage_mode == "unit"
+        assert args.working_tree is True
+        assert args.auto_update is True
+        assert args.exclude_new_file_boost is True
+
+    def test_triage_parity_flags(self):
+        parser = create_parser()
+        args = parser.parse_args([
+            "triage", "--working-tree", "--auto-update", "--exclude-new-file-boost",
+        ])
+        assert args.working_tree is True
+        assert args.auto_update is True
+        assert args.exclude_new_file_boost is True
 
     def test_stale_tests(self):
         parser = create_parser()
@@ -810,7 +841,10 @@ class TestMain:
 
         main(["suggest-tests", "--project-dir", "/tmp/p", "app.py"])
 
-        engine.tool_suggest_tests.assert_called_once_with(file_path="app.py", fallback_to_all=False, working_tree=False)
+        engine.tool_suggest_tests.assert_called_once_with(
+            file_path="app.py", fallback_to_all=False, working_tree=False,
+            auto_update=False,
+        )
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_ownership(self, mock_cls):
@@ -833,8 +867,9 @@ class TestMain:
         main(["risk-map", "--project-dir", "/tmp/p"])
 
         engine.tool_risk_map.assert_called_once_with(
-            directory=None, exclude_tests=True, proximity_adjustment=False,
-            coverage_mode="unit",
+            directory=None, exclude_tests=True, proximity_adjustment=True,
+            coverage_mode="line", working_tree=False,
+            exclude_new_file_boost=False, auto_update=False,
         )
 
     @patch("chisel.cli.ChiselEngine")
@@ -875,7 +910,9 @@ class TestMain:
 
         main(["diff-impact", "--project-dir", "/tmp/p"])
 
-        engine.tool_diff_impact.assert_called_once_with(ref=None, working_tree=False)
+        engine.tool_diff_impact.assert_called_once_with(
+            ref=None, working_tree=False, auto_update=False,
+        )
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_update(self, mock_cls):
@@ -895,7 +932,10 @@ class TestMain:
 
         main(["test-gaps", "--project-dir", "/tmp/p"])
 
-        engine.tool_test_gaps.assert_called_once_with(file_path=None, directory=None, exclude_tests=True, working_tree=False)
+        engine.tool_test_gaps.assert_called_once_with(
+            file_path=None, directory=None, exclude_tests=True,
+            working_tree=False, auto_update=False,
+        )
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_test_gaps_with_file(self, mock_cls):
@@ -908,7 +948,10 @@ class TestMain:
 
         main(["test-gaps", "--project-dir", "/tmp/p", "app.py"])
 
-        engine.tool_test_gaps.assert_called_once_with(file_path="app.py", directory=None, exclude_tests=True, working_tree=False)
+        engine.tool_test_gaps.assert_called_once_with(
+            file_path="app.py", directory=None, exclude_tests=True,
+            working_tree=False, auto_update=False,
+        )
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_analyze_force(self, mock_cls):
@@ -943,7 +986,10 @@ class TestMain:
 
         main(["triage", "--project-dir", "/tmp/p"])
 
-        engine.tool_triage.assert_called_once_with(directory=None, top_n=10, exclude_tests=True)
+        engine.tool_triage.assert_called_once_with(
+            directory=None, top_n=10, exclude_tests=True,
+            working_tree=False, exclude_new_file_boost=False, auto_update=False,
+        )
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_triage_with_args(self, mock_cls):
@@ -956,7 +1002,10 @@ class TestMain:
 
         main(["triage", "--project-dir", "/tmp/p", "src/", "--top-n", "5"])
 
-        engine.tool_triage.assert_called_once_with(directory="src/", top_n=5, exclude_tests=True)
+        engine.tool_triage.assert_called_once_with(
+            directory="src/", top_n=5, exclude_tests=True,
+            working_tree=False, exclude_new_file_boost=False, auto_update=False,
+        )
 
     @patch("chisel.cli.ChiselEngine")
     def test_main_stats(self, mock_cls):
@@ -1102,3 +1151,63 @@ class TestCliEntryExitCodes:
         assert cli_entry() == 3
         mock_main.return_value = None
         assert cli_entry() is None
+
+
+class TestCliEngineMcpParity:
+    """Shipped CLI flags/defaults must track engine + schema (audit fixes)."""
+
+    def test_risk_map_cli_defaults_match_engine_signature(self):
+        import inspect
+        from chisel.engine import ChiselEngine
+
+        parser = create_parser()
+        args = parser.parse_args(["risk-map"])
+        sig = inspect.signature(ChiselEngine.tool_risk_map)
+        assert args.coverage_mode == sig.parameters["coverage_mode"].default
+        assert args.proximity == sig.parameters["proximity_adjustment"].default
+
+    def test_schema_coverage_mode_documents_line_default(self):
+        from chisel.schemas import _TOOL_SCHEMAS
+
+        desc = _TOOL_SCHEMAS["risk_map"]["parameters"]["properties"]["coverage_mode"][
+            "description"
+        ]
+        assert "'line' (default)" in desc
+        assert "'unit' (default)" not in desc
+
+    def test_stale_tests_does_not_advertise_working_tree(self):
+        from chisel.schemas import _TOOL_DISPATCH, _TOOL_SCHEMAS
+
+        assert "working_tree" not in _TOOL_DISPATCH["stale_tests"][1]
+        props = _TOOL_SCHEMAS["stale_tests"]["parameters"]["properties"]
+        assert "working_tree" not in props
+
+    def test_auto_update_flag_on_tools_that_support_it(self):
+        parser = create_parser()
+        for cmd in ("risk-map", "diff-impact", "suggest-tests", "test-gaps", "triage"):
+            args = parser.parse_args([cmd, "--auto-update"] if cmd != "suggest-tests"
+                                     else [cmd, "--auto-update", "app.py"])
+            # suggest-tests needs a file when no --directory
+            if cmd == "suggest-tests":
+                args = parser.parse_args([cmd, "app.py", "--auto-update"])
+            assert getattr(args, "auto_update") is True, cmd
+
+    @patch("chisel.cli.ChiselEngine")
+    def test_main_risk_map_forwards_all_parity_flags(self, mock_cls):
+        engine = _make_engine_mock()
+        engine.tool_risk_map.return_value = {
+            "files": [], "_meta": {"total_files": 0},
+        }
+        mock_cls.return_value = engine
+
+        main([
+            "risk-map", "--project-dir", "/tmp/p",
+            "--working-tree", "--auto-update", "--exclude-new-file-boost",
+            "--no-proximity", "--coverage-mode", "unit",
+        ])
+
+        engine.tool_risk_map.assert_called_once_with(
+            directory=None, exclude_tests=True, proximity_adjustment=False,
+            coverage_mode="unit", working_tree=True,
+            exclude_new_file_boost=True, auto_update=True,
+        )

@@ -7,6 +7,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-07-09
+
+### Changed
+
+- **CLI ↔ engine/MCP parity for analysis flags**: `risk-map`, `triage`, `diff-impact`, `suggest-tests`, and `test-gaps` now expose `--working-tree` / `--auto-update` / `--exclude-new-file-boost` where the engine already supported them. `risk-map` defaults match the engine: `--coverage-mode line` and proximity **on** (`--no-proximity` to disable). Previously the CLI defaulted to unit coverage with proximity off, so `chisel risk-map` and MCP `risk_map` could disagree.
+- **Risk score single source of truth**: composite weights live in `risk_meta._BASE_RISK_WEIGHTS` and are applied via `compose_risk_score()` / `hidden_risk_from_dynamic_edges()` from both `compute_risk_score` and `get_risk_map` (no more divergent hardcoded 0.35/0.25/… literals).
+- **Honest `stale_tests` surface**: no longer advertises a no-op `working_tree` parameter; description and dispatch state that only analyzed DB edges are used.
+- **Docs**: `PLAN_NEXT.md` marks shipped static-import persistence and branch co-changes as done; documents remaining cross-shard edge limitation; `ARCHITECTURE.md` / agent playbook / README aligned with v0.15 defaults and CLI flags.
+
+### Added
+
+- Regression tests for CLI/engine default parity, schema honesty (`coverage_mode` line default; no `stale_tests` working_tree), flag forwarding, and `compose_risk_score` weight math.
+
 ## [0.14.0] — 2026-06-11
 
 ### Added

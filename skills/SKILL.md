@@ -20,16 +20,18 @@ chisel update                     # incremental refresh (near-instant when nothi
 
 Prefer the MCP tools when the `chisel` server is connected (26 tools): `diff_impact`, `suggest_tests`, `triage`, `risk_map`, `test_gaps`, `record_result`, `stats`; `start_job`/`job_status`/`cancel_job` for long analyses. Pass `auto_update=true` on query tools to refresh a stale DB inline. The CLI is equivalent and scripting-safe.
 
-## Key facts (v0.13+)
+## Key facts (v0.13–0.15+)
 
 - **gitignore-aware**: ignored trees (vendored deps, build output, fixture dirs) are never scanned or traversed; untracked-but-not-ignored files ARE visible, so working-tree analysis still works. `CHISEL_INCLUDE_IGNORED=1` overrides; non-git projects are unfiltered.
 - **Real CLI exit codes** since v0.13: `chisel analyze && pytest` scripting works (`status: error|git_error` → 1).
 - **No-op `update` is near-instant** (`edge_rebuild_skipped: true`); a one-file update rebuilds in seconds, not minutes.
-- **Uncommitted files**: pass `working_tree=true` to `risk_map` / `test_gaps` / `suggest_tests` / `diff_impact`.
-- **Monorepos**: `CHISEL_SHARDS=pkg1,pkg2` (or `.chisel/shards.toml`); `shard` param on `analyze`/`update`/`start_job` (MCP and CLI `--shard`). Query tools aggregate across shards automatically.
+- **Uncommitted files**: pass `working_tree=true` (CLI: `--working-tree`) to `risk_map` / `test_gaps` / `suggest_tests` / `diff_impact` / `triage`.
+- **CLI defaults match engine** for `risk-map`: line-weighted coverage + proximity on; `--auto-update` on the same tools that support MCP `auto_update`.
+- **Monorepos**: `CHISEL_SHARDS=pkg1,pkg2` (or `.chisel/shards.toml`); `shard` param on `analyze`/`update`/`start_job` (MCP and CLI `--shard`). Query tools aggregate across shards; cross-shard *test edges* are not yet routed.
 - **`source` trust order** on suggestions: `hybrid > direct > import_graph > co_change > static_require > working_tree > fallback`.
 - **Solo-author repos**: co-change coupling is naturally sparse — rely on `import_partners` / `import_coupling`.
 - **Risk scores**: read `_meta.uniform_components` (and `reweighted`) before trusting the composite; `exclude_new_file_boost=true` for stable long-term rankings.
+- **`stale_tests`**: DB edges only (no working-tree mode).
 
 ## When tools return empty
 

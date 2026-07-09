@@ -1077,11 +1077,11 @@ class ChiselEngine:
                 files always score coverage_gap=1.0 (no edges point *to*
                 test-file code units), which adds noise and masks real
                 coverage signal.
-            proximity_adjustment: If True, slightly reduce coverage_gap for
-                files a few import hops from tested code (see ``_meta``).
-            coverage_mode: "unit" (default) weights each code unit equally;
-                "line" weights by line count so large untested units have
-                proportionally higher coverage_gap.
+            proximity_adjustment: If True (default), slightly reduce coverage_gap
+                for files a few import hops from tested code (see ``_meta``).
+            coverage_mode: "line" (default) weights by line count so large
+                untested units have proportionally higher coverage_gap;
+                "unit" weights each code unit equally.
             working_tree: If True, include untracked files in the risk map
                 so newly created files are visible.
             exclude_new_file_boost: If True, suppress the 0.5 new-file boost
@@ -1184,16 +1184,13 @@ class ChiselEngine:
                     pass
         return {"files": all_files, "_meta": meta}
 
-    def tool_stale_tests(self, working_tree=False):
-        """MCP tool: detect stale tests.
+    def tool_stale_tests(self):
+        """MCP tool: detect stale tests from analyzed DB edges.
 
         Returns a diagnostic dict (status="no_edges") when no test edges
         exist, so agents can distinguish "no stale tests" from "nothing
-        to evaluate".
-
-        working_tree=True is accepted for MCP parity with test_gaps/diff_impact
-        but full untracked-test dangling-import detection is Phase 16 work;
-        currently only DB edges are considered (as before).
+        to evaluate". Only database edges are considered (not a working-tree
+        scan of untracked test files).
         """
         if not self._shard_config:
             with self._process_lock.shared():

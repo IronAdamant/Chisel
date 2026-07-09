@@ -103,8 +103,8 @@ A single `v*` tag push now automatically handles **both** PyPI and GitHub Releas
 3. Create and push the tag:
 
 ```bash
-git tag v0.11.0
-git push origin v0.11.0
+git tag v0.15.0
+git push origin v0.15.0
 ```
 
 This triggers the "Release" workflow which:

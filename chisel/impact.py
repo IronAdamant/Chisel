@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 
 from chisel.ast_utils import extract_code_units
 from chisel.metrics import _parse_iso_date, compute_ownership
+from chisel.risk_meta import (
+    _NEW_FILE_BOOST,
+    compose_risk_score,
+    hidden_risk_from_dynamic_edges,
+)
 from chisel.static_test_imports import StaticImportIndex
 
 # Regex to detect eval/new Function patterns in source files (eval_import dep source)
@@ -397,12 +402,11 @@ class ImpactAnalyzer:
                            coverage_mode="unit", exclude_new_file_boost=False):
         """Compute a risk score for a file or function.
 
-        Formula: 0.35*churn + 0.25*coupling + 0.15*coverage_gap
-                 + 0.10*coverage_depth + 0.10*author_concentration
-                 + 0.05*test_instability + hidden_risk_factor
-        where coverage_depth = min(distinct_covering_tests/5, 1.0)
-        and hidden_risk_factor = min(dynamic_edge_count/20, 1.0) * 0.15
-        from dynamic_import/eval_import edge counts.
+        Formula uses ``compose_risk_score`` / ``_BASE_RISK_WEIGHTS``
+        (churn, coupling, coverage_gap, coverage_depth, author_concentration,
+        test_instability) plus additive ``hidden_risk_factor`` and optional
+        ``new_file_boost``. coverage_depth = min(distinct_covering_tests/5, 1.0);
+        hidden_risk_factor scales dynamic/eval import edge counts.
 
         Args:
             failure_rates: Optional pre-fetched dict of {test_id: rate}.
@@ -503,21 +507,21 @@ class ImpactAnalyzer:
             + edge_type_counts.get("eval_import", 0)
         )
         shadow_edge_count = total_edges - edge_type_counts.get("call", 0)
-        hidden_risk_factor = min(dynamic_edge_count / 20.0, 1.0) * 0.15
+        hidden_risk_factor = hidden_risk_from_dynamic_edges(dynamic_edge_count)
 
         new_file_boost = 0.0
         if not exclude_new_file_boost and churn_norm == 0.0 and coverage == 0.0:
-            new_file_boost = 0.5
+            new_file_boost = _NEW_FILE_BOOST
 
-        risk = (
-            0.35 * churn_norm
-            + 0.25 * coupling_norm
-            + 0.15 * coverage_gap
-            + 0.10 * coverage_depth
-            + 0.10 * author_conc
-            + 0.05 * instability
-            + hidden_risk_factor
-            + new_file_boost
+        risk = compose_risk_score(
+            churn_norm,
+            coupling_norm,
+            coverage_gap,
+            coverage_depth,
+            author_conc,
+            instability,
+            hidden_risk_factor=hidden_risk_factor,
+            new_file_boost=new_file_boost,
         )
         return {
             "file_path": file_path,
@@ -962,13 +966,13 @@ class ImpactAnalyzer:
                 + edge_type_counts.get("eval_import", 0)
             )
             shadow_edge_count = total_edges - edge_type_counts.get("call", 0)
-            hidden_risk_factor = min(dynamic_edge_count / 20.0, 1.0) * 0.15
+            hidden_risk_factor = hidden_risk_from_dynamic_edges(dynamic_edge_count)
 
             # New-file risk boost: files with zero commits and zero test
             # coverage are high-risk by definition (invisible to history).
             new_file_boost = 0.0
             if not exclude_new_file_boost and churn_norm == 0.0 and coverage == 0.0:
-                new_file_boost = 0.5
+                new_file_boost = _NEW_FILE_BOOST
 
             # unknown_require_count: eval/new Function patterns in source file.
             # Only applies to JS/TS files where eval patterns are relevant.
@@ -983,15 +987,15 @@ class ImpactAnalyzer:
                     eval_pattern_count = len(_JS_EVAL_RE.findall(content))
                 except OSError:
                     pass
-            risk = (
-                0.35 * churn_norm
-                + 0.25 * coupling_norm
-                + 0.15 * coverage_gap
-                + 0.10 * coverage_depth
-                + 0.10 * author_conc
-                + 0.05 * instability
-                + hidden_risk_factor
-                + new_file_boost
+            risk = compose_risk_score(
+                churn_norm,
+                coupling_norm,
+                coverage_gap,
+                coverage_depth,
+                author_conc,
+                instability,
+                hidden_risk_factor=hidden_risk_factor,
+                new_file_boost=new_file_boost,
             )
 
             risk_map.append({

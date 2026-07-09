@@ -4,10 +4,13 @@ Short guide for **LLM agents** using Chisel (MCP or CLI). Solo maintainer, multi
 
 An installable Claude Code skill distilled from this playbook ships in **`skills/SKILL.md`** — copy to `~/.claude/skills/chisel/SKILL.md`.
 
-**v0.13 behavior notes:**
+**Behavior notes (v0.13–0.15):**
 - Scanning is **gitignore-aware**: ignored trees (vendored deps, build output, fixture dirs) are never scanned or traversed; untracked-but-not-ignored files remain visible, so `working_tree=true` analysis is unaffected. `CHISEL_INCLUDE_IGNORED=1` disables the filter; non-git projects are unfiltered.
 - **CLI exit codes are real**: `chisel analyze && pytest` scripting works (`status: error|git_error` → exit 1, success → 0).
 - A no-change **`update`** skips edge rebuilding entirely and reports `edge_rebuild_skipped: true` — safe to call frequently.
+- **CLI parity with MCP**: `risk-map` / `triage` / `diff-impact` / `suggest-tests` / `test-gaps` expose `--working-tree` and/or `--auto-update` where the engine supports them. `risk-map` defaults match the engine (`--coverage-mode line`, proximity **on**; use `--no-proximity` to disable).
+- **`stale_tests` is DB-only** — it does not scan untracked test files; there is no working-tree mode for it.
+- **Sharded monorepos**: query tools aggregate per-shard results but do **not** yet route cross-shard test edges (a test in shard A importing code in shard B may miss impact until both sides live under one analysis scope).
 
 **Security / trust:** Chisel defaults to **stdlib-only** analysis (minimal supply-chain surface). See **`LLM_CONTRACT.md`** for status codes, how to read `_meta`, and **`source`** trust ordering on `suggest_tests`.
 
