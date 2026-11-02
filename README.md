@@ -122,6 +122,8 @@ chisel diff-impact
 chisel test-gaps
 ```
 
+The same binary has been run on flask, requests, cJSON, quixbugs, and the Probatio Separate language trees. Those snapshots were written outside the repos.
+
 ## MCP Tools
 
 20 functional tools plus 6 advisory file-lock helpers for multi-agent coordination.
