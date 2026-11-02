@@ -325,8 +325,7 @@ impl Engine {
         }
         let mut churn_rows: Vec<Value> = self.store.array("churn").into_iter().filter(|row| {
             let file = row.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            let unit = row.get("unit_name").and_then(|v| v.as_str()).unwrap_or("");
-            !(scope.iter().any(|s| s == file) && unit.is_empty())
+            !scope.iter().any(|s| s == file)
         }).collect();
         let now = impact::now_unix();
         let commit_files = self.store.array("commit_files");
@@ -419,29 +418,51 @@ impl Engine {
         fill_branch_co_changes(git, &mut self.store.doc);
 
         let changed_tests: Vec<String> = changed.iter().filter(|p| looks_like_test(p)).cloned().collect();
-        let edge_rebuild_skipped = changed_tests.is_empty();
+        let changed_sources: Vec<String> = changed.iter().filter(|p| !looks_like_test(p)).cloned().collect();
+        let mut tests_to_rebuild = changed_tests.clone();
+        if !changed_sources.is_empty() {
+            let known_tests = self.store.array("test_units");
+            for edge in self.store.array("test_edges") {
+                let code_id = edge.get("code_id").and_then(|v| v.as_str()).unwrap_or("");
+                let targets_changed = changed_sources.iter().any(|path| code_id.starts_with(&format!("{path}:")));
+                if !targets_changed {
+                    continue;
+                }
+                let tid = edge.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
+                let Some(test_file) = known_tests.iter().find(|unit| unit.get("id").and_then(|v| v.as_str()) == Some(tid)).and_then(|unit| unit.get("file_path").and_then(|v| v.as_str())) else {
+                    continue;
+                };
+                if !tests_to_rebuild.iter().any(|path| path == test_file) {
+                    tests_to_rebuild.push(test_file.to_string());
+                }
+            }
+        }
+        let edge_rebuild_skipped = tests_to_rebuild.is_empty();
         if edge_rebuild_skipped {
-            // Untouched tests keep their edges. A source-only edit does not re-read them.
+            // No test content changed and no edge still names a replaced code id.
         } else {
-            for rel in &changed_tests {
+            for rel in &tests_to_rebuild {
                 if !units_by_file.contains_key(rel) {
                     let content = fs::read_to_string(self.project_dir.join(rel)).unwrap_or_default();
                     self.source_reads += 1;
                     units_by_file.insert(rel.clone(), extract::extract_code_units(rel, &content));
                 }
             }
-            let (fresh_units, fresh_edges, fresh_static) = self.build_tests_and_edges(&changed_tests, &units_by_file);
+            let (fresh_units, fresh_edges, fresh_static) = self.build_tests_and_edges(&tests_to_rebuild, &units_by_file);
             let mut test_units: Vec<Value> = self.store.array("test_units").into_iter().filter(|u| {
-                u.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !changed_tests.iter().any(|c| c == p))
+                u.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !tests_to_rebuild.iter().any(|c| c == p))
             }).collect();
             test_units.extend(fresh_units);
             let mut edges: Vec<Value> = self.store.array("test_edges").into_iter().filter(|e| {
                 let tid = e.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
-                !changed_tests.iter().any(|c| tid.starts_with(&format!("{c}:")))
+                let code_id = e.get("code_id").and_then(|v| v.as_str()).unwrap_or("");
+                let rebuilt_test = tests_to_rebuild.iter().any(|c| tid.starts_with(&format!("{c}:")));
+                let replaced_target = changed_sources.iter().any(|path| code_id.starts_with(&format!("{path}:")));
+                !rebuilt_test && !replaced_target
             }).collect();
             edges.extend(fresh_edges);
             let mut static_rows: Vec<Value> = self.store.array("static_test_imports").into_iter().filter(|r| {
-                r.get("test_file").and_then(|v| v.as_str()).is_none_or(|p| !changed_tests.iter().any(|c| c == p))
+                r.get("test_file").and_then(|v| v.as_str()).is_none_or(|p| !tests_to_rebuild.iter().any(|c| c == p))
             }).collect();
             static_rows.extend(fresh_static);
             self.store.doc.insert("test_units", Value::Array(test_units));
@@ -451,7 +472,6 @@ impl Engine {
         let mut imports: Vec<Value> = self.store.array("import_edges").into_iter().filter(|e| {
             e.get("importer_file").and_then(|v| v.as_str()).is_none_or(|p| !changed_set.contains(p))
         }).collect();
-        let changed_sources: Vec<String> = changed.iter().filter(|p| !looks_like_test(p)).cloned().collect();
         imports.extend(self.build_import_edges(&changed_sources));
         self.store.doc.insert("import_edges", Value::Array(imports));
         self.store.save()?;

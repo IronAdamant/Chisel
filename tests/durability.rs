@@ -4,6 +4,7 @@ use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn bin() -> &'static str {
@@ -11,8 +12,10 @@ fn bin() -> &'static str {
 }
 
 fn scratch() -> PathBuf {
-    let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let p = std::env::temp_dir().join(format!("chisel-dur-{n}"));
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let p = std::env::temp_dir().join(format!("chisel-dur-{t}-{n}"));
     fs::create_dir_all(&p).unwrap();
     p
 }

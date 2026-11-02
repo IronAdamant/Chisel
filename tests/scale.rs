@@ -3,13 +3,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn scratch(name: &str) -> PathBuf {
-    let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let p = std::env::temp_dir().join(format!("chisel-scale-{name}-{n}"));
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let p = std::env::temp_dir().join(format!("chisel-scale-{name}-{t}-{n}"));
     fs::create_dir_all(&p).unwrap();
     p
 }
@@ -612,6 +614,64 @@ fn source_only_update_keeps_untouched_test_edges() {
     assert_eq!(engine.source_reads, 0, "untouched test file was opened during update");
     let after = fs::read_to_string(store.join("store")).unwrap();
     assert!(after.contains("tests/test_b.py:test_b"), "test edge disappeared: {after}");
+}
+
+fn unit_churn_count(snap: &str, file: &str) -> usize {
+    let doc = chisel::json::parse(snap).unwrap();
+    doc.get("churn")
+        .and_then(|v| v.as_array())
+        .unwrap()
+        .iter()
+        .filter(|row| {
+            row.get("file_path").and_then(|v| v.as_str()) == Some(file)
+                && !row.get("unit_name").and_then(|v| v.as_str()).unwrap_or("").is_empty()
+        })
+        .count()
+}
+
+#[test]
+fn renamed_source_drops_stale_edges_and_replaces_unit_churn() {
+    let dir = scratch("rename");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::create_dir_all(dir.join("tests")).unwrap();
+    fs::write(dir.join("src/a.py"), "def a():\n    return 1\n").unwrap();
+    fs::write(dir.join("src/b.py"), "def b():\n    return 2\n").unwrap();
+    fs::write(dir.join("tests/test_a.py"), "from src.a import a\n\ndef test_a():\n    assert a() == 1\n").unwrap();
+    fs::write(dir.join("tests/test_b.py"), "from src.b import b\n\ndef test_b():\n    assert b() == 2\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    let analyzed = fs::read_to_string(store.join("store")).unwrap();
+    assert!(analyzed.contains("\"code_id\":\"src/a.py:a:function\""), "{analyzed}");
+    let before_units = unit_churn_count(&analyzed, "src/a.py");
+    assert!(before_units >= 1, "{analyzed}");
+    fs::write(dir.join("src/a.py"), "def a():\n    return 3\n").unwrap();
+    engine.update().unwrap();
+    let same_name = fs::read_to_string(store.join("store")).unwrap();
+    assert_eq!(unit_churn_count(&same_name, "src/a.py"), before_units, "unit churn rows stacked: {same_name}");
+    fs::write(dir.join("src/a.py"), "def a():\n    return 4\n").unwrap();
+    engine.update().unwrap();
+    let second = fs::read_to_string(store.join("store")).unwrap();
+    assert_eq!(unit_churn_count(&second, "src/a.py"), before_units, "second update stacked unit churn: {second}");
+    engine.source_reads = 0;
+    fs::write(dir.join("src/a.py"), "def renamed():\n    return 1\n").unwrap();
+    let update = engine.update().unwrap();
+    let text = chisel::json::to_string(&update).unwrap();
+    assert!(!text.contains("\"edge_rebuild_skipped\":true") && !text.contains("\"edge_rebuild_skipped\": true"), "{text}");
+    let after = fs::read_to_string(store.join("store")).unwrap();
+    assert!(!after.contains("src/a.py:a:function"), "stale edge target survived: {after}");
+    assert!(after.contains("src/a.py:renamed:function"), "{after}");
+    assert!(after.contains("\"code_id\":\"src/b.py:b:function\""), "unrelated edge was dropped: {after}");
+    assert!(engine.source_reads > 0, "covering test was not rematched");
+    let covering_reads = engine.source_reads;
+    engine.source_reads = 0;
+    fs::write(dir.join("src/b.py"), "def b():\n    return 9\n").unwrap();
+    engine.update().unwrap();
+    let touched_b = fs::read_to_string(store.join("store")).unwrap();
+    assert!(touched_b.contains("\"code_id\":\"src/b.py:b:function\""), "{touched_b}");
+    assert!(engine.source_reads > 0 && engine.source_reads <= covering_reads, "untouched test_a was reread: {}", engine.source_reads);
 }
 
 #[test]
