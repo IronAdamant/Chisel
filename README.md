@@ -12,7 +12,7 @@ Chisel builds a graph connecting your code, tests, and git history, then answers
 
 ### 1. What to run
 
-You change `engine.py:store_document()`. Instead of running all 287 tests or guessing with `-k "test_store"`, Chisel tells the agent exactly which tests are impacted — through direct edges and transitive import-chain coupling.
+You change a function in `src/engine/analyze.rs`. Chisel tells the agent which tests are impacted, through direct edges and the import graph, instead of running the whole suite or guessing from the filename.
 
 ### 2. What's risky
 
@@ -62,7 +62,7 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.j
 
 `chisel-mcp` speaks stdio MCP (Content-Length JSON-RPC). `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` are honored when the CLI flags are absent.
 
-Run `analyze` first to build the project graph, then `diff_impact` after edits to see which tests to run. For large repos, `analyze` with `force=True` automatically falls back to a background job so you don't hit MCP timeouts. Working-tree analysis (`--working-tree`) reuses a cached static import index and falls back to fast stem-matching for untracked files to stay within timeout budgets.
+Run `analyze` first to build the project graph, then `diff_impact` after edits to see which tests to run. `analyze` with `force` on more than 300 code files returns `auto_queued` and a `job_id`. Poll `job_status`. `--working-tree` reads the worktree. Leave it off to answer from the snapshot.
 
 **Monorepo sharding:** `CHISEL_SHARDS` or `.chisel/shards.toml` gives each shard its own snapshot under `.chisel/shards/<shard>/`. Unscoped reads aggregate. Writes use the longest path prefix. Cross-shard test edges are unsupported. An unknown shard returns `status: "error"`.
 
@@ -90,7 +90,7 @@ chisel analyze .
 chisel diff-impact
 
 # What tests should I run for this file?
-chisel suggest-tests engine.py
+chisel suggest-tests src/engine/analyze.rs
 
 # Risk heatmap (defaults: line-weighted coverage + proximity adjustment)
 chisel risk-map
@@ -101,7 +101,7 @@ chisel risk-map --no-proximity --coverage-mode unit   # override defaults
 chisel test-gaps --working-tree
 
 # Who owns this code?
-chisel ownership engine.py
+chisel ownership src/engine/analyze.rs
 
 # Run tests AND record pass/fail results in one step
 chisel run -- pytest tests/
@@ -130,21 +130,21 @@ chisel test-gaps
 |------|-------------|
 | `analyze` | Full project scan — builds the code/test/git graph. Optional `shard` param for sharded monorepos |
 | `update` | Incremental re-analysis of changed files only. Optional `shard` param for sharded monorepos |
-| `diff_impact` | Detects your changes from `git diff` and returns impacted tests. `working_tree=true` enables full static import scanning for untracked files. `auto_update=true` refreshes stale DB inline |
-| `suggest_tests` | Ranks tests by relevance for a given file. Prefers same-directory tests via stem matching. `auto_update=true` refreshes stale DB inline |
+| `diff_impact` | Detects your changes from `git diff` and returns impacted tests. `working_tree=true` reads untracked files. `auto_update=true` refreshes a stale snapshot inline |
+| `suggest_tests` | Ranks tests by relevance for a given file. Requires `file_path`. `auto_update=true` refreshes a stale snapshot inline |
 | `impact` | Which tests cover these files or functions? |
-| `risk_map` | Risk scores for all files (churn + coupling + coverage gaps). Defaults: line-weighted coverage + proximity. `working_tree=true` includes untracked files. `exclude_new_file_boost=true` suppresses the temporary boost. `auto_update=true` refreshes stale DB inline |
-| `test_gaps` | Code with zero test coverage, sorted by risk. `working_tree=true` elevates uncommitted files to the top. `auto_update=true` refreshes stale DB inline |
+| `risk_map` | Risk scores for all files (churn + coupling + coverage gaps). Defaults: line-weighted coverage + proximity. `working_tree=true` includes untracked files. `exclude_new_file_boost=true` suppresses the new-file boost. `auto_update=true` refreshes a stale snapshot inline |
+| `test_gaps` | Code with zero test coverage, sorted by risk. `working_tree=true` includes uncommitted files. `auto_update=true` refreshes a stale snapshot inline |
 | `triage` | Top risks + gaps + stale tests in one call. Supports `exclude_new_file_boost` and `auto_update` |
 | `churn` | How often does this file or function change? |
 | `coupling` | Files that change together or import each other |
 | `ownership` | Blame-based — who wrote this code? |
 | `who_reviews` | Commit-activity-based — who maintains this code? |
-| `stale_tests` | Tests pointing at code that no longer exists (analyzed DB edges only) |
+| `stale_tests` | Tests whose edges name code ids that are no longer in the snapshot |
 | `history` | Commit history for a file |
 | `record_result` | Log test pass/fail outcomes for future prioritization |
 | `run` | CLI-only: run tests and auto-record results (pytest, Jest) |
-| `stats` | Database summary and diagnostic counts |
+| `stats` | Snapshot counts. It does not return the full result history |
 | `start_job` | Run analyze/update in background (avoids MCP timeouts). Optional `shard` param |
 | `job_status` | Poll a background job until complete |
 | `cancel_job` | Request cooperative cancellation of a running background job |
@@ -155,20 +155,22 @@ chisel test-gaps
 - **Zero dependencies** — the Rust binary links only the standard library. No crates.io crates. System `git` is required at runtime.
 - **Multi-language** — Python, JavaScript/TypeScript, Go, Rust, C#, Java, Kotlin, C/C++, Swift, PHP, Ruby, Dart
 - **Framework-aware** — pytest, Jest, Go test, Rust #[test], Playwright, xUnit/NUnit/MSTest, JUnit (incl. parameterized), XCTest + Swift Testing, PHPUnit, RSpec, Minitest, gtest, Dart test
-- **Incremental** — only re-processes changed files, not the whole repo; a no-change `update` is near-instant
+- **Incremental** — `update` recomputes changed files and newer commits. A no-op update sets `edge_rebuild_skipped` and does not run `git blame` or per-function `git log -L`. Above 2000 code files, file-level churn still runs and per-function `git log -L` does not (`unit_churn_skipped`).
 - **gitignore-aware** — ignored trees (vendored deps, build output, fixtures) are never scanned; untracked files still are (`CHISEL_INCLUDE_IGNORED=1` to override)
-- **Branch-aware** — `diff_impact` auto-detects feature branch vs main
-- **Multi-agent safe** — cross-process locks so parallel agents don't corrupt the graph
+- **Branch-aware** — `diff_impact` auto-detects feature branch vs main. Feature-branch co-change comes from `merge-base..HEAD`. `main` and `master` keep that list empty.
+- **Multi-agent safe** — cross-process locks so parallel agents don't corrupt the snapshot
 - **MCP + CLI** — stdio MCP (`chisel serve-mcp` or `chisel-mcp`) and a JSON HTTP API (`GET /health`, `GET /tools`, `POST /call`), plus a CLI with 28 subcommands
-- **CI-friendly** — real exit codes (`chisel analyze && pytest` just works); copy-paste GitHub Actions example in `examples/github-actions/`
+- **CI-friendly** — `error` and `git_error` exit 1. Other statuses, including `no_data` and `stale_db`, exit 0. Build the release binary in CI. `examples/github-actions/chisel.yml` still installs the old pip package and is not the path for this binary.
 - **Monorepo sharding** — one snapshot per shard under `.chisel/shards/<shard>/` (`CHISEL_SHARDS` or `.chisel/shards.toml`). Cross-shard test edges are unsupported.
-- **Custom extractors** — plug in tree-sitter or LSP via `register_extractor()` if you need it
+- **Custom extractors** — set `CHISEL_EXTRACTOR` to an executable. It receives the path and language on stdin and returns a JSON list of units. A non-zero exit or bad JSON falls back to the built-in scanner and records a warning. Unset uses the built-in scanner. The binary does not load tree-sitter or plugins.
 
 ## Ecosystem
 
 Chisel sits in the agent loop: impact -> tests -> record results -> refresh analysis. It works standalone or alongside [Stele](https://github.com/IronAdamant/Stele) for semantic code context.
 
-**Docs:** [Agent playbook](docs/AGENT_PLAYBOOK.md) | [Claude Code skill](skills/SKILL.md) | [Zero-dependency policy](docs/ZERO_DEPS.md) | [Custom extractors](docs/CUSTOM_EXTRACTORS.md)
+**Docs for this binary:** [AGENTS.md](AGENTS.md) | [Claude Code skill](skills/SKILL.md)
+
+The files under `docs/` still describe the Python package in `chisel/` (SQLite, `pip`, `register_extractor`). That package is the oracle for result checks, not the program you run.
 
 ## License
 
