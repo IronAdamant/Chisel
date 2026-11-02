@@ -45,7 +45,7 @@ Always pass `--json` on the CLI and branch on `status` before treating a payload
 - `suggest_tests` requires `file_path`. `impact` requires `files`. A missing required argument is `status: "error"`, not an empty list.
 - `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` apply when the CLI flags are absent.
 - `CHISEL_INCLUDE_IGNORED=1` scans ignored files. Non-git projects are unfiltered.
-- Shards: `CHISEL_SHARDS` or `.chisel/shards.toml`. One snapshot per shard. Unscoped reads aggregate. Unknown shard is `status: "error"`. Cross-shard test edges are unsupported.
+- Shards: `CHISEL_SHARDS` or `.chisel/shards.toml`. One snapshot per shard. Unscoped reads aggregate. Unknown shard is `status: "error"`. Cross-shard test edges are overlaid from the parent snapshot. `flakiness_trend` is set when dated results span two of the last four weeks.
 - Above 2000 code files, file-level churn still runs and per-function `git log -L` does not (`unit_churn_skipped`).
 - A no-op `update` sets `edge_rebuild_skipped` true and does not run `git blame` or `git log -L`.
 - `chisel run` records pytest and Jest and forwards the test process exit code. One snapshot flush for the whole run.

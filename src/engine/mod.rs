@@ -197,6 +197,11 @@ pub struct Engine {
     coverage_mode: String,
     proximity_adjustment: bool,
     exclude_new_file_boost: bool,
+    /// Parent storage dir when this engine is a shard view. Result rows live there.
+    result_log: Option<PathBuf>,
+    /// `(shard name, full shard config)` for overlaying cross edges. `shards` stays empty on a view.
+    shard_view: Option<(String, Vec<(String, String)>)>,
+    overlay_applied: bool,
 }
 
 impl Engine {
@@ -225,6 +230,9 @@ impl Engine {
             coverage_mode: "line".into(),
             proximity_adjustment: true,
             exclude_new_file_boost: false,
+            result_log: None,
+            shard_view: None,
+            overlay_applied: false,
         };
         engine.shards = load_shard_config(&engine.project_dir);
         Ok(engine)
@@ -264,6 +272,87 @@ pub(crate) fn push_extractor_warnings(summary: &mut Vec<(String, Value)>) {
         "extractor_warnings".into(),
         Value::Array(warnings.into_iter().map(Value::String).collect()),
     ));
+}
+
+pub(crate) fn normalize_test_id(id: &str) -> String {
+    let id = id.trim();
+    let Some((path, rest)) = id.split_once("::") else {
+        return id.to_string();
+    };
+    if path.contains('/') || path.contains('.') {
+        return format!("{path}:{}", rest.replace("::", "."));
+    }
+    id.replace("::", ":")
+}
+
+pub(crate) fn prune_old_results(doc: &mut Value, now: f64) {
+    let cutoff = now - 90.0 * 86400.0;
+    if doc.get("test_results").and_then(|v| v.as_array()).is_none() {
+        doc.insert("test_results", Value::Array(Vec::new()));
+    }
+    if let Some(results) = doc.get_mut("test_results").and_then(|v| v.as_array_mut()) {
+        results.retain(|row| match row.get("recorded_at").and_then(|v| v.as_f64()) {
+            Some(when) => when >= cutoff,
+            None => true,
+        });
+    }
+}
+
+pub(crate) fn append_test_result(doc: &mut Value, test_id: &str, passed: bool, now: f64) {
+    if doc.get("test_results").and_then(|v| v.as_array()).is_none() {
+        doc.insert("test_results", Value::Array(Vec::new()));
+    }
+    if let Some(results) = doc.get_mut("test_results").and_then(|v| v.as_array_mut()) {
+        results.push(Value::object(vec![
+            ("test_id".into(), Value::String(normalize_test_id(test_id))),
+            ("passed".into(), Value::Bool(passed)),
+            ("recorded_at".into(), Value::Float(now)),
+        ]));
+    }
+}
+
+/// Newest week fail-rate minus the oldest week fail-rate over 28 days.
+/// `None` unless the current week and at least one older week both have a row.
+pub(crate) fn flakiness_trend(results: &[Value], test_id: &str, now: f64) -> Option<f64> {
+    const WEEK: f64 = 7.0 * 86400.0;
+    const WINDOW: f64 = 28.0 * 86400.0;
+    let mut total = [0i64; 4];
+    let mut failed = [0i64; 4];
+    for row in results {
+        if row.get("test_id").and_then(|v| v.as_str()) != Some(test_id) {
+            continue;
+        }
+        let Some(when) = row.get("recorded_at").and_then(|v| v.as_f64()) else {
+            continue;
+        };
+        let age = now - when;
+        if age < 0.0 || age >= WINDOW {
+            continue;
+        }
+        let bucket = (age / WEEK) as usize;
+        if bucket >= 4 {
+            continue;
+        }
+        total[bucket] += 1;
+        if row.get("passed").and_then(|v| v.as_bool()) == Some(false) {
+            failed[bucket] += 1;
+        }
+    }
+    if total[0] == 0 {
+        return None;
+    }
+    let oldest = (1..4).rev().find(|i| total[*i] > 0)?;
+    let newest_rate = failed[0] as f64 / total[0] as f64;
+    let oldest_rate = failed[oldest] as f64 / total[oldest] as f64;
+    Some(crate::json::py_round((newest_rate - oldest_rate).clamp(-1.0, 1.0), 4))
+}
+
+pub(crate) fn mean_flakiness(ids: &BTreeSet<String>, results: &[Value], now: f64) -> Option<f64> {
+    let vals: Vec<f64> = ids.iter().filter_map(|id| flakiness_trend(results, id, now)).collect();
+    if vals.is_empty() {
+        return None;
+    }
+    Some(crate::json::py_round(vals.iter().sum::<f64>() / vals.len() as f64, 4))
 }
 
 pub(crate) fn apply_failure(relevance: f64, rate: f64) -> (f64, f64, f64) {

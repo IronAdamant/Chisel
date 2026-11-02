@@ -202,6 +202,10 @@ impl Store {
         self.co_by_file.get(file).cloned().unwrap_or_default()
     }
 
+    pub fn reindex_memory(&mut self) {
+        self.reindex();
+    }
+
     fn reindex(&mut self) {
         let units = self.doc.get("code_units").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
         let edges = self.doc.get("test_edges").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();

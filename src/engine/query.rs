@@ -13,6 +13,15 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+fn cross_edge_key(edge: &Value) -> String {
+    format!(
+        "{}|{}|{}",
+        edge.get("test_id").and_then(|v| v.as_str()).unwrap_or(""),
+        edge.get("code_id").and_then(|v| v.as_str()).unwrap_or(""),
+        edge.get("edge_type").and_then(|v| v.as_str()).unwrap_or("")
+    )
+}
+
 impl Engine {
     pub fn has_data(&self) -> bool {
         !self.store.array("code_units").is_empty()
@@ -35,6 +44,8 @@ impl Engine {
 
     pub(super) fn risk_map_with(&mut self, reweight: bool) -> Result<Value, String> {
         self.store.reload()?;
+        self.overlay_applied = false;
+        self.absorb_parent_overlay();
         if !self.has_data() {
             return Ok(Self::no_data());
         }
@@ -83,9 +94,10 @@ impl Engine {
             }
         }
 
-        let recorded = self.store.array("test_results");
+        let recorded = self.result_rows();
         let failure_rates = failure_rate_map(&recorded);
         let duration_cvs = duration_cv_map(&recorded);
+        let trend_now = now_secs();
         let mut scored = Vec::new();
         for f in &files {
             let churn_raw = self.store.churn_for_file(f).into_iter().find(|c| c.get("unit_name").and_then(|v| v.as_str()).unwrap_or("").is_empty()).and_then(|c| c.get("churn_score").and_then(|v| v.as_f64())).unwrap_or(0.0);
@@ -171,7 +183,7 @@ impl Engine {
                     eval_patterns = text.matches("new Function(").count() as i64;
                 }
             }
-            scored.push(impact::score_file(&RiskInputs {
+            let mut row = impact::score_file(&RiskInputs {
                 file_path: f.clone(),
                 churn_raw,
                 co_change_count: co_count,
@@ -193,7 +205,11 @@ impl Engine {
                 coverage_mode: self.coverage_mode.clone(),
                 proximity_hops: hops.get(f).copied(),
                 proximity: self.proximity_adjustment,
-            }));
+            });
+            if let Some(trend) = mean_flakiness(&covering, &recorded, trend_now) {
+                row.insert("flakiness_trend", Value::Float(trend));
+            }
+            scored.push(row);
         }
         scored.sort_by(|a, b| {
             let sa = a.get("risk_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -211,7 +227,7 @@ impl Engine {
         };
         let commits_n = self.store.array("commits").len() as i64;
         let test_edges_n = self.store.array_len("test_edges") as i64;
-        let test_results_n = self.store.array_len("test_results") as i64;
+        let test_results_n = recorded.len() as i64;
         let import_n = imports.len() as i64;
         let co_n = self.store.array("co_changes").iter().filter(|c| c.get("co_commit_count").and_then(|v| v.as_i64()).unwrap_or(0) >= query_min).count() as i64;
         let mut meta = impact::build_risk_meta(&scored, commits_n, test_edges_n, test_results_n, import_n, co_n);
@@ -325,6 +341,8 @@ impl Engine {
             }
         }
         self.store.reload()?;
+        self.overlay_applied = false;
+        self.absorb_parent_overlay();
         if !self.has_data() {
             return Ok(Self::no_data());
         }
@@ -358,14 +376,15 @@ impl Engine {
                 by_id.insert(tid, item);
             }
         }
-        let recorded = self.store.array("test_results");
+        let recorded = self.result_rows();
         let failure_rates = failure_rate_map(&recorded);
+        let trend_now = now_secs();
         let mut result = Vec::new();
         for (_tid, item) in by_id {
             let relevance = item.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let tid = item.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
             let (relevance, rate_v, boost_v) = apply_failure(relevance, failure_rates.get(tid).copied().unwrap_or(0.0));
-            result.push(Value::object(vec![
+            let mut row = Value::object(vec![
                 ("test_id".into(), item.get("test_id").cloned().unwrap_or(Value::Null)),
                 ("file_path".into(), item.get("file_path").cloned().unwrap_or(Value::Null)),
                 ("name".into(), item.get("name").cloned().unwrap_or(Value::Null)),
@@ -374,13 +393,17 @@ impl Engine {
                 ("source".into(), item.get("source").cloned().unwrap_or(Value::String("direct".into()))),
                 ("failure_rate".into(), Value::Float(rate_v)),
                 ("failure_boost".into(), Value::Float(boost_v)),
-            ]));
+            ]);
+            if let Some(trend) = flakiness_trend(&recorded, tid, trend_now) {
+                row.insert("flakiness_trend", Value::Float(trend));
+            }
+            result.push(row);
         }
         if result.is_empty() {
             for (tid, file_path, name, relevance) in self.stem_matches(file) {
                 let (relevance, rate_v, boost_v) = apply_failure(relevance, failure_rates.get(&tid).copied().unwrap_or(0.0));
-                result.push(Value::object(vec![
-                    ("test_id".into(), Value::String(tid)),
+                let mut row = Value::object(vec![
+                    ("test_id".into(), Value::String(tid.clone())),
                     ("file_path".into(), Value::String(file_path)),
                     ("name".into(), Value::String(name)),
                     ("relevance".into(), Value::Float(relevance)),
@@ -388,7 +411,11 @@ impl Engine {
                     ("source".into(), Value::String("fallback".into())),
                     ("failure_rate".into(), Value::Float(rate_v)),
                     ("failure_boost".into(), Value::Float(boost_v)),
-                ]));
+                ]);
+                if let Some(trend) = flakiness_trend(&recorded, &tid, trend_now) {
+                    row.insert("flakiness_trend", Value::Float(trend));
+                }
+                result.push(row);
             }
         }
         result.sort_by(|a, b| {
@@ -533,7 +560,8 @@ impl Engine {
         }
     }
 
-    pub(super) fn impacted(&self, files: &[String], functions: &BTreeMap<String, Vec<String>>, untracked: &BTreeSet<String>) -> Vec<Value> {
+    pub(super) fn impacted(&mut self, files: &[String], functions: &BTreeMap<String, Vec<String>>, untracked: &BTreeSet<String>) -> Vec<Value> {
+        self.absorb_parent_overlay();
         let tests: BTreeMap<String, Value> = self.store.array("test_units").into_iter().filter_map(|t| {
             Some((t.get("id")?.as_str()?.to_string(), t))
         }).collect();
@@ -745,7 +773,7 @@ impl Engine {
             ("passed".into(), Value::Int(0)),
             ("failed".into(), Value::Int(0)),
             ("coupling_threshold".into(), Value::Int(impact::coupling_threshold(commits))),
-            ("cross_shard_test_edges".into(), Value::String("unsupported".into())),
+            ("cross_shard_test_edges".into(), Value::Int(self.store.array_len("test_edges") as i64)),
         ];
         if include_results {
             pairs.push(("recorded_results".into(), Value::Array(vec![])));
@@ -753,10 +781,111 @@ impl Engine {
         Ok(Value::object(pairs))
     }
 
+    fn result_rows(&self) -> Vec<Value> {
+        if let Some(dir) = &self.result_log {
+            if let Ok(store) = Store::open(dir) {
+                return store.array("test_results");
+            }
+        }
+        self.store.array("test_results")
+    }
+
+    fn absorb_parent_overlay(&mut self) {
+        if self.overlay_applied {
+            return;
+        }
+        let Some(dir) = self.result_log.clone() else {
+            return;
+        };
+        let Some((shard, shards)) = self.shard_view.clone() else {
+            return;
+        };
+        self.overlay_applied = true;
+        let Ok(parent) = Store::open(&dir) else {
+            return;
+        };
+        let in_shard = |file: &str| shard_name_for(file, &shards) == Some(shard.as_str());
+        let mut edge_keys: BTreeSet<String> = self.store.array("test_edges").into_iter().map(|e| cross_edge_key(&e)).collect();
+        let mut unit_ids: BTreeSet<String> = self.store.array("code_units").into_iter().filter_map(|u| u.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
+        let mut test_ids: BTreeSet<String> = self.store.array("test_units").into_iter().filter_map(|u| u.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
+        let mut static_keys: BTreeSet<String> = self.store.array("static_test_imports").into_iter().map(|r| {
+            format!("{}|{}", r.get("test_file").and_then(|v| v.as_str()).unwrap_or(""), r.get("code_file").and_then(|v| v.as_str()).unwrap_or(""))
+        }).collect();
+        let mut import_keys: BTreeSet<String> = self.store.array("import_edges").into_iter().map(|r| {
+            format!("{}|{}", r.get("importer_file").and_then(|v| v.as_str()).unwrap_or(""), r.get("imported_file").and_then(|v| v.as_str()).unwrap_or(""))
+        }).collect();
+        let mut importers = BTreeSet::new();
+        for edge in parent.array("test_edges") {
+            let code_file = edge.get("code_file").and_then(|v| v.as_str()).unwrap_or("");
+            if !in_shard(code_file) {
+                continue;
+            }
+            let key = cross_edge_key(&edge);
+            if edge_keys.insert(key) {
+                self.store.array_mut("test_edges").push(edge);
+            }
+        }
+        for unit in parent.array("test_units") {
+            let id = unit.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if id.is_empty() || !test_ids.insert(id) {
+                continue;
+            }
+            self.store.array_mut("test_units").push(unit);
+        }
+        for row in parent.array("static_test_imports") {
+            let code_file = row.get("code_file").and_then(|v| v.as_str()).unwrap_or("");
+            if !in_shard(code_file) {
+                continue;
+            }
+            let key = format!("{}|{code_file}", row.get("test_file").and_then(|v| v.as_str()).unwrap_or(""));
+            if static_keys.insert(key) {
+                self.store.array_mut("static_test_imports").push(row);
+            }
+        }
+        for row in parent.array("import_edges") {
+            let imported = row.get("imported_file").and_then(|v| v.as_str()).unwrap_or("");
+            if !in_shard(imported) {
+                continue;
+            }
+            if let Some(importer) = row.get("importer_file").and_then(|v| v.as_str()) {
+                importers.insert(importer.to_string());
+            }
+            let key = format!("{}|{imported}", row.get("importer_file").and_then(|v| v.as_str()).unwrap_or(""));
+            if import_keys.insert(key) {
+                self.store.array_mut("import_edges").push(row);
+            }
+        }
+        for unit in parent.array("bridge_units") {
+            let file = unit.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+            if !importers.contains(file) {
+                continue;
+            }
+            let id = unit.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if id.is_empty() || !unit_ids.insert(id) {
+                continue;
+            }
+            self.store.array_mut("code_units").push(unit);
+        }
+        for edge in parent.array("bridge_edges") {
+            let code_file = edge.get("code_file").and_then(|v| v.as_str()).unwrap_or("");
+            if !importers.contains(code_file) {
+                continue;
+            }
+            let key = cross_edge_key(&edge);
+            if edge_keys.insert(key) {
+                self.store.array_mut("test_edges").push(edge);
+            }
+        }
+        self.store.reindex_memory();
+    }
+
     pub(super) fn open_shard(&self, name: &str) -> Result<Engine, String> {
         let dir = self.store.dir().join("shards").join(name);
         let mut sub = Engine::open(&self.project_dir, Some(&dir))?;
         sub.shards.clear();
+        sub.result_log = Some(self.store.dir().to_path_buf());
+        sub.shard_view = Some((name.to_string(), self.shards.clone()));
+        sub.overlay_applied = false;
         sub.include_ignored = self.include_ignored;
         sub.working_tree = self.working_tree;
         sub.coverage_mode = self.coverage_mode.clone();
@@ -796,7 +925,7 @@ impl Engine {
         Ok(Value::object(vec![
             ("files".into(), Value::Array(files)),
             ("_meta".into(), Value::object(vec![
-                ("cross_shard_test_edges".into(), Value::String("unsupported".into())),
+                ("cross_shard_test_edges".into(), Value::Int(self.store.array_len("test_edges") as i64)),
             ])),
         ]))
     }
@@ -807,15 +936,15 @@ impl Engine {
         let mut edges = false;
         let names: Vec<String> = self.shards.iter().map(|(name, _)| name.clone()).collect();
         for name in names {
-            let sub = self.open_shard(&name)?;
+            let mut sub = self.open_shard(&name)?;
             if !sub.has_data() {
                 continue;
             }
             any = true;
+            stale.extend(sub.stale_rows());
             if sub.store.array_len("test_edges") > 0 {
                 edges = true;
             }
-            stale.extend(sub.stale_rows());
         }
         if !any {
             return Ok(Self::no_data());
@@ -840,7 +969,7 @@ impl Engine {
         let mut rows = Vec::new();
         let mut any = false;
         for (name, group) in groups {
-            let sub = self.open_shard(&name)?;
+            let mut sub = self.open_shard(&name)?;
             if !sub.has_data() {
                 continue;
             }
@@ -1258,14 +1387,23 @@ impl Engine {
         gaps
     }
 
-    pub(super) fn stale_rows(&self) -> Vec<Value> {
+    pub(super) fn stale_rows(&mut self) -> Vec<Value> {
+        self.absorb_parent_overlay();
         let edges = self.store.array("test_edges");
         let ids: BTreeSet<String> = self.store.array("code_units").into_iter().filter_map(|u| u.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
         let tests = self.store.array("test_units");
+        let shard_of = self.shard_view.clone();
         let mut stale = Vec::new();
         for e in &edges {
             let code_id = e.get("code_id").and_then(|v| v.as_str()).unwrap_or("");
             if ids.contains(code_id) { continue; }
+            if let Some((shard, shards)) = &shard_of {
+                if let Some(code_file) = e.get("code_file").and_then(|v| v.as_str()) {
+                    if shard_name_for(code_file, shards) != Some(shard.as_str()) {
+                        continue;
+                    }
+                }
+            }
             let tid = e.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
             let name = tests.iter().find(|t| t.get("id").and_then(|v| v.as_str()) == Some(tid)).and_then(|t| t.get("name")).and_then(|v| v.as_str()).unwrap_or("");
             stale.push(Value::object(vec![
@@ -1297,7 +1435,7 @@ impl Engine {
             let mut edges = 0i64;
             let mut results = 0i64;
             for (name, _) in self.shards.clone() {
-                let sub = self.open_shard(&name)?;
+                let mut sub = self.open_shard(&name)?;
                 gaps.extend(sub.gap_rows().into_iter().filter(|g| {
                     g.get("file_path").and_then(|v| v.as_str()).is_some_and(|p| top_paths.contains(p))
                 }));
@@ -1316,7 +1454,7 @@ impl Engine {
                     ("test_edge_count".into(), Value::Int(edges)),
                     ("test_result_count".into(), Value::Int(results)),
                     ("coupling_threshold".into(), Value::Int(impact::coupling_threshold(0))),
-                    ("cross_shard_test_edges".into(), Value::String("unsupported".into())),
+                    ("cross_shard_test_edges".into(), Value::Int(self.store.array_len("test_edges") as i64)),
                     ("active_locks".into(), Value::Int(0)),
                 ])),
             ];

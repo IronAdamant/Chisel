@@ -646,18 +646,14 @@ impl Engine {
     }
 
     pub fn record_result(&mut self, test_id: &str, passed: bool) -> Result<Value, String> {
-        let id = test_id.to_string();
+        let stored = normalize_test_id(test_id);
+        let now = now_secs();
         self.store.edit_and_save(|doc| {
-            let results = doc.get_mut("test_results").and_then(|v| v.as_array_mut());
-            if let Some(results) = results {
-                results.push(Value::object(vec![
-                    ("test_id".into(), Value::String(id.clone())),
-                    ("passed".into(), Value::Bool(passed)),
-                ]));
-            }
+            prune_old_results(doc, now);
+            append_test_result(doc, test_id, passed, now);
         })?;
         Ok(Value::object(vec![
-            ("test_id".into(), Value::String(test_id.into())),
+            ("test_id".into(), Value::String(stored)),
             ("passed".into(), Value::Bool(passed)),
             ("recorded".into(), Value::Bool(true)),
         ]))
@@ -665,11 +661,10 @@ impl Engine {
 
     pub fn record_results_batch(&mut self, rows: &[(String, bool)]) -> Result<Value, String> {
         let before = self.store.doc.get("generation").and_then(|v| v.as_i64()).unwrap_or(0);
+        let now = now_secs();
+        prune_old_results(&mut self.store.doc, now);
         for (test_id, passed) in rows {
-            self.store.array_mut("test_results").push(Value::object(vec![
-                ("test_id".into(), Value::String(test_id.clone())),
-                ("passed".into(), Value::Bool(*passed)),
-            ]));
+            append_test_result(&mut self.store.doc, test_id, *passed, now);
         }
         self.store.save()?;
         let after = self.store.doc.get("generation").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -677,6 +672,191 @@ impl Engine {
             ("recorded".into(), Value::Int(rows.len() as i64)),
             ("generation_delta".into(), Value::Int(after - before)),
         ]))
+    }
+
+    pub(super) fn rebuild_cross_shard(&mut self) -> Result<(), String> {
+        let shards = self.shards.clone();
+        if shards.is_empty() {
+            return Ok(());
+        }
+        let mut all_units: Vec<Value> = Vec::new();
+        let mut local_edges: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        let mut local_units: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        let mut test_files: Vec<(String, String, String)> = Vec::new();
+        for (name, _) in &shards {
+            let sub = self.open_shard(name)?;
+            let units = sub.store.array("code_units");
+            all_units.extend(units.iter().cloned());
+            local_units.insert(name.clone(), units);
+            local_edges.insert(name.clone(), sub.store.array("test_edges"));
+            for unit in sub.store.array("test_units") {
+                let file = unit.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let id = unit.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let test_name = unit.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if file.is_empty() || id.is_empty() {
+                    continue;
+                }
+                test_files.push((name.clone(), file, format!("{id}\t{test_name}")));
+            }
+        }
+        let index = bare_name_index(&all_units);
+        let mut edges = Vec::new();
+        let mut slim_tests = Vec::new();
+        let mut static_rows = Vec::new();
+        let mut seen_edges = BTreeSet::new();
+        let mut seen_static = BTreeSet::new();
+        let mut seen_slim = BTreeSet::new();
+        let mut content_cache: BTreeMap<String, String> = BTreeMap::new();
+        let mut tests_by_file: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+        for (shard, file, packed) in &test_files {
+            let Some((id, test_name)) = packed.split_once('\t') else { continue };
+            if id.is_empty() {
+                continue;
+            }
+            tests_by_file.entry(file.clone()).or_default().push((id.to_string(), test_name.to_string()));
+            let _ = shard;
+        }
+        for (file, tests) in &tests_by_file {
+            let content = content_cache.entry(file.clone()).or_insert_with(|| {
+                fs::read_to_string(self.project_dir.join(file)).unwrap_or_default()
+            });
+            let deps = extract::extract_deps(file, content);
+            let resolved = resolved_import_files(&deps, &all_units);
+            let test_shard = shard_name_for(file, &shards).unwrap_or("");
+            for path in &resolved {
+                let code_shard = shard_name_for(path, &shards).unwrap_or("");
+                if code_shard.is_empty() || code_shard == test_shard {
+                    continue;
+                }
+                let key = format!("{file}|{path}");
+                if seen_static.insert(key) {
+                    static_rows.push(Value::object(vec![
+                        ("test_file".into(), Value::String(file.clone())),
+                        ("code_file".into(), Value::String(path.clone())),
+                    ]));
+                }
+            }
+            for (id, test_name) in tests {
+                for dep in &deps {
+                    for cid in match_dep(file, dep, &all_units, &resolved, &index) {
+                        let code_file = all_units.iter().find(|u| u.get("id").and_then(|v| v.as_str()) == Some(cid.as_str())).and_then(|u| u.get("file_path").and_then(|v| v.as_str())).unwrap_or("");
+                        let code_shard = shard_name_for(code_file, &shards).unwrap_or("");
+                        if code_file.is_empty() || code_shard.is_empty() || code_shard == test_shard {
+                            continue;
+                        }
+                        let key = format!("{id}|{cid}|{}", dep.dep_type);
+                        if !seen_edges.insert(key) {
+                            continue;
+                        }
+                        let weight = extract::proximity_weight(file, code_file) * dep.confidence.sqrt();
+                        edges.push(Value::object(vec![
+                            ("test_id".into(), Value::String(id.clone())),
+                            ("code_id".into(), Value::String(cid)),
+                            ("code_file".into(), Value::String(code_file.into())),
+                            ("edge_type".into(), Value::String(dep.dep_type.clone())),
+                            ("weight".into(), Value::Float(weight)),
+                        ]));
+                        if seen_slim.insert(id.clone()) {
+                            slim_tests.push(Value::object(vec![
+                                ("id".into(), Value::String(id.clone())),
+                                ("file_path".into(), Value::String(file.clone())),
+                                ("name".into(), Value::String(test_name.clone())),
+                            ]));
+                        }
+                    }
+                }
+            }
+        }
+        let mut import_edges = Vec::new();
+        let mut seen_imports = BTreeSet::new();
+        let mut source_files = BTreeSet::new();
+        for units in local_units.values() {
+            for unit in units {
+                let path = unit.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+                if !path.is_empty() && !looks_like_test(path) {
+                    source_files.insert(path.to_string());
+                }
+            }
+        }
+        for rel in &source_files {
+            let content = content_cache.entry(rel.clone()).or_insert_with(|| {
+                fs::read_to_string(self.project_dir.join(rel)).unwrap_or_default()
+            });
+            let from_shard = shard_name_for(rel, &shards).unwrap_or("");
+            for dep in extract::extract_deps(rel, content) {
+                if dep.dep_type != "import" && dep.dep_type != "tainted_import" {
+                    continue;
+                }
+                let Some(module) = dep.module_path.as_deref() else { continue };
+                for cu in &all_units {
+                    let path = cu.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+                    let name = cu.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    if name == dep.name && extract::matches_import_path(path, module) && path != rel {
+                        let to_shard = shard_name_for(path, &shards).unwrap_or("");
+                        if to_shard.is_empty() || to_shard == from_shard {
+                            continue;
+                        }
+                        let key = format!("{rel}|{path}");
+                        if seen_imports.insert(key) {
+                            import_edges.push(Value::object(vec![
+                                ("importer_file".into(), Value::String(rel.clone())),
+                                ("imported_file".into(), Value::String(path.into())),
+                                ("confidence".into(), Value::Float(1.0)),
+                            ]));
+                        }
+                    }
+                }
+            }
+        }
+        let mut bridge_files = BTreeSet::new();
+        for edge in &import_edges {
+            if let Some(file) = edge.get("importer_file").and_then(|v| v.as_str()) {
+                bridge_files.insert(file.to_string());
+            }
+        }
+        let mut bridge_units = Vec::new();
+        let mut bridge_edges = Vec::new();
+        let mut seen_bridge_units = BTreeSet::new();
+        let mut seen_bridge_edges = BTreeSet::new();
+        for file in &bridge_files {
+            let Some(owner) = shard_name_for(file, &shards) else { continue };
+            let Some(units) = local_units.get(owner) else { continue };
+            let mut ids = BTreeSet::new();
+            for unit in units {
+                if unit.get("file_path").and_then(|v| v.as_str()) != Some(file.as_str()) {
+                    continue;
+                }
+                let id = unit.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if id.is_empty() || !seen_bridge_units.insert(id.clone()) {
+                    continue;
+                }
+                ids.insert(id);
+                bridge_units.push(unit.clone());
+            }
+            let Some(edges_here) = local_edges.get(owner) else { continue };
+            for edge in edges_here {
+                let cid = edge.get("code_id").and_then(|v| v.as_str()).unwrap_or("");
+                if !ids.contains(cid) {
+                    continue;
+                }
+                let key = format!("{}|{cid}|{}", edge.get("test_id").and_then(|v| v.as_str()).unwrap_or(""), edge.get("edge_type").and_then(|v| v.as_str()).unwrap_or(""));
+                if !seen_bridge_edges.insert(key) {
+                    continue;
+                }
+                let mut row = edge.clone();
+                row.insert("code_file", Value::String(file.clone()));
+                bridge_edges.push(row);
+            }
+        }
+        self.store.edit_and_save(|doc| {
+            doc.insert("test_edges", Value::Array(edges));
+            doc.insert("test_units", Value::Array(slim_tests));
+            doc.insert("static_test_imports", Value::Array(static_rows));
+            doc.insert("import_edges", Value::Array(import_edges));
+            doc.insert("bridge_units", Value::Array(bridge_units));
+            doc.insert("bridge_edges", Value::Array(bridge_edges));
+        })?;
+        Ok(())
     }
 
     pub(super) fn analyze_all_shards(&mut self) -> Result<Value, String> {
@@ -694,6 +874,7 @@ impl Engine {
             let summary = sub.analyze()?;
             scanned += summary.get("code_files_scanned").and_then(|v| v.as_i64()).unwrap_or(0);
         }
+        self.rebuild_cross_shard()?;
         Ok(Value::object(vec![
             ("code_files_scanned".into(), Value::Int(scanned)),
             ("shards".into(), Value::Int(shards.len() as i64)),
@@ -721,6 +902,9 @@ impl Engine {
             if summary.get("edge_rebuild_skipped").and_then(|v| v.as_bool()) != Some(true) {
                 skipped = false;
             }
+        }
+        if !skipped {
+            self.rebuild_cross_shard()?;
         }
         Ok(Value::object(vec![
             ("files_updated".into(), Value::Int(updated)),

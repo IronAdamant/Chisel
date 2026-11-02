@@ -337,7 +337,7 @@ fn two_shards_aggregate_and_unknown_shard_errors() {
     assert!(store.join("shards/backend/store").exists());
     let stats = engine.stats().unwrap();
     let text = chisel::json::to_string(&stats).unwrap();
-    assert!(text.contains("unsupported"), "{text}");
+    assert_eq!(stats.get("cross_shard_test_edges").and_then(|v| v.as_i64()), Some(0), "{text}");
     let units = stats.get("code_units").and_then(|v| v.as_i64()).unwrap_or(0);
     assert!(units >= 2, "{text}");
     let bad = chisel::json::Value::object(vec![("shard".into(), chisel::json::Value::String("missing".into()))]);
@@ -848,7 +848,7 @@ fn unscoped_reads_aggregate_and_update_uses_longest_prefix() {
     let text = chisel::json::to_string(&risk).unwrap();
     assert!(text.contains("frontend/a.py"), "{text}");
     assert!(text.contains("frontend/web/w.py"), "{text}");
-    assert!(text.contains("unsupported"), "{text}");
+    assert_eq!(risk.get("_meta").and_then(|m| m.get("cross_shard_test_edges")).and_then(|v| v.as_i64()), Some(0), "{text}");
     let gaps = engine.dispatch("test_gaps", &chisel::json::Value::object(vec![])).unwrap();
     let gaps_text = chisel::json::to_string(&gaps).unwrap();
     assert!(gaps_text.contains("frontend/a.py") && gaps_text.contains("frontend/web/w.py"), "{gaps_text}");
@@ -1231,4 +1231,175 @@ fn second_process_sees_job_progress_and_cancel() {
     }
     std::env::remove_var("CHISEL_JOB_PACE_MS");
     assert!(saw_cancel, "second process did not observe cancel: {last_status}");
+}
+
+fn shard_pair(dir: &Path) -> chisel::Engine {
+    init_repo(dir);
+    commit_all(dir, "init");
+    let mut engine = chisel::Engine::open(dir, Some(&dir.join("store"))).unwrap();
+    engine.set_shards(vec![("frontend".into(), "frontend".into()), ("backend".into(), "backend".into())]);
+    engine
+}
+
+fn impact_ids(engine: &mut chisel::Engine, file: &str) -> Vec<String> {
+    let args = chisel::json::Value::object(vec![(
+        "files".into(),
+        chisel::json::Value::Array(vec![chisel::json::Value::String(file.into())]),
+    )]);
+    let result = engine.dispatch("impact", &args).unwrap();
+    result.as_array().unwrap().iter().filter_map(|row| row.get("test_id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect()
+}
+
+#[test]
+fn cross_shard_direct_edge_is_replaced_not_stacked() {
+    let dir = scratch("cross-direct");
+    fs::create_dir_all(dir.join("frontend")).unwrap();
+    fs::create_dir_all(dir.join("backend")).unwrap();
+    fs::write(dir.join("backend/b.py"), "def b():\n    return 1\n\ndef keep():\n    return 2\n").unwrap();
+    fs::write(dir.join("frontend/test_b.py"), "from backend.b import b\n\ndef test_b():\n    assert b() == 1\n").unwrap();
+    let mut engine = shard_pair(&dir);
+    engine.analyze().unwrap();
+    let ids = impact_ids(&mut engine, "backend/b.py");
+    assert!(ids.iter().any(|id| id == "frontend/test_b.py:test_b"), "{ids:?}");
+    let parent = fs::read_to_string(dir.join("store/store")).unwrap();
+    let doc = chisel::json::parse(&parent).unwrap();
+    let count = doc.get("test_edges").and_then(|v| v.as_array()).unwrap().len();
+    assert!(count >= 1, "{parent}");
+    engine.analyze().unwrap();
+    let again = chisel::json::parse(&fs::read_to_string(dir.join("store/store")).unwrap()).unwrap();
+    assert_eq!(again.get("test_edges").and_then(|v| v.as_array()).unwrap().len(), count, "second analyze stacked cross edges");
+    let stats = engine.stats().unwrap();
+    assert_eq!(stats.get("cross_shard_test_edges").and_then(|v| v.as_i64()), Some(count as i64));
+    engine.record_result("frontend/test_b.py:test_b", false).unwrap();
+    let suggested = engine.suggest_tests("backend/b.py").unwrap();
+    let row = suggested.as_array().unwrap().iter().find(|r| r.get("test_id").and_then(|v| v.as_str()) == Some("frontend/test_b.py:test_b")).unwrap();
+    assert!((row.get("failure_rate").and_then(|v| v.as_f64()).unwrap() - 1.0).abs() < 1e-9, "{row:?}");
+    let mut backend = chisel::store::Store::open(&dir.join("store/shards/backend")).unwrap();
+    let kept: Vec<chisel::json::Value> = backend.array("code_units").into_iter().filter(|u| u.get("name").and_then(|v| v.as_str()) != Some("b")).collect();
+    backend.doc.insert("code_units", chisel::json::Value::Array(kept));
+    backend.save().unwrap();
+    let stale = engine.stale_tests().unwrap();
+    let text = chisel::json::to_string(&stale).unwrap();
+    assert!(text.contains("frontend/test_b.py:test_b"), "{text}");
+    assert!(text.contains("backend/b.py:b:function"), "{text}");
+}
+
+#[test]
+fn cross_shard_import_walk_reaches_the_covering_test() {
+    let dir = scratch("cross-walk");
+    fs::create_dir_all(dir.join("frontend")).unwrap();
+    fs::create_dir_all(dir.join("backend")).unwrap();
+    fs::write(dir.join("backend/b.py"), "def b():\n    return 1\n").unwrap();
+    fs::write(dir.join("frontend/a.py"), "from backend.b import b\n\ndef a():\n    return b()\n").unwrap();
+    fs::write(dir.join("frontend/test_a.py"), "from frontend.a import a\n\ndef test_a():\n    assert a() == 1\n").unwrap();
+    let mut engine = shard_pair(&dir);
+    engine.analyze().unwrap();
+    let ids = impact_ids(&mut engine, "backend/b.py");
+    assert!(ids.iter().any(|id| id == "frontend/test_a.py:test_a"), "{ids:?}");
+}
+
+fn chisel_at(dir: &Path, store: &Path, args: &[&str], now: &str) -> String {
+    let bin = env!("CARGO_BIN_EXE_chisel");
+    let out = Command::new(bin)
+        .args(args)
+        .arg("--json")
+        .arg("--project-dir")
+        .arg(dir)
+        .arg("--storage-dir")
+        .arg(store)
+        .env("CHISEL_NOW", now)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{args:?} {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn flakiness_trend_uses_week_buckets_and_pytest_ids_join() {
+    let dir = scratch("flake");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::create_dir_all(dir.join("tests")).unwrap();
+    fs::write(dir.join("src/calc.py"), "def add(a, b):\n    return a + b\n").unwrap();
+    fs::write(dir.join("tests/test_calc.py"), "from src.calc import add\n\ndef test_add():\n    assert add(1, 1) == 2\n\ndef test_sub():\n    assert add(2, 1) == 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let now = 1_700_000_000i64;
+    let day = 86400i64;
+    chisel_at(&dir, &store, &["analyze", "."], &now.to_string());
+    chisel_at(&dir, &store, &["record-result", "tests/test_calc.py:test_add", "FAILED"], &(now - 21 * day).to_string());
+    chisel_at(&dir, &store, &["record-result", "tests/test_calc.py:test_add", "PASSED"], &now.to_string());
+    chisel_at(&dir, &store, &["record-result", "tests/test_calc.py:test_sub", "PASSED"], &(now - 21 * day).to_string());
+    chisel_at(&dir, &store, &["record-result", "tests/test_calc.py:test_sub", "FAILED"], &(now - day).to_string());
+    let suggested = chisel_at(&dir, &store, &["suggest-tests", "src/calc.py"], &now.to_string());
+    let doc = chisel::json::parse(&suggested).unwrap();
+    let add = doc.as_array().unwrap().iter().find(|r| r.get("test_id").and_then(|v| v.as_str()) == Some("tests/test_calc.py:test_add")).unwrap();
+    let sub = doc.as_array().unwrap().iter().find(|r| r.get("test_id").and_then(|v| v.as_str()) == Some("tests/test_calc.py:test_sub")).unwrap();
+    assert!(add.get("flakiness_trend").and_then(|v| v.as_f64()).unwrap() < 0.0, "{add:?}");
+    assert!(sub.get("flakiness_trend").and_then(|v| v.as_f64()).unwrap() > 0.0, "{sub:?}");
+    let risk = chisel_at(&dir, &store, &["risk-map"], &now.to_string());
+    let risk_doc = chisel::json::parse(&risk).unwrap();
+    let file = risk_doc.get("files").and_then(|v| v.as_array()).unwrap().iter().find(|r| r.get("file_path").and_then(|v| v.as_str()) == Some("src/calc.py")).unwrap();
+    assert!(file.get("flakiness_trend").is_some(), "{file:?}");
+    let planted = {
+        let mut snap = chisel::store::Store::open(&store).unwrap();
+        snap.array_mut("test_results").push(chisel::json::Value::object(vec![
+            ("test_id".into(), chisel::json::Value::String("tests/test_calc.py:test_add".into())),
+            ("passed".into(), chisel::json::Value::Bool(false)),
+        ]));
+        snap.save().unwrap();
+        chisel_at(&dir, &store, &["suggest-tests", "src/calc.py"], &now.to_string())
+    };
+    let planted_doc = chisel::json::parse(&planted).unwrap();
+    let add_again = planted_doc.as_array().unwrap().iter().find(|r| r.get("test_id").and_then(|v| v.as_str()) == Some("tests/test_calc.py:test_add")).unwrap();
+    assert!(add_again.get("failure_rate").and_then(|v| v.as_f64()).unwrap() > 0.0, "{add_again:?}");
+    let pytest = dir.join("pytest");
+    fs::write(&pytest, "#!/bin/sh\necho 'tests/test_calc.py::test_add FAILED'\nexit 1\n").unwrap();
+    let _ = Command::new("chmod").arg("+x").arg(&pytest).status();
+    let bin = env!("CARGO_BIN_EXE_chisel");
+    let run = Command::new(bin)
+        .args(["run", "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(&store)
+        .arg("--")
+        .arg(&pytest)
+        .env("CHISEL_NOW", now.to_string())
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(run.status.code(), Some(1), "{}", String::from_utf8_lossy(&run.stderr));
+    let snap = fs::read_to_string(store.join("store")).unwrap();
+    assert!(snap.contains("tests/test_calc.py:test_add"), "{snap}");
+    assert!(!snap.contains("tests/test_calc.py::test_add"), "{snap}");
+    let after = chisel_at(&dir, &store, &["suggest-tests", "src/calc.py"], &now.to_string());
+    let after_doc = chisel::json::parse(&after).unwrap();
+    let joined = after_doc.as_array().unwrap().iter().find(|r| r.get("test_id").and_then(|v| v.as_str()) == Some("tests/test_calc.py:test_add")).unwrap();
+    assert!(joined.get("failure_rate").and_then(|v| v.as_f64()).unwrap() > 0.0, "{joined:?}");
+}
+
+#[test]
+fn undated_result_sets_failure_rate_without_a_trend() {
+    let dir = scratch("undated");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::create_dir_all(dir.join("tests")).unwrap();
+    fs::write(dir.join("src/calc.py"), "def add(a, b):\n    return a + b\n").unwrap();
+    fs::write(dir.join("tests/test_calc.py"), "from src.calc import add\n\ndef test_add():\n    assert add(1, 1) == 2\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    engine.store.array_mut("test_results").push(chisel::json::Value::object(vec![
+        ("test_id".into(), chisel::json::Value::String("tests/test_calc.py:test_add".into())),
+        ("passed".into(), chisel::json::Value::Bool(false)),
+    ]));
+    engine.store.save().unwrap();
+    let suggested = engine.suggest_tests("src/calc.py").unwrap();
+    let row = suggested.as_array().unwrap().iter().find(|r| r.get("test_id").and_then(|v| v.as_str()) == Some("tests/test_calc.py:test_add")).unwrap();
+    assert!((row.get("failure_rate").and_then(|v| v.as_f64()).unwrap() - 1.0).abs() < 1e-9, "{row:?}");
+    assert!(row.get("flakiness_trend").is_none(), "{row:?}");
+    let risk = engine.risk_map().unwrap();
+    let text = chisel::json::to_string(&risk).unwrap();
+    assert!(!text.contains("flakiness_trend"), "{text}");
 }

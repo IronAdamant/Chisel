@@ -64,7 +64,7 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.j
 
 Run `analyze` first to build the project graph, then `diff_impact` after edits to see which tests to run. `analyze` with `force` on more than 300 code files returns `auto_queued` and a `job_id`. Poll `job_status`. `--working-tree` reads the worktree. Leave it off to answer from the snapshot.
 
-**Monorepo sharding:** `CHISEL_SHARDS` or `.chisel/shards.toml` gives each shard its own snapshot under `.chisel/shards/<shard>/`. Unscoped reads aggregate. Writes use the longest path prefix. Cross-shard test edges are unsupported. An unknown shard returns `status: "error"`.
+**Monorepo sharding:** `CHISEL_SHARDS` or `.chisel/shards.toml` gives each shard its own snapshot under `.chisel/shards/<shard>/`. Unscoped reads aggregate. Writes use the longest path prefix. A test in one shard that imports code in another is stored on the parent snapshot and included in `impact` and `suggest_tests`. An unknown shard returns `status: "error"`.
 
 After running tests, call `record_result` so Chisel can track failure rates and test instability over time. Or use `chisel run -- pytest tests/` to run tests and record results automatically.
 
@@ -161,7 +161,7 @@ chisel test-gaps
 - **Multi-agent safe** — cross-process locks so parallel agents don't corrupt the snapshot
 - **MCP + CLI** — stdio MCP (`chisel serve-mcp` or `chisel-mcp`) and a JSON HTTP API (`GET /health`, `GET /tools`, `POST /call`), plus a CLI with 28 subcommands
 - **CI-friendly** — `error` and `git_error` exit 1. Other statuses, including `no_data` and `stale_db`, exit 0. `examples/github-actions/chisel.yml` builds this binary with Cargo. Do not pip-install Chisel.
-- **Monorepo sharding** — one snapshot per shard under `.chisel/shards/<shard>/` (`CHISEL_SHARDS` or `.chisel/shards.toml`). Cross-shard test edges are unsupported.
+- **Monorepo sharding** — one snapshot per shard under `.chisel/shards/<shard>/` (`CHISEL_SHARDS` or `.chisel/shards.toml`). Cross-shard test edges are overlaid from the parent snapshot. `flakiness_trend` appears when dated test results span two weeks.
 - **Custom extractors** — set `CHISEL_EXTRACTOR` to an executable. It receives the path and language on stdin and returns a JSON list of units. A non-zero exit or bad JSON falls back to the built-in scanner and records a warning. Unset uses the built-in scanner. The binary does not load tree-sitter or plugins.
 
 ## Ecosystem
