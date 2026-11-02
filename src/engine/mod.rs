@@ -32,6 +32,8 @@ pub(crate) fn job_lock() -> &'static Mutex<Vec<LiveJob>> {
     &JOBS
 }
 
+pub(crate) const UNASSIGNED_SHARD: &str = "_unassigned";
+
 pub(crate) fn shard_name_for<'a>(file: &str, shards: &'a [(String, String)]) -> Option<&'a str> {
     let mut best: Option<&str> = None;
     let mut best_len = 0usize;
@@ -44,6 +46,10 @@ pub(crate) fn shard_name_for<'a>(file: &str, shards: &'a [(String, String)]) -> 
         }
     }
     best
+}
+
+pub(crate) fn shard_owner<'a>(file: &str, shards: &'a [(String, String)]) -> &'a str {
+    shard_name_for(file, shards).unwrap_or(UNASSIGNED_SHARD)
 }
 
 pub(crate) fn parse_shard_spec(spec: &str, project: &Path) -> Vec<(String, String)> {

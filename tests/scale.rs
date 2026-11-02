@@ -1403,3 +1403,46 @@ fn undated_result_sets_failure_rate_without_a_trend() {
     let text = chisel::json::to_string(&risk).unwrap();
     assert!(!text.contains("flakiness_trend"), "{text}");
 }
+
+#[test]
+fn files_outside_shard_prefixes_are_analyzed() {
+    let dir = scratch("unassigned");
+    fs::create_dir_all(dir.join("frontend")).unwrap();
+    fs::create_dir_all(dir.join("backend")).unwrap();
+    fs::write(dir.join("root.py"), "def root():\n    return 1\n").unwrap();
+    fs::write(dir.join("frontend/test_root.py"), "from root import root\n\ndef test_root():\n    assert root() == 1\n").unwrap();
+    fs::write(dir.join("backend/b.py"), "def b():\n    return 2\n").unwrap();
+    let mut engine = shard_pair(&dir);
+    engine.analyze().unwrap();
+    let snap = fs::read_to_string(dir.join("store/shards/_unassigned/store")).unwrap();
+    assert!(snap.contains("root.py"), "{snap}");
+    let stats = engine.stats().unwrap();
+    assert!(stats.get("code_units").and_then(|v| v.as_i64()).unwrap_or(0) >= 3, "{stats:?}");
+    let ids = impact_ids(&mut engine, "root.py");
+    assert!(ids.iter().any(|id| id == "frontend/test_root.py:test_root"), "{ids:?}");
+    let risk = engine.risk_map().unwrap();
+    let text = chisel::json::to_string(&risk).unwrap();
+    assert!(text.contains("root.py"), "{text}");
+}
+
+#[test]
+fn working_tree_stale_sees_a_deleted_name_before_update() {
+    let dir = scratch("wt-stale");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::create_dir_all(dir.join("tests")).unwrap();
+    fs::write(dir.join("src/calc.py"), "def add(a, b):\n    return a + b\n\ndef sub(a, b):\n    return a - b\n").unwrap();
+    fs::write(dir.join("tests/test_calc.py"), "from src.calc import add, sub\n\ndef test_sub():\n    assert sub(2, 1) == 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let mut engine = chisel::Engine::open(&dir, Some(&dir.join("store"))).unwrap();
+    engine.analyze().unwrap();
+    fs::write(dir.join("src/calc.py"), "def add(a, b):\n    return a + b\n").unwrap();
+    let before = engine.stale_tests().unwrap();
+    let before_text = chisel::json::to_string(&before).unwrap();
+    assert!(!before_text.contains("working_tree"), "{before_text}");
+    engine.working_tree = true;
+    let after = engine.stale_tests().unwrap();
+    let text = chisel::json::to_string(&after).unwrap();
+    assert!(text.contains("working_tree"), "{text}");
+    assert!(text.contains("src/calc.py:sub:function"), "{text}");
+}

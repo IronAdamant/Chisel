@@ -37,7 +37,7 @@ A no-op `update` sets `edge_rebuild_skipped` true and does not spawn `git blame`
 
 `working_tree` reads the worktree only when set. `stats` returns counts, not the full result history. List tools apply a default limit and set `truncated` when capped.
 
-Shards are one snapshot each under `.chisel/shards/<shard>/`, configured by `CHISEL_SHARDS` or `.chisel/shards.toml`. Writes use the longest path prefix. Unscoped reads aggregate. An unknown shard is `status: "error"`. Cross-shard test edges are written to the parent `.chisel/store` and overlaid onto the code shard for `impact`, `suggest_tests`, `diff_impact`, risk coverage, and `stale_tests`. Aggregated stats report `cross_shard_test_edges` as a count.
+Shards are one snapshot each under `.chisel/shards/<shard>/`, configured by `CHISEL_SHARDS` or `.chisel/shards.toml`. Writes use the longest path prefix. Unscoped reads aggregate. An unknown shard is `status: "error"`. Cross-shard test edges are written to the parent `.chisel/store` and overlaid onto the code shard for `impact`, `suggest_tests`, `diff_impact`, risk coverage, and `stale_tests`. Aggregated stats report `cross_shard_test_edges` as a count. A file that matches no shard prefix is analyzed under `.chisel/shards/_unassigned/`. `stale_tests` with `working_tree` also reports a snapshot name that the current file no longer defines.
 
 `chisel run -- pytest …` and Jest record results in one snapshot flush and forward the test process exit code. Locks are advisory records. They do not lock source files.
 

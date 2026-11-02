@@ -335,10 +335,8 @@ impl Engine {
 
     pub fn suggest_tests(&mut self, file: &str) -> Result<Value, String> {
         if !self.shards.is_empty() {
-            if let Some(name) = shard_name_for(file, &self.shards) {
-                let mut sub = self.open_shard(name)?;
-                return sub.suggest_tests(file);
-            }
+            let mut sub = self.open_shard(shard_owner(file, &self.shards))?;
+            return sub.suggest_tests(file);
         }
         self.store.reload()?;
         self.overlay_applied = false;
@@ -712,9 +710,87 @@ impl Engine {
                 ("edge_type".into(), e.get("edge_type").cloned().unwrap_or(Value::String("import".into()))),
             ]));
         }
+        self.append_working_tree_stale(&mut stale);
         Ok(Value::object(vec![
             ("stale_tests".into(), Value::Array(stale)),
         ]))
+    }
+
+    fn append_working_tree_stale(&self, stale: &mut Vec<Value>) {
+        if !self.working_tree {
+            return;
+        }
+        let mut known: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for unit in self.store.array("code_units") {
+            let path = unit.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+            let name = unit.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() || name.is_empty() {
+                continue;
+            }
+            known.entry(path.to_string()).or_default().insert(name.to_string());
+        }
+        let mut live: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for path in known.keys() {
+            let content = fs::read_to_string(self.project_dir.join(path)).unwrap_or_default();
+            let names = extract::extract_code_units(path, &content).into_iter().map(|u| u.name).collect();
+            live.insert(path.clone(), names);
+        }
+        let mut test_files: BTreeSet<String> = self.store.array("test_units").into_iter().filter_map(|t| t.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
+        if let Ok(untracked) = self.git.fork().untracked() {
+            for path in untracked {
+                if looks_like_test(&path) {
+                    test_files.insert(path);
+                }
+            }
+        }
+        let mut seen: BTreeSet<String> = stale.iter().map(|row| {
+            format!("{}|{}", row.get("test_id").and_then(|v| v.as_str()).unwrap_or(""), row.get("missing_code_id").and_then(|v| v.as_str()).unwrap_or(""))
+        }).collect();
+        for test_file in test_files {
+            let content = fs::read_to_string(self.project_dir.join(&test_file)).unwrap_or_default();
+            if content.is_empty() {
+                continue;
+            }
+            for dep in extract::extract_deps(&test_file, &content) {
+                if dep.dep_type != "import" && dep.dep_type != "tainted_import" {
+                    continue;
+                }
+                let Some(module) = dep.module_path.as_deref() else { continue };
+                let Some(code_file) = known.keys().find(|path| extract::matches_import_path(path, module)).cloned() else { continue };
+                let Some(snapshot_names) = known.get(&code_file) else { continue };
+                if !snapshot_names.contains(&dep.name) {
+                    continue;
+                }
+                if live.get(&code_file).is_some_and(|names| names.contains(&dep.name)) {
+                    continue;
+                }
+                let missing = format!("{code_file}:{}:function", dep.name);
+                let mut owners: Vec<(String, String)> = self.store.array("test_units").into_iter().filter_map(|unit| {
+                    if unit.get("file_path").and_then(|v| v.as_str()) != Some(test_file.as_str()) {
+                        return None;
+                    }
+                    Some((
+                        unit.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        unit.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    ))
+                }).filter(|(id, _)| !id.is_empty()).collect();
+                if owners.is_empty() {
+                    owners.push((test_file.clone(), test_file.clone()));
+                }
+                for (tid, tname) in owners {
+                    let key = format!("{tid}|{missing}");
+                    if !seen.insert(key) {
+                        continue;
+                    }
+                    stale.push(Value::object(vec![
+                        ("test_id".into(), Value::String(tid)),
+                        ("test_name".into(), Value::String(tname)),
+                        ("missing_code_id".into(), Value::String(missing.clone())),
+                        ("edge_type".into(), Value::String("working_tree".into())),
+                    ]));
+                }
+            }
+        }
     }
 
     pub fn stats(&mut self) -> Result<Value, String> {
@@ -757,7 +833,7 @@ impl Engine {
         let mut test_edges = 0i64;
         let mut test_results = 0i64;
         let mut commits = 0i64;
-        for (name, _) in &self.shards {
+        for name in self.snapshot_names() {
             let dir = self.store.dir().join("shards").join(name);
             let store = Store::open(&dir)?;
             code_units += store.array("code_units").len() as i64;
@@ -804,7 +880,7 @@ impl Engine {
         let Ok(parent) = Store::open(&dir) else {
             return;
         };
-        let in_shard = |file: &str| shard_name_for(file, &shards) == Some(shard.as_str());
+        let in_shard = |file: &str| shard_owner(file, &shards) == shard.as_str();
         let mut edge_keys: BTreeSet<String> = self.store.array("test_edges").into_iter().map(|e| cross_edge_key(&e)).collect();
         let mut unit_ids: BTreeSet<String> = self.store.array("code_units").into_iter().filter_map(|u| u.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
         let mut test_ids: BTreeSet<String> = self.store.array("test_units").into_iter().filter_map(|u| u.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
@@ -879,6 +955,14 @@ impl Engine {
         self.store.reindex_memory();
     }
 
+    fn snapshot_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.shards.iter().map(|(name, _)| name.clone()).collect();
+        if self.store.dir().join("shards").join(UNASSIGNED_SHARD).join(store::STORE_NAME).exists() {
+            names.push(UNASSIGNED_SHARD.to_string());
+        }
+        names
+    }
+
     pub(super) fn open_shard(&self, name: &str) -> Result<Engine, String> {
         let dir = self.store.dir().join("shards").join(name);
         let mut sub = Engine::open(&self.project_dir, Some(&dir))?;
@@ -900,7 +984,7 @@ impl Engine {
     pub(super) fn aggregate_risk_map(&mut self) -> Result<Value, String> {
         let mut files = Vec::new();
         let mut any = false;
-        for (name, _) in self.shards.clone() {
+        for name in self.snapshot_names() {
             let mut sub = self.open_shard(&name)?;
             let part = sub.risk_map_with(false)?;
             if part.get("status").and_then(|v| v.as_str()) == Some("no_data") {
@@ -934,8 +1018,7 @@ impl Engine {
         let mut stale = Vec::new();
         let mut any = false;
         let mut edges = false;
-        let names: Vec<String> = self.shards.iter().map(|(name, _)| name.clone()).collect();
-        for name in names {
+        for name in self.snapshot_names() {
             let mut sub = self.open_shard(&name)?;
             if !sub.has_data() {
                 continue;
@@ -962,9 +1045,7 @@ impl Engine {
     pub(super) fn aggregate_impact(&self, files: &[String]) -> Result<Value, String> {
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for file in files {
-            if let Some(name) = shard_name_for(file, &self.shards) {
-                groups.entry(name.to_string()).or_default().push(file.clone());
-            }
+            groups.entry(shard_owner(file, &self.shards).to_string()).or_default().push(file.clone());
         }
         let mut rows = Vec::new();
         let mut any = false;
@@ -1023,11 +1104,7 @@ impl Engine {
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut missing = Vec::new();
         for file in &changed {
-            let Some(name) = shard_name_for(file, &self.shards) else {
-                missing.push(file.clone());
-                continue;
-            };
-            groups.entry(name.to_string()).or_default().push(file.clone());
+            groups.entry(shard_owner(file, &self.shards).to_string()).or_default().push(file.clone());
         }
         for (name, group) in &groups {
             let sub = self.open_shard(name)?;
@@ -1084,9 +1161,8 @@ impl Engine {
 
     pub(super) fn changed_file_count(&self) -> usize {
         if !self.shards.is_empty() {
-            let names: Vec<String> = self.shards.iter().map(|(name, _)| name.clone()).collect();
             let mut count = 0usize;
-            for name in names {
+            for name in self.snapshot_names() {
                 if let Ok(sub) = self.open_shard(&name) {
                     count += sub.changed_file_count();
                 }
@@ -1316,7 +1392,7 @@ impl Engine {
         if !self.shards.is_empty() {
             let mut gaps = Vec::new();
             let mut any = false;
-            for (name, _) in self.shards.clone() {
+            for name in self.snapshot_names() {
                 let sub = self.open_shard(&name)?;
                 if !sub.has_data() {
                     continue;
@@ -1399,7 +1475,7 @@ impl Engine {
             if ids.contains(code_id) { continue; }
             if let Some((shard, shards)) = &shard_of {
                 if let Some(code_file) = e.get("code_file").and_then(|v| v.as_str()) {
-                    if shard_name_for(code_file, shards) != Some(shard.as_str()) {
+                    if shard_owner(code_file, shards) != shard.as_str() {
                         continue;
                     }
                 }
@@ -1413,6 +1489,7 @@ impl Engine {
                 ("edge_type".into(), e.get("edge_type").cloned().unwrap_or(Value::String("import".into()))),
             ]));
         }
+        self.append_working_tree_stale(&mut stale);
         stale
     }
 
@@ -1434,7 +1511,7 @@ impl Engine {
             let mut stale = Vec::new();
             let mut edges = 0i64;
             let mut results = 0i64;
-            for (name, _) in self.shards.clone() {
+            for name in self.snapshot_names() {
                 let mut sub = self.open_shard(&name)?;
                 gaps.extend(sub.gap_rows().into_iter().filter(|g| {
                     g.get("file_path").and_then(|v| v.as_str()).is_some_and(|p| top_paths.contains(p))
@@ -1508,10 +1585,8 @@ impl Engine {
     pub(super) fn simple_file_tool(&mut self, name: &str, args: &Value) -> Result<Value, String> {
         let file = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
         if !self.shards.is_empty() {
-            if let Some(shard) = shard_name_for(file, &self.shards) {
-                let mut sub = self.open_shard(shard)?;
-                return sub.simple_file_tool(name, args);
-            }
+            let mut sub = self.open_shard(shard_owner(file, &self.shards))?;
+            return sub.simple_file_tool(name, args);
         }
         self.store.reload()?;
         if !self.has_data() { return Ok(Self::no_data()); }

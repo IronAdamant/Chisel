@@ -679,11 +679,15 @@ impl Engine {
         if shards.is_empty() {
             return Ok(());
         }
+        let mut names: Vec<String> = shards.iter().map(|(name, _)| name.clone()).collect();
+        if self.store.dir().join("shards").join(UNASSIGNED_SHARD).join(store::STORE_NAME).exists() {
+            names.push(UNASSIGNED_SHARD.to_string());
+        }
         let mut all_units: Vec<Value> = Vec::new();
         let mut local_edges: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         let mut local_units: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         let mut test_files: Vec<(String, String, String)> = Vec::new();
-        for (name, _) in &shards {
+        for name in &names {
             let sub = self.open_shard(name)?;
             let units = sub.store.array("code_units");
             all_units.extend(units.iter().cloned());
@@ -722,10 +726,10 @@ impl Engine {
             });
             let deps = extract::extract_deps(file, content);
             let resolved = resolved_import_files(&deps, &all_units);
-            let test_shard = shard_name_for(file, &shards).unwrap_or("");
+            let test_shard = shard_owner(file, &shards);
             for path in &resolved {
-                let code_shard = shard_name_for(path, &shards).unwrap_or("");
-                if code_shard.is_empty() || code_shard == test_shard {
+                let code_shard = shard_owner(path, &shards);
+                if code_shard == test_shard {
                     continue;
                 }
                 let key = format!("{file}|{path}");
@@ -740,8 +744,8 @@ impl Engine {
                 for dep in &deps {
                     for cid in match_dep(file, dep, &all_units, &resolved, &index) {
                         let code_file = all_units.iter().find(|u| u.get("id").and_then(|v| v.as_str()) == Some(cid.as_str())).and_then(|u| u.get("file_path").and_then(|v| v.as_str())).unwrap_or("");
-                        let code_shard = shard_name_for(code_file, &shards).unwrap_or("");
-                        if code_file.is_empty() || code_shard.is_empty() || code_shard == test_shard {
+                        let code_shard = shard_owner(code_file, &shards);
+                        if code_file.is_empty() || code_shard == test_shard {
                             continue;
                         }
                         let key = format!("{id}|{cid}|{}", dep.dep_type);
@@ -782,7 +786,7 @@ impl Engine {
             let content = content_cache.entry(rel.clone()).or_insert_with(|| {
                 fs::read_to_string(self.project_dir.join(rel)).unwrap_or_default()
             });
-            let from_shard = shard_name_for(rel, &shards).unwrap_or("");
+            let from_shard = shard_owner(rel, &shards);
             for dep in extract::extract_deps(rel, content) {
                 if dep.dep_type != "import" && dep.dep_type != "tainted_import" {
                     continue;
@@ -792,8 +796,8 @@ impl Engine {
                     let path = cu.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
                     let name = cu.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     if name == dep.name && extract::matches_import_path(path, module) && path != rel {
-                        let to_shard = shard_name_for(path, &shards).unwrap_or("");
-                        if to_shard.is_empty() || to_shard == from_shard {
+                        let to_shard = shard_owner(path, &shards);
+                        if to_shard == from_shard {
                             continue;
                         }
                         let key = format!("{rel}|{path}");
@@ -819,7 +823,7 @@ impl Engine {
         let mut seen_bridge_units = BTreeSet::new();
         let mut seen_bridge_edges = BTreeSet::new();
         for file in &bridge_files {
-            let Some(owner) = shard_name_for(file, &shards) else { continue };
+            let owner = shard_owner(file, &shards);
             let Some(units) = local_units.get(owner) else { continue };
             let mut ids = BTreeSet::new();
             for unit in units {
@@ -859,6 +863,26 @@ impl Engine {
         Ok(())
     }
 
+    fn analyze_unassigned(&mut self, files: &[String], update: bool) -> Result<Option<Value>, String> {
+        let rest: BTreeSet<String> = files.iter().filter(|f| shard_name_for(f, &self.shards).is_none()).cloned().collect();
+        let snapshot = self.store.dir().join("shards").join(UNASSIGNED_SHARD).join(store::STORE_NAME);
+        if rest.is_empty() {
+            if update || !snapshot.exists() {
+                return Ok(None);
+            }
+            let mut sub = self.open_shard(UNASSIGNED_SHARD)?;
+            sub.only_files = Some(BTreeSet::new());
+            return Ok(Some(sub.analyze()?));
+        }
+        let mut sub = self.open_shard(UNASSIGNED_SHARD)?;
+        sub.only_files = Some(rest);
+        if update {
+            Ok(Some(sub.update()?))
+        } else {
+            Ok(Some(sub.analyze()?))
+        }
+    }
+
     pub(super) fn analyze_all_shards(&mut self) -> Result<Value, String> {
         let git = self.git.fork();
         let files = self.scan_code_files(&git);
@@ -872,6 +896,9 @@ impl Engine {
             let mut sub = self.open_shard(name)?;
             sub.only_files = Some(only);
             let summary = sub.analyze()?;
+            scanned += summary.get("code_files_scanned").and_then(|v| v.as_i64()).unwrap_or(0);
+        }
+        if let Some(summary) = self.analyze_unassigned(&files, false)? {
             scanned += summary.get("code_files_scanned").and_then(|v| v.as_i64()).unwrap_or(0);
         }
         self.rebuild_cross_shard()?;
@@ -897,6 +924,13 @@ impl Engine {
             let mut sub = self.open_shard(name)?;
             sub.only_files = Some(only);
             let summary = sub.update()?;
+            updated += summary.get("files_updated").and_then(|v| v.as_i64()).unwrap_or(0);
+            commits += summary.get("new_commits").and_then(|v| v.as_i64()).unwrap_or(0);
+            if summary.get("edge_rebuild_skipped").and_then(|v| v.as_bool()) != Some(true) {
+                skipped = false;
+            }
+        }
+        if let Some(summary) = self.analyze_unassigned(&files, true)? {
             updated += summary.get("files_updated").and_then(|v| v.as_i64()).unwrap_or(0);
             commits += summary.get("new_commits").and_then(|v| v.as_i64()).unwrap_or(0);
             if summary.get("edge_rebuild_skipped").and_then(|v| v.as_bool()) != Some(true) {
