@@ -115,6 +115,11 @@ fn unix_utc(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> f
 }
 
 pub fn now_unix() -> f64 {
+    if let Ok(raw) = std::env::var("CHISEL_NOW") {
+        if let Ok(n) = raw.parse::<f64>() {
+            return n;
+        }
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())

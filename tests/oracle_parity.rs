@@ -1,4 +1,4 @@
-//! Drive the shipped `chisel` binary against the installed Python 0.15.1 oracle.
+//! Drive the shipped `chisel` binary against JSON frozen from Python 0.15.1.
 
 use std::fs;
 use std::path::Path;
@@ -70,6 +70,29 @@ fn write_fixture(dir: &Path) {
     }
 }
 
+fn oracle_now() -> &'static str {
+    include_str!("fixtures/oracle/clock.txt").trim()
+}
+
+fn frozen(name: &str) -> chisel::json::Value {
+    let text = match name {
+        "analyze" => include_str!("fixtures/oracle/calc-analyze.json"),
+        "risk-map" => include_str!("fixtures/oracle/calc-risk-map.json"),
+        "suggest-tests" => include_str!("fixtures/oracle/calc-suggest-tests.json"),
+        "ownership" => include_str!("fixtures/oracle/calc-ownership.json"),
+        "who-reviews" => include_str!("fixtures/oracle/calc-who-reviews.json"),
+        "coupling" => include_str!("fixtures/oracle/calc-coupling.json"),
+        "history" => include_str!("fixtures/oracle/calc-history.json"),
+        "test-gaps" => include_str!("fixtures/oracle/calc-test-gaps.json"),
+        "triage" => include_str!("fixtures/oracle/calc-triage.json"),
+        "release-lock" => include_str!("fixtures/oracle/calc-release-lock.json"),
+        "check-lock" => include_str!("fixtures/oracle/calc-check-lock.json"),
+        "diff-impact" => include_str!("fixtures/oracle/calc-diff-impact.json"),
+        other => panic!("unknown fixture {other}"),
+    };
+    chisel::json::parse(text).unwrap()
+}
+
 fn run(bin: &str, dir: &Path, storage: &Path, args: &[&str]) -> String {
     let out = Command::new(bin)
         .args(args)
@@ -78,6 +101,7 @@ fn run(bin: &str, dir: &Path, storage: &Path, args: &[&str]) -> String {
         .arg("--storage-dir")
         .arg(storage)
         .arg("--json")
+        .env("CHISEL_NOW", oracle_now())
         .current_dir(dir)
         .output()
         .unwrap();
@@ -85,89 +109,40 @@ fn run(bin: &str, dir: &Path, storage: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-fn compare_locks(dir: &Path, py_store: &Path, rs_store: &Path) {
-    let py_acq = run("chisel", dir, py_store, &["acquire-lock", "src/calc.py", "agent-a"]);
-    let rs_acq = run(bin(), dir, rs_store, &["acquire-lock", "src/calc.py", "agent-a"]);
-    assert!(py_acq.contains("\"acquired\": true"), "{py_acq}");
-    assert!(rs_acq.contains("\"acquired\": true"), "{rs_acq}");
-    assert!(py_acq.contains("\"holder\": null") && rs_acq.contains("\"holder\": null"));
-    let py_rel = run("chisel", dir, py_store, &["release-lock", "src/calc.py", "agent-a"]);
-    let rs_rel = run(bin(), dir, rs_store, &["release-lock", "src/calc.py", "agent-a"]);
-    fs::write(dir.join("py-rel.json"), &py_rel).unwrap();
-    fs::write(dir.join("rs-rel.json"), &rs_rel).unwrap();
-    json_equal(&dir.join("py-rel.json").to_string_lossy(), &dir.join("rs-rel.json").to_string_lossy());
-    let py_chk = run("chisel", dir, py_store, &["check-lock", "src/calc.py"]);
-    let rs_chk = run(bin(), dir, rs_store, &["check-lock", "src/calc.py"]);
-    fs::write(dir.join("py-chk.json"), &py_chk).unwrap();
-    fs::write(dir.join("rs-chk.json"), &rs_chk).unwrap();
-    json_equal(&dir.join("py-chk.json").to_string_lossy(), &dir.join("rs-chk.json").to_string_lossy());
-}
-
-fn json_equal(py: &str, rs: &str) {
-    let status = Command::new("python3")
-        .args(["-c", "import json,sys; a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2])); assert a==b, (a,b)"])
-        .arg(py)
-        .arg(rs)
-        .status()
-        .unwrap();
-    assert!(status.success(), "json mismatch {py} vs {rs}");
+fn expect(actual: &str, fixture: &str) {
+    let got = chisel::json::parse(actual.trim()).unwrap();
+    let want = frozen(fixture);
+    assert_eq!(got, want, "{fixture} mismatch\n{actual}");
 }
 
 #[test]
 fn read_tools_match_python_oracle() {
     let dir = scratch("oracle");
     write_fixture(&dir);
-    let py_store = dir.join("py-store");
-    let rs_store = dir.join("rs-store");
-    let py_a = run("chisel", &dir, &py_store, &["analyze", "."]);
-    let rs_a = run(bin(), &dir, &rs_store, &["analyze", "."]);
-    fs::write(dir.join("py-a.json"), &py_a).unwrap();
-    fs::write(dir.join("rs-a.json"), &rs_a).unwrap();
-    json_equal(&dir.join("py-a.json").to_string_lossy(), &dir.join("rs-a.json").to_string_lossy());
-
-    let py_r = run("chisel", &dir, &py_store, &["risk-map"]);
-    let rs_r = run(bin(), &dir, &rs_store, &["risk-map"]);
-    fs::write(dir.join("py-r.json"), &py_r).unwrap();
-    fs::write(dir.join("rs-r.json"), &rs_r).unwrap();
-    json_equal(&dir.join("py-r.json").to_string_lossy(), &dir.join("rs-r.json").to_string_lossy());
-
-    let py_s = run("chisel", &dir, &py_store, &["suggest-tests", "src/calc.py"]);
-    let rs_s = run(bin(), &dir, &rs_store, &["suggest-tests", "src/calc.py"]);
-    fs::write(dir.join("py-s.json"), &py_s).unwrap();
-    fs::write(dir.join("rs-s.json"), &rs_s).unwrap();
-    json_equal(&dir.join("py-s.json").to_string_lossy(), &dir.join("rs-s.json").to_string_lossy());
-
-    for (label, args) in [
-        ("own", vec!["ownership", "src/calc.py"]),
-        ("who", vec!["who-reviews", "src/calc.py"]),
-        ("coup", vec!["coupling", "src/extra.py"]),
-        ("hist", vec!["history", "src/calc.py"]),
-        ("gaps", vec!["test-gaps"]),
-        ("triage", vec!["triage"]),
-    ] {
-        let py_out = run("chisel", &dir, &py_store, &args);
-        let rs_out = run(bin(), &dir, &rs_store, &args);
-        let py_path = dir.join(format!("py-{label}.json"));
-        let rs_path = dir.join(format!("rs-{label}.json"));
-        fs::write(&py_path, &py_out).unwrap();
-        fs::write(&rs_path, &rs_out).unwrap();
-        json_equal(&py_path.to_string_lossy(), &rs_path.to_string_lossy());
-    }
-    compare_locks(&dir, &py_store, &rs_store);
-
+    let store = dir.join("store");
+    let analyze = run(bin(), &dir, &store, &["analyze", "."]);
+    expect(&analyze, "analyze");
+    expect(&run(bin(), &dir, &store, &["risk-map"]), "risk-map");
+    expect(&run(bin(), &dir, &store, &["suggest-tests", "src/calc.py"]), "suggest-tests");
+    expect(&run(bin(), &dir, &store, &["ownership", "src/calc.py"]), "ownership");
+    expect(&run(bin(), &dir, &store, &["who-reviews", "src/calc.py"]), "who-reviews");
+    expect(&run(bin(), &dir, &store, &["coupling", "src/extra.py"]), "coupling");
+    expect(&run(bin(), &dir, &store, &["history", "src/calc.py"]), "history");
+    expect(&run(bin(), &dir, &store, &["test-gaps"]), "test-gaps");
+    expect(&run(bin(), &dir, &store, &["triage"]), "triage");
+    let acquired = run(bin(), &dir, &store, &["acquire-lock", "src/calc.py", "agent-a"]);
+    assert!(acquired.contains("\"acquired\": true"), "{acquired}");
+    assert!(acquired.contains("\"holder\": null"), "{acquired}");
+    expect(&run(bin(), &dir, &store, &["release-lock", "src/calc.py", "agent-a"]), "release-lock");
+    expect(&run(bin(), &dir, &store, &["check-lock", "src/calc.py"]), "check-lock");
     let calc = dir.join("src/calc.py");
     let mut text = fs::read_to_string(&calc).unwrap();
     text = text.replace("return a - b", "return a - b  # changed");
     fs::write(&calc, text).unwrap();
-    let py_d = run("chisel", &dir, &py_store, &["diff-impact"]);
-    let rs_d = run(bin(), &dir, &rs_store, &["diff-impact"]);
-    fs::write(dir.join("py-d.json"), &py_d).unwrap();
-    fs::write(dir.join("rs-d.json"), &rs_d).unwrap();
-    json_equal(&dir.join("py-d.json").to_string_lossy(), &dir.join("rs-d.json").to_string_lossy());
-
-    let second = run(bin(), &dir, &rs_store, &["analyze", "."]);
-    assert_eq!(rs_a, second, "two analyze runs must agree");
-    assert!(rs_a.contains("code_files_scanned"));
+    expect(&run(bin(), &dir, &store, &["diff-impact"]), "diff-impact");
+    let second = run(bin(), &dir, &store, &["analyze", "."]);
+    assert_eq!(analyze, second, "two analyze runs must agree");
+    assert!(analyze.contains("code_files_scanned"));
 }
 
 #[test]
@@ -181,14 +156,20 @@ fn run_records_pytest_and_forwards_exit_code() {
         "def test_ok():\n    assert 1 == 1\n\ndef test_bad():\n    assert 1 == 0\n",
     )
     .unwrap();
+    let pytest = dir.join("pytest");
+    fs::write(
+        &pytest,
+        "#!/bin/sh\necho 'tests/test_outcomes.py::test_ok PASSED'\necho 'tests/test_outcomes.py::test_bad FAILED'\nexit 1\n",
+    )
+    .unwrap();
+    let _ = Command::new("chmod").arg("+x").arg(&pytest).status();
     let out = Command::new(bin())
         .args(["run", "--project-dir"])
         .arg(&dir)
         .arg("--storage-dir")
         .arg(&store)
         .arg("--")
-        .arg("pytest")
-        .arg("tests/test_outcomes.py")
+        .arg(&pytest)
         .current_dir(&dir)
         .output()
         .unwrap();

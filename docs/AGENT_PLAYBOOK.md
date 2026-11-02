@@ -1,63 +1,9 @@
-# Chisel — agent playbook
+# Agent playbook
 
-Short guide for **LLM agents** using Chisel (MCP or CLI). Solo maintainer, multiple sessions — one `.chisel/` database per project; use **`--project-dir`** when the cwd is not the repo root.
+Follow `AGENTS.md`. The product is the Rust binary `chisel`.
 
-An installable Claude Code skill distilled from this playbook ships in **`skills/SKILL.md`** — copy to `~/.claude/skills/chisel/SKILL.md`.
+Storage is `.chisel/store`. Do not open `chisel.db`. Do not pass `:memory:` or `file:`. Do not pip-install Chisel. Do not use SQLite.
 
-**Behavior notes (v0.13–0.15):**
-- Scanning is **gitignore-aware**: ignored trees (vendored deps, build output, fixture dirs) are never scanned or traversed; untracked-but-not-ignored files remain visible, so `working_tree=true` analysis is unaffected. `CHISEL_INCLUDE_IGNORED=1` disables the filter; non-git projects are unfiltered.
-- **CLI exit codes are real**: `chisel analyze && pytest` scripting works (`status: error|git_error` → exit 1, success → 0).
-- A no-change **`update`** skips edge rebuilding entirely and reports `edge_rebuild_skipped: true` — safe to call frequently.
-- **CLI parity with MCP**: `risk-map` / `triage` / `diff-impact` / `suggest-tests` / `test-gaps` expose `--working-tree` and/or `--auto-update` where the engine supports them. `risk-map` defaults match the engine (`--coverage-mode line`, proximity **on**; use `--no-proximity` to disable).
-- **`stale_tests` is DB-only** — it does not scan untracked test files; there is no working-tree mode for it.
-- **Sharded monorepos**: query tools aggregate per-shard results but do **not** yet route cross-shard test edges (a test in shard A importing code in shard B may miss impact until both sides live under one analysis scope).
+Call `analyze` on `no_data`. Call `update` or pass `auto_update` on `stale_db`. Pass `--json` and branch on `status`.
 
-**Security / trust:** Chisel defaults to **stdlib-only** analysis (minimal supply-chain surface). See **`LLM_CONTRACT.md`** for status codes, how to read `_meta`, and **`source`** trust ordering on `suggest_tests`.
-
-## 1. First-time or after big structural changes
-
-1. Run **`analyze`** (full scan) — or **`start_job`** with `kind: "analyze"` and poll **`job_status`** if the MCP client might time out on large repos.
-2. Confirm with **`stats`** (non-zero `code_units`, `test_edges`).
-3. **Monorepo sharding:** For very large repos, set `CHISEL_SHARDS=pkg1,pkg2,pkg3` (or create `.chisel/shards.toml`). Then run `analyze` per shard with the `shard` parameter, e.g. `analyze(shard="pkg1", directory="pkg1")`. Query tools automatically aggregate across shards.
-
-## 2. Day-to-day loop
-
-1. Edit code.
-2. **`diff_impact`** — which tests to run (fix **`git_error`** if cwd/project wrong).
-   - Use **`auto_update=true`** to refresh stale DB inline instead of the two-step `update` → `diff_impact` dance.
-3. Run tests in the terminal or CI.
-   - Or use **`chisel run -- pytest tests/`** to run tests and auto-record results.
-4. **`record_result`** for failures/passes to feed ranking and risk.
-5. **`update`** after small edits — or **`start_job`** / `update` for heavy jobs.
-
-## 3. When tools return empty or sparse
-
-| Symptom | Action |
-|--------|--------|
-| `no_data` | Run **`analyze`** on the repo root. |
-| `stale_db` | The file isn't in the Chisel DB yet — use **`auto_update=true`**, run **`analyze`**, or use **`working_tree=true`** for uncommitted files. |
-| `suggest_tests` empty | Try **`fallback_to_all`** or **`working_tree`** for untracked files; ensure **analyze** has run. |
-| `risk_map` misses new files | Use **`working_tree=true`** to include untracked files in risk scoring. |
-| Monorepo `analyze` times out | Use **`CHISEL_SHARDS`** to split by directory, or **`start_job`** for background analysis. |
-| `coupling` co-change empty | Normal in solo history — use **`import_coupling`** / **`import_partners`** and **`risk_map`**. |
-| MCP timeout on analyze | Use **`start_job`** + **`job_status`**, or run **`chisel analyze`** in a terminal. |
-
-## 4. `source` on impact / suggest_tests
-
-Each suggestion may include **`source`**: `direct` | `co_change` | `import_graph` | `static_require` | `hybrid` | `fallback` | `working_tree`. Prefer **`direct`** or **`hybrid`**; **`import_graph`** means coverage via another module (e.g. facade); **`static_require`** is from import/require resolution without a DB edge; **`fallback`** / **`working_tree`** are stem heuristics—verify in the repo.
-
-Full table: **`LLM_CONTRACT.md`**.
-
-## 5. Risk and triage
-
-- **`triage`** — one call for top-N risk + gaps + stale tests.
-- **`risk_map`** — read **`_meta.uniform_components`** before trusting the composite score.
-- **`exclude_new_file_boost=true`** — use in `risk_map` or `triage` when you want stable long-term rankings without the temporary 0.5 uplift for brand-new files.
-
-## 6. Copy-paste CI (GitHub)
-
-See **`examples/github-actions/chisel.yml`** in this repo — run analyze (and optionally diff) on pushes/PRs.
-
-## 7. Optional: your own parser (tree-sitter, etc.)
-
-Chisel ships **stdlib-only** extractors. To use a heavier parser, install it **in your** environment and register via **`register_extractor`** — see **`docs/CUSTOM_EXTRACTORS.md`** and **`CHISEL_BOOTSTRAP`**.
+Status values: `no_data`, `no_changes`, `no_edges`, `git_error`, `stale_db`, `error`, `unsupported`, `auto_queued`.

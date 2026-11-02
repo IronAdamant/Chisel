@@ -1,0 +1,12 @@
+[
+  {
+    "churn_score": 0.001986,
+    "commit_count": 2,
+    "file_path": "src/extra.py",
+    "id": "src/extra.py:wrapper:function",
+    "line_end": 5,
+    "line_start": 4,
+    "name": "wrapper",
+    "unit_type": "function"
+  }
+]

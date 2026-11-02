@@ -1,0 +1,22 @@
+[
+  {
+    "failure_boost": 1.0,
+    "failure_rate": 0.0,
+    "file_path": "tests/test_calc.py",
+    "name": "test_add",
+    "reason": "direct edge to add (import); static import \u2192 src/calc.py",
+    "relevance": 0.512,
+    "source": "hybrid",
+    "test_id": "tests/test_calc.py:test_add"
+  },
+  {
+    "failure_boost": 1.0,
+    "failure_rate": 0.0,
+    "file_path": "tests/test_calc.py",
+    "name": "test_sub",
+    "reason": "direct edge to add (import); static import \u2192 src/calc.py",
+    "relevance": 0.512,
+    "source": "hybrid",
+    "test_id": "tests/test_calc.py:test_sub"
+  }
+]

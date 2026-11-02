@@ -1,0 +1,20 @@
+[
+  {
+    "author": "Solo",
+    "author_email": "a@example.com",
+    "date": "2024-02-15T12:00:00Z",
+    "deletions": 0,
+    "hash": "848284c1b178454d40b56a2d8cbb5d1494794a8c",
+    "insertions": 1,
+    "message": "touch"
+  },
+  {
+    "author": "Solo",
+    "author_email": "a@example.com",
+    "date": "2024-01-15T12:00:00Z",
+    "deletions": 0,
+    "hash": "548a26b9d2b1a24a29fa53e58fe4b82f32f2d6f0",
+    "insertions": 6,
+    "message": "init"
+  }
+]

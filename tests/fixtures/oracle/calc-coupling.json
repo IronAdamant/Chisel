@@ -1,0 +1,13 @@
+{
+  "co_change_breadth": 0,
+  "co_change_partners": [],
+  "cochange_coupling": 0.0,
+  "effective_coupling": 0.125,
+  "import_breadth": 1,
+  "import_coupling": 0.125,
+  "import_partners": [
+    {
+      "file": "src/calc.py"
+    }
+  ]
+}

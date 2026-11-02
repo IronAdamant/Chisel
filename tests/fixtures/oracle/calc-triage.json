@@ -1,0 +1,116 @@
+{
+  "stale_tests": [],
+  "summary": {
+    "active_locks": 0,
+    "coupling_threshold": 2,
+    "files_triaged": 2,
+    "test_edge_count": 8,
+    "test_result_count": 0,
+    "total_stale_tests": 0,
+    "total_test_gaps": 1
+  },
+  "test_gaps": [
+    {
+      "churn_score": 0.001986,
+      "commit_count": 2,
+      "file_path": "src/extra.py",
+      "id": "src/extra.py:wrapper:function",
+      "line_end": 5,
+      "line_start": 4,
+      "name": "wrapper",
+      "unit_type": "function"
+    }
+  ],
+  "top_risk_files": [
+    {
+      "breakdown": {
+        "author_concentration": 1.0,
+        "churn": 0.0004,
+        "cochange_branch": 0.0,
+        "cochange_coupling": 0.3,
+        "cochange_global": 0.3,
+        "coupling": 0.3,
+        "coverage_depth": 0.0,
+        "coverage_fraction": 0.0,
+        "coverage_gap": 0.88,
+        "edge_type_quality": 0.0,
+        "hidden_risk": 0.0,
+        "import_coupling": 0.125,
+        "new_file_boost": 0.0,
+        "test_instability": 0.0
+      },
+      "coupling_partners": [
+        {
+          "co_commits": 2,
+          "file": "src/calc.py"
+        },
+        {
+          "co_commits": 1,
+          "file": "tests/test_calc.py"
+        },
+        {
+          "co_commits": 1,
+          "file": ".gitignore"
+        }
+      ],
+      "dynamic_edge_count": 0,
+      "file_path": "src/extra.py",
+      "hidden_risk_factor": 0.0,
+      "import_partners": [
+        {
+          "file": "src/calc.py"
+        }
+      ],
+      "new_file_boost": 0.0,
+      "risk_score": 0.3071,
+      "shadow_edge_count": 0,
+      "unit_name": null,
+      "unknown_require_count": 0
+    },
+    {
+      "breakdown": {
+        "author_concentration": 1.0,
+        "churn": 0.0004,
+        "cochange_branch": 0.0,
+        "cochange_coupling": 0.3,
+        "cochange_global": 0.3,
+        "coupling": 0.3,
+        "coverage_depth": 0.4,
+        "coverage_fraction": 1.0,
+        "coverage_gap": 0.0,
+        "edge_type_quality": 0.5,
+        "hidden_risk": 0.0,
+        "import_coupling": 0.125,
+        "new_file_boost": 0.0,
+        "test_instability": 0.0
+      },
+      "coupling_partners": [
+        {
+          "co_commits": 2,
+          "file": "src/extra.py"
+        },
+        {
+          "co_commits": 1,
+          "file": "tests/test_calc.py"
+        },
+        {
+          "co_commits": 1,
+          "file": ".gitignore"
+        }
+      ],
+      "dynamic_edge_count": 0,
+      "file_path": "src/calc.py",
+      "hidden_risk_factor": 0.0,
+      "import_partners": [
+        {
+          "file": "src/extra.py"
+        }
+      ],
+      "new_file_boost": 0.0,
+      "risk_score": 0.2151,
+      "shadow_edge_count": 4,
+      "unit_name": null,
+      "unknown_require_count": 0
+    }
+  ]
+}

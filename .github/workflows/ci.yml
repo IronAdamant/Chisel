@@ -6,49 +6,12 @@ on:
   pull_request:
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install package with dev dependencies
-        run: pip install -e ".[dev]"
-
-      - name: Check version sync (pyproject vs chisel.__version__)
-        run: python scripts/check_version.py
-
-      - name: Lint with ruff
-        run: ruff check .
-
-      - name: Run tests with coverage
-        run: pytest tests/ -v --tb=short --cov=chisel --cov-report=term-missing
-
-      - name: Benchmark smoke (timing thresholds)
-        run: python scripts/benchmark_chisel.py
-
   rust-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.0
-      - name: Install the Python oracle
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install Chisel and pytest
-        run: pip install -e ".[dev]"
       - name: Reject crate dependencies
         run: |
           python3 - << 'PY'
@@ -61,10 +24,10 @@ jobs:
           if pathlib.Path("build.rs").exists():
               raise SystemExit("build.rs is not allowed")
           PY
-          cargo metadata --format-version 1 --no-deps > /tmp/metadata.json
+          cargo metadata --format-version 1 --no-deps > "$RUNNER_TEMP/metadata.json"
           python3 - << 'PY'
-          import json
-          data = json.load(open("/tmp/metadata.json"))
+          import json, os
+          data = json.load(open(os.environ["RUNNER_TEMP"] + "/metadata.json"))
           pkg = next(p for p in data["packages"] if p["name"] == "chisel")
           if pkg["dependencies"]:
               raise SystemExit(pkg["dependencies"])

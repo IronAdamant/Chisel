@@ -30,7 +30,7 @@ Chisel gives AI coding assistants the intelligence to understand the blast radiu
 
 ## Install
 
-The tool you run is the Rust binary. Build it from this repo. The `chisel/` Python package is the oracle used to check results. It is not the server to install.
+The tool you run is the Rust binary. Build it from this repo. Result checks use the JSON under `tests/fixtures/oracle`. There is no Python package to install.
 
 ```bash
 git clone https://github.com/IronAdamant/Chisel.git
@@ -160,7 +160,7 @@ chisel test-gaps
 - **Branch-aware** — `diff_impact` auto-detects feature branch vs main. Feature-branch co-change comes from `merge-base..HEAD`. `main` and `master` keep that list empty.
 - **Multi-agent safe** — cross-process locks so parallel agents don't corrupt the snapshot
 - **MCP + CLI** — stdio MCP (`chisel serve-mcp` or `chisel-mcp`) and a JSON HTTP API (`GET /health`, `GET /tools`, `POST /call`), plus a CLI with 28 subcommands
-- **CI-friendly** — `error` and `git_error` exit 1. Other statuses, including `no_data` and `stale_db`, exit 0. Build the release binary in CI. `examples/github-actions/chisel.yml` still installs the old pip package and is not the path for this binary.
+- **CI-friendly** — `error` and `git_error` exit 1. Other statuses, including `no_data` and `stale_db`, exit 0. `examples/github-actions/chisel.yml` builds this binary with Cargo. Do not pip-install Chisel.
 - **Monorepo sharding** — one snapshot per shard under `.chisel/shards/<shard>/` (`CHISEL_SHARDS` or `.chisel/shards.toml`). Cross-shard test edges are unsupported.
 - **Custom extractors** — set `CHISEL_EXTRACTOR` to an executable. It receives the path and language on stdin and returns a JSON list of units. A non-zero exit or bad JSON falls back to the built-in scanner and records a warning. Unset uses the built-in scanner. The binary does not load tree-sitter or plugins.
 
@@ -170,7 +170,7 @@ Chisel sits in the agent loop: impact -> tests -> record results -> refresh anal
 
 **Docs for this binary:** [AGENTS.md](AGENTS.md) | [Claude Code skill](skills/SKILL.md)
 
-The files under `docs/` still describe the Python package in `chisel/` (SQLite, `pip`, `register_extractor`). That package is the oracle for result checks, not the program you run.
+Checked-in oracle JSON lives in `tests/fixtures/oracle`. There is no Python package to install.
 
 ## License
 

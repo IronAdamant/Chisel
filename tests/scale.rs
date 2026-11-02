@@ -937,44 +937,36 @@ fn feature_branch_co_change_feeds_risk_and_matches_python() {
     fs::write(dir.join("src/a.py"), "def a():\n    return 1\n").unwrap();
     fs::write(dir.join("src/b.py"), "def b():\n    return 2\n").unwrap();
     commit_as(&dir, "pair", "Ada", "2024-04-01T00:00:00+00:00");
-    let py_store = dir.join("py-store");
-    let rs_store = dir.join("rs-store");
-    let py = Command::new("chisel")
+    let store = dir.join("store");
+    let now = include_str!("fixtures/oracle/clock.txt").trim();
+    let bin = env!("CARGO_BIN_EXE_chisel");
+    let analyze = Command::new(bin)
         .args(["analyze", ".", "--project-dir"])
         .arg(&dir)
         .arg("--storage-dir")
-        .arg(&py_store)
+        .arg(&store)
         .arg("--json")
+        .env("CHISEL_NOW", now)
         .current_dir(&dir)
         .output()
         .unwrap();
-    assert!(py.status.success(), "{}", String::from_utf8_lossy(&py.stderr));
-    let mut engine = chisel::Engine::open(&dir, Some(&rs_store)).unwrap();
-    engine.analyze().unwrap();
-    let snap = fs::read_to_string(rs_store.join("store")).unwrap();
+    assert!(analyze.status.success(), "{}", String::from_utf8_lossy(&analyze.stderr));
+    let snap = fs::read_to_string(store.join("store")).unwrap();
     assert!(snap.contains("\"file_a\":\"src/a.py\"") && snap.contains("\"file_b\":\"src/b.py\""), "{snap}");
-    assert!(snap.contains("branch_coupling_commits"), "{snap}");
-    let py_risk = Command::new("chisel")
+    let risk = Command::new(bin)
         .args(["risk-map", "--project-dir"])
         .arg(&dir)
         .arg("--storage-dir")
-        .arg(&py_store)
+        .arg(&store)
         .arg("--json")
+        .env("CHISEL_NOW", now)
         .current_dir(&dir)
         .output()
         .unwrap();
-    assert!(py_risk.status.success(), "{}", String::from_utf8_lossy(&py_risk.stderr));
-    let rs_risk = engine.risk_map().unwrap();
-    let rs_text = chisel::json::to_string(&rs_risk).unwrap();
-    let py_text = String::from_utf8_lossy(&py_risk.stdout);
-    let status = Command::new("python3")
-        .args(["-c", "import json,sys; a=json.loads(sys.argv[1]); b=json.loads(sys.argv[2]); assert a==b, (a,b)"])
-        .arg(py_text.trim())
-        .arg(&rs_text)
-        .status()
-        .unwrap();
-    assert!(status.success(), "python {}\nrust {}", py_text, rs_text);
-    assert!(rs_text.contains("\"branch_coupling_commits\":1") || rs_text.contains("\"branch_coupling_commits\": 1"), "{rs_text}");
+    assert!(risk.status.success(), "{}", String::from_utf8_lossy(&risk.stderr));
+    let got = chisel::json::parse(&String::from_utf8_lossy(&risk.stdout)).unwrap();
+    let want = chisel::json::parse(include_str!("fixtures/oracle/feature-risk-map.json")).unwrap();
+    assert_eq!(got, want, "{}", String::from_utf8_lossy(&risk.stdout));
 }
 
 #[test]
@@ -1003,30 +995,15 @@ function add() { return 1; }\n";
     assert!(deps.iter().any(|d| (d.confidence - 0.2).abs() < 1e-9 && d.name.contains('+')), "{deps:?}");
     assert!(deps.iter().any(|d| (d.confidence - 0.3).abs() < 1e-9 && d.module_path.as_deref() == Some("./prod|./dev")), "{deps:?}");
     assert!(deps.iter().any(|d| d.dep_type == "eval_import" && d.confidence == 0.0), "{deps:?}");
-    let file = scratch("jsdeps").join("sample.js");
-    fs::write(&file, src).unwrap();
-    let py = Command::new("python3")
-        .arg("-c")
-        .arg("import json,sys; sys.path.insert(0, sys.argv[1]); from chisel.test_mapper import _extract_js_deps; rows=_extract_js_deps(open(sys.argv[2]).read()); print(json.dumps([{'dep_type':r['dep_type'],'confidence':r.get('confidence',1.0),'module_path':r.get('module_path')} for r in rows if r['dep_type']!='call']))")
-        .arg(env!("CARGO_MANIFEST_DIR"))
-        .arg(&file)
-        .output()
-        .unwrap();
-    assert!(py.status.success(), "{}", String::from_utf8_lossy(&py.stderr));
-    let py_rows: Vec<(String, f64, String)> = {
-        let v = chisel::json::parse(&String::from_utf8_lossy(&py.stdout)).unwrap();
-        v.as_array().unwrap().iter().map(|row| {
-            (
-                row.get("dep_type").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                row.get("confidence").and_then(|x| x.as_f64()).unwrap_or(1.0),
-                row.get("module_path").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            )
-        }).collect()
-    };
-    for (ty, conf, module) in &py_rows {
+    let frozen = chisel::json::parse(include_str!("fixtures/oracle/jest-deps.json")).unwrap();
+    let rows = frozen.as_array().unwrap();
+    for row in rows {
+        let ty = row.get("dep_type").and_then(|v| v.as_str()).unwrap_or("");
+        let conf = row.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
+        let module = row.get("module_path").and_then(|v| v.as_str()).unwrap_or("");
         assert!(
-            deps.iter().any(|d| d.dep_type == *ty && (d.confidence - *conf).abs() < 1e-9 && d.module_path.clone().unwrap_or_default() == *module),
-            "missing python dep {ty} {conf} {module} in {deps:?}\npython {py_rows:?}"
+            deps.iter().any(|d| d.dep_type == ty && (d.confidence - conf).abs() < 1e-9 && d.module_path.clone().unwrap_or_default() == module),
+            "missing frozen dep {ty} {conf} {module} in {deps:?}"
         );
     }
 }

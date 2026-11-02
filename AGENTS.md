@@ -2,7 +2,7 @@
 
 The product is the Rust crate in `src/`. Build it with `cargo build --release`. The binary is `chisel`. `chisel-mcp` is the same program and starts the stdio MCP server.
 
-The Python package in `chisel/` is the oracle for result checks. Do not pip-install a package to work on this tree. Do not follow `CLAUDE.md` for which files to edit. Do not follow `AGENTS.md` inside `lang_any_sample_project_for_testing_10k_monorep/`. That tree is a fixture.
+There is no Python package in this tree. Result checks use the JSON under `tests/fixtures/oracle`. Do not pip-install a package to work on this tree. Do not follow `AGENTS.md` inside `lang_any_sample_project_for_testing_10k_monorep/`. That tree is a fixture.
 
 ## Storage
 

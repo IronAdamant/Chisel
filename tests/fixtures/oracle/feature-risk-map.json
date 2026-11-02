@@ -1,0 +1,122 @@
+{
+  "_meta": {
+    "branch_coupling_commits": 1,
+    "coupling_threshold": 2,
+    "coverage_gap_mode": "proximity_adjusted",
+    "cycles": [],
+    "effective_components": [
+      "churn",
+      "coupling",
+      "author_concentration"
+    ],
+    "effective_weights": {
+      "author_concentration": 0.1429,
+      "churn": 0.5,
+      "coupling": 0.3571
+    },
+    "reweighted": true,
+    "total_files": 3,
+    "total_test_edges": 0,
+    "total_test_results": 0,
+    "uniform_components": {
+      "coverage_depth": {
+        "reason": "no code units covered by multiple test files",
+        "value": 0.0
+      },
+      "coverage_gap": {
+        "reason": "no test edges found; edge builder may not match this project's import/require patterns",
+        "value": 1.0
+      },
+      "test_instability": {
+        "reason": "no test results recorded; use record_result after running tests",
+        "value": 0.0
+      }
+    }
+  },
+  "files": [
+    {
+      "breakdown": {
+        "author_concentration": 1.0,
+        "churn": 0.0002,
+        "cochange_branch": 0.1,
+        "cochange_coupling": 0.1,
+        "cochange_global": 0.0,
+        "coupling": 0.1,
+        "coverage_depth": 0.0,
+        "coverage_fraction": 0.0,
+        "coverage_gap": 1.0,
+        "edge_type_quality": 0.0,
+        "hidden_risk": 0.0,
+        "import_coupling": 0.0,
+        "new_file_boost": 0.0,
+        "test_instability": 0.0
+      },
+      "coupling_partners": [],
+      "dynamic_edge_count": 0,
+      "file_path": "src/a.py",
+      "hidden_risk_factor": 0.0,
+      "import_partners": [],
+      "new_file_boost": 0.0,
+      "risk_score": 0.1787,
+      "shadow_edge_count": 0,
+      "unit_name": null,
+      "unknown_require_count": 0
+    },
+    {
+      "breakdown": {
+        "author_concentration": 1.0,
+        "churn": 0.0002,
+        "cochange_branch": 0.1,
+        "cochange_coupling": 0.1,
+        "cochange_global": 0.0,
+        "coupling": 0.1,
+        "coverage_depth": 0.0,
+        "coverage_fraction": 0.0,
+        "coverage_gap": 1.0,
+        "edge_type_quality": 0.0,
+        "hidden_risk": 0.0,
+        "import_coupling": 0.0,
+        "new_file_boost": 0.0,
+        "test_instability": 0.0
+      },
+      "coupling_partners": [],
+      "dynamic_edge_count": 0,
+      "file_path": "src/b.py",
+      "hidden_risk_factor": 0.0,
+      "import_partners": [],
+      "new_file_boost": 0.0,
+      "risk_score": 0.1787,
+      "shadow_edge_count": 0,
+      "unit_name": null,
+      "unknown_require_count": 0
+    },
+    {
+      "breakdown": {
+        "author_concentration": 0.5062,
+        "churn": 0.0016,
+        "cochange_branch": 0.0,
+        "cochange_coupling": 0.0,
+        "cochange_global": 0.0,
+        "coupling": 0.0,
+        "coverage_depth": 0.0,
+        "coverage_fraction": 0.0,
+        "coverage_gap": 1.0,
+        "edge_type_quality": 0.0,
+        "hidden_risk": 0.0,
+        "import_coupling": 0.0,
+        "new_file_boost": 0.0,
+        "test_instability": 0.0
+      },
+      "coupling_partners": [],
+      "dynamic_edge_count": 0,
+      "file_path": "src/c.py",
+      "hidden_risk_factor": 0.0,
+      "import_partners": [],
+      "new_file_boost": 0.0,
+      "risk_score": 0.0731,
+      "shadow_edge_count": 0,
+      "unit_name": null,
+      "unknown_require_count": 0
+    }
+  ]
+}

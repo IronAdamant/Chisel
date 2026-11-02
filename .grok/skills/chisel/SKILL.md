@@ -5,7 +5,7 @@ description: Run Chisel test-impact analysis on any git project — which tests 
 
 # Chisel — Test Impact Analysis for Agents
 
-The binary is `chisel`, built from `src/` with `cargo build --release`. `chisel-mcp` is the same binary and starts stdio MCP. The Python tree `chisel/` is the oracle, not the server to install. Do not pip-install a package to get this binary.
+The binary is `chisel`, built from `src/` with `cargo build --release`. `chisel-mcp` is the same binary and starts stdio MCP. Oracle JSON is in `tests/fixtures/oracle`. Do not pip-install a package to get this binary.
 
 Storage is the snapshot `.chisel/store`. Chisel does not open `chisel.db`.
 

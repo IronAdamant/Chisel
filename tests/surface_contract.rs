@@ -19,6 +19,37 @@ fn tools_list_has_26_tools_and_suggest_schema() {
 }
 
 #[test]
+fn schema_text_uses_the_snapshot_contract() {
+    let list = chisel::schemas::tool_list_json();
+    let tools = list.get("tools").and_then(|v| v.as_array()).expect("tools");
+    for tool in tools {
+        let mut blob = tool.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if let Some(props) = tool.get("inputSchema").and_then(|v| v.get("properties")).and_then(|v| v.as_object()) {
+            for (_, spec) in props {
+                if let Some(desc) = spec.get("description").and_then(|v| v.as_str()) {
+                    blob.push('\n');
+                    blob.push_str(desc);
+                }
+            }
+        }
+        let lower = blob.to_lowercase();
+        assert!(!lower.contains("pip install"), "{blob}");
+        assert!(!lower.contains("sqlite3"), "{blob}");
+        assert!(!lower.contains("pragma"), "{blob}");
+        assert!(!lower.contains("stdlib"), "{blob}");
+        assert!(!lower.contains("vacuum"), "{blob}");
+        assert!(!lower.contains("database"), "{blob}");
+        assert!(!lower.contains(" db"), "{blob}");
+        if lower.contains("chisel.db") {
+            assert!(lower.contains("does not open chisel.db"), "{blob}");
+        }
+        if lower.contains("sqlite") {
+            assert!(lower.contains("does not") && lower.contains("sqlite"), "{blob}");
+        }
+    }
+}
+
+#[test]
 fn analyze_next_steps_name_risk_map() {
     let result = chisel::json::Value::object(vec![
         ("code_files_scanned".into(), chisel::json::Value::Int(3)),

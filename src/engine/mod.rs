@@ -1,5 +1,5 @@
-//! Analysis engine. Same tool names and result shapes as the Python package.
-//! The snapshot store is the only database. `chisel.db` is never opened.
+//! Analysis engine. Tool names and result shapes follow `AGENTS.md`.
+//! The snapshot is `.chisel/store`. `chisel.db` is never opened.
 
 mod analyze;
 mod query;
@@ -7,8 +7,7 @@ mod locks;
 
 use crate::extract::{self, CodeUnit, Dep};
 use crate::git::{self, GitAnalyzer};
-use crate::hash::sha256_hex;
-use crate::impact::{self, RiskInputs};
+use crate::impact;
 use crate::json::Value;
 use crate::store::{self, Store};
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,7 +16,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub(crate) struct LiveJob {
     id: String,
@@ -337,7 +335,7 @@ pub(crate) fn test_instability(ids: &BTreeSet<String>, rates: &BTreeMap<String, 
 }
 
 pub(crate) fn now_secs() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+    impact::now_unix()
 }
 
 pub(crate) fn churn_row(rel: &str, unit: &str, count: i64, authors: i64, ins: i64, del: i64, last: &str, score: f64) -> Value {

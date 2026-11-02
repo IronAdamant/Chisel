@@ -1,0 +1,13 @@
+[
+  {
+    "author": "Solo",
+    "author_email": "a@example.com",
+    "days_since_last_commit": 991,
+    "deletions": 0,
+    "insertions": 7,
+    "last_commit_date": "2024-02-15T12:00:00Z",
+    "percentage": 100.0,
+    "recent_commits": 2,
+    "role": "suggested_reviewer"
+  }
+]

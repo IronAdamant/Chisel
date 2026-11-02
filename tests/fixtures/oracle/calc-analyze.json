@@ -1,0 +1,11 @@
+{
+  "active_file_locks": 0,
+  "code_files_scanned": 3,
+  "code_units_found": 5,
+  "commits_parsed": 2,
+  "hint": "For large repos, use start_job with kind='analyze' to avoid MCP timeouts.",
+  "orphaned_results_cleaned": 0,
+  "test_edges_built": 8,
+  "test_files_found": 1,
+  "test_units_found": 2
+}
