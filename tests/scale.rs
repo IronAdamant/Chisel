@@ -845,7 +845,7 @@ fn feature_branch_co_change_feeds_risk_and_matches_python() {
     commit_as(&dir, "pair", "Ada", "2024-04-01T00:00:00+00:00");
     let py_store = dir.join("py-store");
     let rs_store = dir.join("rs-store");
-    let py = Command::new("/Library/Frameworks/Python.framework/Versions/3.14/bin/chisel")
+    let py = Command::new("chisel")
         .args(["analyze", ".", "--project-dir"])
         .arg(&dir)
         .arg("--storage-dir")
@@ -860,7 +860,7 @@ fn feature_branch_co_change_feeds_risk_and_matches_python() {
     let snap = fs::read_to_string(rs_store.join("store")).unwrap();
     assert!(snap.contains("\"file_a\":\"src/a.py\"") && snap.contains("\"file_b\":\"src/b.py\""), "{snap}");
     assert!(snap.contains("branch_coupling_commits"), "{snap}");
-    let py_risk = Command::new("/Library/Frameworks/Python.framework/Versions/3.14/bin/chisel")
+    let py_risk = Command::new("chisel")
         .args(["risk-map", "--project-dir"])
         .arg(&dir)
         .arg("--storage-dir")
