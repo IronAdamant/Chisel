@@ -1334,6 +1334,30 @@ fn oversized_mcp_body_is_discarded_and_the_next_message_is_read() {
     assert_eq!(second, "{}");
 }
 
+#[test]
+fn native_watcher_wakes_when_a_file_appears() {
+    let dir = scratch("fswatch");
+    fs::create_dir_all(&dir).unwrap();
+    let dir2 = dir.clone();
+    let handle = std::thread::spawn(move || {
+        chisel::fswatch::wait_for_change(&dir2, std::time::Duration::from_secs(3)).unwrap()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
+    let woke = handle.join().unwrap();
+    assert!(woke, "watcher backend {}", chisel::fswatch::backend_name());
+}
+
+#[test]
+fn syntax_tree_names_python_and_javascript_units() {
+    let py = chisel::syntax::parse("python", "class Box:\n    def add(self, n):\n        return n\n\ndef outer():\n    return 1\n").unwrap();
+    let names: Vec<_> = py.children.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(names, vec!["Box", "Box.add", "outer"]);
+    let js = chisel::syntax::parse("javascript", "function add(a) {\n  return a;\n}\nclass Box {\n  m() { return 1; }\n}\n").unwrap();
+    let js_names: Vec<_> = js.children.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(js_names, vec!["add", "Box"]);
+}
+
 fn args_with_ttl(ttl: i64) -> chisel::json::Value {
     chisel::json::Value::object(vec![
         ("file_path".into(), chisel::json::Value::String("a.py".into())),

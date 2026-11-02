@@ -3,6 +3,8 @@
 pub mod cli;
 pub mod engine;
 pub mod extract;
+pub mod fswatch;
+pub mod syntax;
 pub mod git;
 pub mod hash;
 pub mod http;

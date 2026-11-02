@@ -525,11 +525,15 @@ fn watch(args: &Args) -> Result<i32, String> {
     let ready = Value::object(vec![
         ("status".into(), Value::String("watching".into())),
         ("interval_secs".into(), Value::Int(args.interval_secs as i64)),
+        ("watcher".into(), Value::String(crate::fswatch::backend_name().into())),
     ]);
     emit(args.json, "watch", &ready)?;
     let _ = io::stdout().flush();
     loop {
-        thread::sleep(Duration::from_secs(args.interval_secs));
+        let slice = Duration::from_secs(args.interval_secs);
+        if crate::fswatch::wait_for_change(&args.project_dir, slice).is_err() {
+            thread::sleep(slice);
+        }
         let current = match worktree_fingerprint(&args.project_dir) {
             Ok(value) => value,
             Err(err) => {
