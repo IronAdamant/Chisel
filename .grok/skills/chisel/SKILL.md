@@ -50,7 +50,7 @@ Always pass `--json` on the CLI and branch on `status` before treating a payload
 - A no-op `update` sets `edge_rebuild_skipped` true and does not run `git blame` or `git log -L`.
 - `chisel run` records pytest and Jest and forwards the test process exit code. One snapshot flush for the whole run.
 - `chisel watch` polls `git status` and runs `update` when the worktree changes. `--interval` is seconds. `--once` exits after one check.
-- A custom parser is an executable named by `CHISEL_EXTRACTOR`, or by `.chisel/extensions.toml` when `--allow-repo-extractor` is set. The toml file is ignored otherwise. Its libraries stay outside this binary.
+- A custom parser is an executable named by `CHISEL_EXTRACTOR`, or by `.chisel/extensions.toml` when the process starts with `--allow-repo-extractor` or `CHISEL_ALLOW_REPO_EXTRACTOR=1`. A tool argument cannot turn it on. The path must stay inside the project. Its libraries stay outside this binary.
 - `stats` returns counts. It does not embed every historical result.
 - List tools apply a default limit and set `truncated` when the cap cuts the list.
 - Suggestion `source` is one of `direct`, `co_change`, `import_graph`, `static_require`, `hybrid`, `fallback`, `working_tree`.

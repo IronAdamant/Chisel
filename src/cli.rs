@@ -213,6 +213,9 @@ pub fn run(args: &Args) -> Result<i32, String> {
         _ => {}
     }
     let mut engine = Engine::open(&args.project_dir, args.storage_dir.as_deref())?;
+    if args.allow_repo_extractor {
+        engine.allow_repo_extractor = true;
+    }
     let tool = tool_name(&args.command);
     let call_args = call_args(args);
     let result = engine.dispatch(&tool, &call_args)?;
@@ -291,9 +294,7 @@ fn call_args(args: &Args) -> Value {
     if let Some(git_ref) = &args.git_ref {
         pairs.push(("ref".into(), Value::String(git_ref.clone())));
     }
-    if args.allow_repo_extractor {
-        pairs.push(("allow_repo_extractor".into(), Value::Bool(true)));
-    }
+
     if let Some(kind) = &args.kind {
         pairs.push(("kind".into(), Value::String(kind.clone())));
     }
@@ -517,6 +518,9 @@ fn watch(args: &Args) -> Result<i32, String> {
     use std::thread;
     use std::time::Duration;
     let mut engine = Engine::open(&args.project_dir, args.storage_dir.as_deref())?;
+    if args.allow_repo_extractor {
+        engine.allow_repo_extractor = true;
+    }
     let mut previous = worktree_fingerprint(&args.project_dir)?;
     let ready = Value::object(vec![
         ("status".into(), Value::String("watching".into())),
@@ -562,6 +566,10 @@ fn watch(args: &Args) -> Result<i32, String> {
             return Ok(0);
         }
     }
+}
+
+pub fn argv_is_mcp_binary(argv0: &str) -> bool {
+    std::path::Path::new(argv0).file_stem().and_then(|s| s.to_str()) == Some("chisel-mcp")
 }
 
 pub fn help() {

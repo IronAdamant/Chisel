@@ -38,7 +38,7 @@ cd Chisel
 cargo build --release
 ```
 
-The binary is `target/release/chisel`. `target/release/chisel-mcp` is the same program and starts the stdio MCP server. Put either on `PATH`.
+The binary is `target/release/chisel`. `chisel serve-mcp` starts the stdio MCP server. A local build also writes `chisel-mcp`, which is the same program.
 
 Storage is a snapshot file at `.chisel/store`. Chisel does not open `chisel.db`. Pass `--json` and branch on the `status` field. `no_data` means run `analyze`. `stale_db` means run `update` or pass `auto_update`.
 
@@ -50,7 +50,8 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.j
 {
   "mcpServers": {
     "chisel": {
-      "command": "chisel-mcp",
+      "command": "chisel",
+      "args": ["serve-mcp"],
       "env": {
         "CHISEL_PROJECT_DIR": "/path/to/your/project",
         "CHISEL_STORAGE_DIR": "/path/to/your/project/.chisel"
@@ -60,7 +61,7 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.j
 }
 ```
 
-`chisel-mcp` speaks stdio MCP (Content-Length JSON-RPC). `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` are honored when the CLI flags are absent.
+`chisel serve-mcp` speaks stdio MCP (Content-Length JSON-RPC). The release binary is `chisel`. A copy named `chisel-mcp` or `chisel-mcp.exe` starts the same server. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` are honored when the CLI flags are absent.
 
 Run `analyze` first to build the project graph, then `diff_impact` after edits to see which tests to run. `analyze` with `force` on more than 300 code files returns `auto_queued` and a `job_id`. Poll `job_status`. `--working-tree` reads the worktree. Leave it off to answer from the snapshot.
 
@@ -75,7 +76,7 @@ There is also an installable Claude Code **skill** with the distilled agent prot
 Stdio MCP for local clients:
 
 ```bash
-chisel-mcp
+chisel serve-mcp
 ```
 
 HTTP is a separate JSON API, not an MCP URL. `chisel serve --port 8377` answers `GET /health`, `GET /tools`, and `POST /call`. There is no `/mcp` path.
@@ -161,7 +162,7 @@ The same binary has been run on flask, requests, cJSON, quixbugs, and the Probat
 - **gitignore-aware** — ignored trees (vendored deps, build output, fixtures) are never scanned; untracked files still are (`CHISEL_INCLUDE_IGNORED=1` to override)
 - **Branch-aware** — `diff_impact` auto-detects feature branch vs main. Feature-branch co-change comes from `merge-base..HEAD`. `main` and `master` keep that list empty.
 - **Multi-agent safe** — cross-process locks so parallel agents don't corrupt the snapshot
-- **MCP + CLI** — stdio MCP (`chisel serve-mcp` or `chisel-mcp`) and a JSON HTTP API (`GET /health`, `GET /tools`, `POST /call`), plus a CLI with 28 subcommands
+- **MCP + CLI** — stdio MCP (`chisel serve-mcp`) and a JSON HTTP API (`GET /health`, `GET /tools`, `POST /call`), plus a CLI with 28 subcommands
 - **CI-friendly** — `error` and `git_error` exit 1. Other statuses, including `no_data` and `stale_db`, exit 0. `examples/github-actions/chisel.yml` builds this binary with Cargo. Do not pip-install Chisel.
 - **Monorepo sharding** — one snapshot per shard under `.chisel/shards/<shard>/` (`CHISEL_SHARDS` or `.chisel/shards.toml`). Cross-shard test edges are overlaid from the parent snapshot. `flakiness_trend` appears when dated test results span two weeks.
 - **Custom extractors** — set `CHISEL_EXTRACTOR` to an executable. It receives the path and language on stdin and returns a JSON list of units. A non-zero exit or bad JSON falls back to the built-in scanner and records a warning. Unset uses the built-in scanner. The binary does not load tree-sitter or plugins.

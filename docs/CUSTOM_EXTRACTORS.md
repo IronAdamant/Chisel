@@ -10,7 +10,7 @@ An agent can also write `.chisel/extensions.toml` in the project:
 extractor = "tools/my-extractor"
 ```
 
-A relative path is from the project root. Chisel does not run that file unless you pass `--allow-repo-extractor`. `CHISEL_EXTRACTOR` overrides the file and does not need the flag. Chisel only executes that program. Tree-sitter, a Postgres client, or any other library stays in the external program. This repository does not take those dependencies, and the snapshot stays `.chisel/store`.
+A relative path is from the project root and must stay inside the project after symlinks are resolved. Chisel does not run that file unless the process was started with `--allow-repo-extractor` or `CHISEL_ALLOW_REPO_EXTRACTOR=1`. A tool argument cannot turn it on. `CHISEL_EXTRACTOR` overrides the file and does not need the flag. Chisel only executes that program. Tree-sitter, a Postgres client, or any other library stays in the external program. This repository does not take those dependencies, and the snapshot stays `.chisel/store`.
 
 Unset, with no file, uses the built-in scanner.
 

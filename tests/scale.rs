@@ -1173,8 +1173,10 @@ fn diff_ref_starting_with_dash_does_not_reach_git() {
 #[test]
 fn update_drops_deleted_and_renamed_files() {
     let dir = scratch("rm");
+    fs::create_dir_all(dir.join("tests")).unwrap();
     fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
     fs::write(dir.join("b.py"), "def b():\n    return 2\n").unwrap();
+    fs::write(dir.join("tests/test_ab.py"), "from a import a\nfrom b import b\n\ndef test_a():\n    assert a() == 1\n\ndef test_b():\n    assert b() == 2\n").unwrap();
     init_repo(&dir);
     commit_all(&dir, "init");
     let store = dir.join("store");
@@ -1182,16 +1184,29 @@ fn update_drops_deleted_and_renamed_files() {
     engine.analyze().unwrap();
     fs::remove_file(dir.join("b.py")).unwrap();
     fs::rename(dir.join("a.py"), dir.join("a2.py")).unwrap();
+    fs::write(dir.join("tests/test_ab.py"), "from a2 import a\n\ndef test_a():\n    assert a() == 1\n").unwrap();
     commit_all(&dir, "rename");
     let summary = engine.update().unwrap();
     let text = chisel::json::to_string(&summary).unwrap();
+    assert!(!text.contains("\"edge_rebuild_skipped\": true") && !text.contains("\"edge_rebuild_skipped\":true"), "{text}");
     let snap = fs::read_to_string(store.join("store")).unwrap();
     assert!(snap.contains("a2.py"), "{snap}");
     assert!(!snap.contains("\"file_path\":\"a.py\""), "{text} {snap}");
     assert!(!snap.contains("\"file_path\":\"b.py\""), "{snap}");
     let doc = chisel::json::parse(&snap).unwrap();
     let units = doc.get("code_units").and_then(|v| v.as_array()).unwrap();
-    assert_eq!(units.len(), 1, "{snap}");
+    assert_eq!(units.len(), 2, "{snap}");
+    let mut fresh = chisel::Engine::open(&dir, Some(&dir.join("fresh"))).unwrap();
+    fresh.analyze().unwrap();
+    let fresh_snap = chisel::json::parse(&fs::read_to_string(dir.join("fresh/store")).unwrap()).unwrap();
+    let edge_set = |doc: &chisel::json::Value| {
+        let mut ids: Vec<String> = doc.get("test_edges").and_then(|v| v.as_array()).unwrap().iter().map(|e| {
+            format!("{}|{}", e.get("test_id").and_then(|v| v.as_str()).unwrap_or(""), e.get("code_id").and_then(|v| v.as_str()).unwrap_or(""))
+        }).collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(edge_set(&doc), edge_set(&fresh_snap), "update edges\n{snap}");
 }
 
 #[test]
@@ -1216,6 +1231,107 @@ fn lock_check_reloads_a_lock_taken_by_another_handle() {
     let bad = args_with_ttl(0);
     let err = first.dispatch("acquire_file_lock", &bad);
     assert!(err.is_err(), "ttl 0 should fail");
+    let err = first.dispatch("acquire_file_lock", &args_with_ttl(-5));
+    assert!(err.is_err(), "negative ttl should fail");
+}
+
+#[test]
+fn tool_argument_cannot_run_a_repo_extractor() {
+    let dir = scratch("ext-arg");
+    fs::create_dir_all(dir.join(".chisel")).unwrap();
+    let marker = dir.join("ran.txt");
+    let script = dir.join("run.sh");
+    let body = format!("#!/bin/sh\ncat >/dev/null\nprintf ran > '{}'\nprintf '%s\\n' '[{{\"name\":\"x\",\"unit_type\":\"function\",\"line_start\":1,\"line_end\":1}}]'\n", marker.display());
+    write_exec(&script, &body);
+    fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
+    fs::write(dir.join(".chisel/extensions.toml"), "extractor = \"run.sh\"\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let mut engine = chisel::Engine::open(&dir, Some(&dir.join("store"))).unwrap();
+    let args = chisel::json::Value::object(vec![
+        ("allow_repo_extractor".into(), chisel::json::Value::Bool(true)),
+    ]);
+    let out = engine.dispatch("analyze", &args).unwrap();
+    let text = chisel::json::to_string(&out).unwrap();
+    assert!(text.contains("repo extractor skipped"), "{text}");
+    assert!(!marker.exists());
+    let bin = env!("CARGO_BIN_EXE_chisel");
+    let allowed = Command::new(bin)
+        .args(["analyze", ".", "--allow-repo-extractor", "--json", "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(dir.join("allowed"))
+        .env("CHISEL_ALLOW_REPO_EXTRACTOR", "0")
+        .env_remove("CHISEL_EXTRACTOR")
+        .output()
+        .unwrap();
+    assert!(allowed.status.success(), "{}", String::from_utf8_lossy(&allowed.stderr));
+    assert!(marker.exists(), "cli opt-in did not run the extractor");
+}
+
+#[test]
+fn repo_extractor_outside_the_project_is_rejected() {
+    let dir = scratch("ext-out");
+    fs::create_dir_all(dir.join(".chisel")).unwrap();
+    fs::create_dir_all(dir.join("tools")).unwrap();
+    let outside = scratch("ext-out-bin");
+    let marker = outside.join("ran.txt");
+    let script = outside.join("out.sh");
+    let body = format!("#!/bin/sh\ncat >/dev/null\nprintf ran > '{}'\nprintf '%s\\n' '[{{\"name\":\"x\",\"unit_type\":\"function\",\"line_start\":1,\"line_end\":1}}]'\n", marker.display());
+    write_exec(&script, &body);
+    fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
+    fs::write(dir.join(".chisel/extensions.toml"), format!("extractor = \"{}\"\n", script.display())).unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let bin = env!("CARGO_BIN_EXE_chisel");
+    let out = Command::new(bin)
+        .args(["analyze", ".", "--allow-repo-extractor", "--json", "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(dir.join("store"))
+        .env_remove("CHISEL_EXTRACTOR")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("must stay inside the project"), "{text}");
+    assert!(!marker.exists());
+    std::os::unix::fs::symlink(&script, dir.join("tools/link.sh")).unwrap();
+    fs::write(dir.join(".chisel/extensions.toml"), "extractor = \"tools/link.sh\"\n").unwrap();
+    let linked = Command::new(bin)
+        .args(["analyze", ".", "--allow-repo-extractor", "--json", "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(dir.join("link-store"))
+        .env_remove("CHISEL_EXTRACTOR")
+        .output()
+        .unwrap();
+    assert!(linked.status.success(), "{}", String::from_utf8_lossy(&linked.stderr));
+    assert!(!marker.exists(), "symlink extractor ran: {}", String::from_utf8_lossy(&linked.stdout));
+}
+
+#[test]
+fn mcp_binary_name_accepts_an_exe_suffix() {
+    assert!(chisel::cli::argv_is_mcp_binary("chisel-mcp"));
+    assert!(chisel::cli::argv_is_mcp_binary("chisel-mcp.exe"));
+    assert!(chisel::cli::argv_is_mcp_binary("/usr/local/bin/chisel-mcp"));
+    assert!(!chisel::cli::argv_is_mcp_binary("chisel"));
+    assert!(!chisel::cli::argv_is_mcp_binary("chisel.exe"));
+}
+
+#[test]
+fn oversized_mcp_body_is_discarded_and_the_next_message_is_read() {
+    use std::io::Cursor;
+    let header = format!("Content-Length: {}\r\n\r\n", 8 * 1024 * 1024 + 1);
+    let mut bytes = header.into_bytes();
+    bytes.extend(std::iter::repeat(b'x').take(8 * 1024 * 1024 + 1));
+    let next = b"Content-Length: 2\r\n\r\n{}";
+    bytes.extend_from_slice(next);
+    let mut input = Cursor::new(bytes);
+    let err = chisel::mcp::read_message(&mut input).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    let second = chisel::mcp::read_message(&mut input).unwrap().unwrap();
+    assert_eq!(second, "{}");
 }
 
 fn args_with_ttl(ttl: i64) -> chisel::json::Value {

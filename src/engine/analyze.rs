@@ -420,18 +420,23 @@ impl Engine {
         let changed_tests: Vec<String> = changed.iter().filter(|p| looks_like_test(p)).cloned().collect();
         let changed_sources: Vec<String> = changed.iter().filter(|p| !looks_like_test(p)).cloned().collect();
         let mut tests_to_rebuild = changed_tests.clone();
-        if !changed_sources.is_empty() {
+        if !changed_sources.is_empty() || !removed.is_empty() {
             let known_tests = self.store.array("test_units");
             for edge in self.store.array("test_edges") {
                 let code_id = edge.get("code_id").and_then(|v| v.as_str()).unwrap_or("");
+                let code_file = edge.get("code_file").and_then(|v| v.as_str()).unwrap_or("");
                 let targets_changed = changed_sources.iter().any(|path| code_id.starts_with(&format!("{path}:")));
-                if !targets_changed {
+                let targets_removed = removed.iter().any(|path| code_file == path.as_str() || code_id.starts_with(&format!("{path}:")));
+                if !targets_changed && !targets_removed {
                     continue;
                 }
                 let tid = edge.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
                 let Some(test_file) = known_tests.iter().find(|unit| unit.get("id").and_then(|v| v.as_str()) == Some(tid)).and_then(|unit| unit.get("file_path").and_then(|v| v.as_str())) else {
                     continue;
                 };
+                if removed.iter().any(|path| path == test_file) {
+                    continue;
+                }
                 if !tests_to_rebuild.iter().any(|path| path == test_file) {
                     tests_to_rebuild.push(test_file.to_string());
                 }

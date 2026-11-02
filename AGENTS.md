@@ -45,4 +45,4 @@ Scores are heuristics. Read `_meta.uniform_components` before trusting a composi
 
 Test filenames that produce edges include `test_*.py`, `*_test.py`, `*.test.ts`, `*.spec.ts`, `*_test.go`, and `*_test.rs`.
 
-`CHISEL_EXTRACTOR` or `extractor` in `.chisel/extensions.toml` names an executable. That program may use its own libraries. Chisel does not link them. The toml file is ignored unless `--allow-repo-extractor` is set. `CHISEL_EXTRACTOR` overrides the file. A bad run falls back to the built-in scanner. A git ref that starts with `-` is rejected.
+`CHISEL_EXTRACTOR` or `extractor` in `.chisel/extensions.toml` names an executable. That program may use its own libraries. Chisel does not link them. The toml file is ignored unless the process was started with `--allow-repo-extractor` or `CHISEL_ALLOW_REPO_EXTRACTOR=1`. A tool argument cannot turn it on. The path must stay inside the project. `CHISEL_EXTRACTOR` overrides the file. A bad run falls back to the built-in scanner. A git ref that starts with `-` is rejected.

@@ -48,6 +48,13 @@ pub(crate) fn shard_name_for<'a>(file: &str, shards: &'a [(String, String)]) -> 
     best
 }
 
+fn env_allows_repo_extractor() -> bool {
+    match std::env::var("CHISEL_ALLOW_REPO_EXTRACTOR") {
+        Ok(value) => value == "1" || value.eq_ignore_ascii_case("true"),
+        Err(_) => false,
+    }
+}
+
 pub(crate) fn shard_owner<'a>(file: &str, shards: &'a [(String, String)]) -> &'a str {
     shard_name_for(file, shards).unwrap_or(UNASSIGNED_SHARD)
 }
@@ -228,7 +235,7 @@ impl Engine {
             git,
             include_ignored,
             working_tree: false,
-            allow_repo_extractor: false,
+            allow_repo_extractor: env_allows_repo_extractor(),
             shards: Vec::new(),
             only_files: None,
             active_job: None,

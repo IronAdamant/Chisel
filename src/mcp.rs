@@ -15,7 +15,25 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
     let stdout = io::stdout();
     let mut output = stdout.lock();
     loop {
-        let Some(body) = read_message(&mut input).map_err(|e| e.to_string())? else { break };
+        let body = match read_message(&mut input) {
+            Ok(Some(body)) => body,
+            Ok(None) => break,
+            Err(err) => {
+                let err_body = Value::object(vec![
+                    ("jsonrpc".into(), Value::String("2.0".into())),
+                    ("id".into(), Value::Null),
+                    ("error".into(), Value::object(vec![
+                        ("code".into(), Value::Int(-32700)),
+                        ("message".into(), Value::String(err.to_string())),
+                    ])),
+                ]);
+                write_message(&mut output, &json::to_string(&err_body).unwrap_or_default()).map_err(|e| e.to_string())?;
+                if err.kind() == io::ErrorKind::InvalidData {
+                    continue;
+                }
+                return Err(err.to_string());
+            }
+        };
         let Ok(msg) = json::parse(&body) else {
             let err = Value::object(vec![
                 ("jsonrpc".into(), Value::String("2.0".into())),
@@ -134,11 +152,25 @@ pub fn read_message(input: &mut impl Read) -> io::Result<Option<String>> {
         }
     }
     if len > 8 * 1024 * 1024 {
+        discard_bytes(input, len)?;
         return Err(io::Error::new(io::ErrorKind::InvalidData, "body too large"));
     }
     let mut body = vec![0u8; len];
     input.read_exact(&mut body)?;
     Ok(Some(String::from_utf8_lossy(&body).into_owned()))
+}
+
+fn discard_bytes(input: &mut impl Read, mut left: usize) -> io::Result<()> {
+    let mut buf = [0u8; 8192];
+    while left > 0 {
+        let take = left.min(buf.len());
+        let n = input.read(&mut buf[..take])?;
+        if n == 0 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "body ended early"));
+        }
+        left -= n;
+    }
+    Ok(())
 }
 
 pub fn write_message(output: &mut impl Write, body: &str) -> io::Result<()> {

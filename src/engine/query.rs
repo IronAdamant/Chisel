@@ -106,19 +106,22 @@ impl Engine {
                 }
                 let a = c.get("file_a").and_then(|v| v.as_str()).unwrap_or("");
                 let b = c.get("file_b").and_then(|v| v.as_str()).unwrap_or("");
-                if a == f || b == f {
-                    co_count += 1;
-                    // SQLite returns ORDER BY co_commit_count DESC, and for ties
-                    // the rows where this file is file_a come before rows where it is file_b.
-                    if a == f {
-                        partners.push((b.to_string(), n, 0));
-                    } else {
-                        partners.push((a.to_string(), n, 1));
-                    }
+                if a != f && b != f {
+                    continue;
+                }
+                let other = if a == f { b } else { a };
+                if !self.project_dir.join(other).exists() {
+                    continue;
+                }
+                co_count += 1;
+                if a == f {
+                    partners.push((b.to_string(), n, 0));
+                } else {
+                    partners.push((a.to_string(), n, 1));
                 }
             }
             partners.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
-            let mut import_neighbors: Vec<String> = neighbor_map.get(f).map(|s| s.iter().cloned().collect()).unwrap_or_default();
+            let mut import_neighbors: Vec<String> = neighbor_map.get(f).map(|s| s.iter().cloned().filter(|n| self.project_dir.join(n).exists()).collect()).unwrap_or_default();
             import_neighbors.sort();
             let file_units = self.store.units_by_file(f);
             let mut tested_lines = 0i64;
@@ -1300,7 +1303,6 @@ impl Engine {
             }
         }
         self.working_tree = args.get("working_tree").and_then(|v| v.as_bool()).unwrap_or(false);
-        self.allow_repo_extractor = args.get("allow_repo_extractor").and_then(|v| v.as_bool()).unwrap_or(false);
         if let Some(r) = args.get("ref").and_then(|v| v.as_str()) {
             if r.starts_with('-') {
                 return Ok(Value::object(vec![
@@ -1729,9 +1731,11 @@ impl Engine {
             if n < effective { continue; }
             let a = c.get("file_a").and_then(|v| v.as_str()).unwrap_or("");
             let b = c.get("file_b").and_then(|v| v.as_str()).unwrap_or("");
-            if a == file || b == file {
-                partners.push(c);
+            let other = if a == file { b } else if b == file { a } else { continue };
+            if !self.project_dir.join(other).exists() {
+                continue;
             }
+            partners.push(c);
         }
         partners.sort_by(|a, b| {
             let na = a.get("co_commit_count").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1742,8 +1746,8 @@ impl Engine {
         for e in self.store.array("import_edges") {
             let a = e.get("importer_file").and_then(|v| v.as_str()).unwrap_or("");
             let b = e.get("imported_file").and_then(|v| v.as_str()).unwrap_or("");
-            if a == file && b != file { neighbors.insert(b.to_string()); }
-            if b == file && a != file { neighbors.insert(a.to_string()); }
+            if a == file && b != file && self.project_dir.join(b).exists() { neighbors.insert(b.to_string()); }
+            if b == file && a != file && self.project_dir.join(a).exists() { neighbors.insert(a.to_string()); }
         }
         let co_len = partners.len() as f64;
         let imp_len = neighbors.len() as f64;

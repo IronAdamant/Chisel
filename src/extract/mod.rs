@@ -142,8 +142,24 @@ fn configured_extractor(project: Option<&std::path::Path>, allow_repo_extractor:
         return None;
     };
     let path = std::path::PathBuf::from(&raw);
-    let resolved = if path.is_absolute() { path } else { project.join(path) };
-    Some(resolved.to_string_lossy().into_owned())
+    if path.is_absolute() || raw.split(['/', '\\']).any(|part| part == "..") {
+        note_once("repo extractor path must stay inside the project");
+        return None;
+    }
+    let resolved = project.join(path);
+    let Ok(root) = std::fs::canonicalize(project) else {
+        note_once("repo extractor path must stay inside the project");
+        return None;
+    };
+    let Ok(canon) = std::fs::canonicalize(&resolved) else {
+        note_once("repo extractor path must stay inside the project");
+        return None;
+    };
+    if !canon.starts_with(&root) {
+        note_once("repo extractor path must stay inside the project");
+        return None;
+    }
+    Some(canon.to_string_lossy().into_owned())
 }
 
 pub(crate) fn extractor_from_toml(text: &str) -> Option<String> {

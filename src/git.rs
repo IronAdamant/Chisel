@@ -148,7 +148,7 @@ impl GitAnalyzer {
     }
 
     pub fn blame(&self, file: &str) -> Result<Vec<BlameBlock>, GitError> {
-        let raw = self.run(&["blame", "--porcelain", file])?;
+        let raw = self.run(&["blame", "--porcelain", "--", file])?;
         Ok(parse_blame(&raw))
     }
 

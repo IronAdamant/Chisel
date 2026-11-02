@@ -35,7 +35,7 @@ fn real_main() -> Result<i32, String> {
         return read_loop(&argv);
     }
     let argv0 = env::args().next().unwrap_or_default();
-    if argv0.ends_with("chisel-mcp") {
+    if cli::argv_is_mcp_binary(&argv0) {
         argv.insert(0, "serve-mcp".into());
     }
     if argv.is_empty() || argv.iter().any(|a| a == "-h" || a == "--help") && argv.len() == 1 {
