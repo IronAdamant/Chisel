@@ -381,11 +381,12 @@ impl Engine {
         }
         self.store.doc.insert("churn", Value::Array(churn_rows));
 
+        let in_scope = |path: &str| scope.iter().any(|s| s == path);
         let mut blame_rows: Vec<Value> = self.store.array("blame").into_iter().filter(|row| {
-            row.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !changed_set.contains(p))
+            row.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !in_scope(p))
         }).collect();
         let mut hash_rows: Vec<Value> = self.store.array("file_hashes").into_iter().filter(|row| {
-            row.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !changed_set.contains(p))
+            row.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !in_scope(p))
         }).collect();
         for rel in &scope {
             let abs = self.project_dir.join(rel);

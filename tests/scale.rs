@@ -616,6 +616,40 @@ fn source_only_update_keeps_untouched_test_edges() {
     assert!(after.contains("tests/test_b.py:test_b"), "test edge disappeared: {after}");
 }
 
+#[test]
+fn commit_after_dirty_analyze_replaces_blame() {
+    let dir = scratch("reblame");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src/a.py"), "def a():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let dirty = "def a():\n    return 2\n";
+    fs::write(dir.join("src/a.py"), dirty).unwrap();
+    let line_len = dirty.lines().count() as i64;
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    let before = fs::read_to_string(store.join("store")).unwrap();
+    assert!(before.contains("Not Committed Yet"), "dirty analyze did not record uncommitted blame: {before}");
+    commit_all(&dir, "commit dirty");
+    let log = Arc::new(Mutex::new(Vec::new()));
+    engine.set_git_runner(recording_runner(Arc::clone(&log)));
+    engine.update().unwrap();
+    let spawns = log.lock().unwrap().clone();
+    let blames: Vec<_> = spawns.iter().filter(|s| s.contains("blame") && s.contains("src/a.py")).cloned().collect();
+    assert_eq!(blames.len(), 1, "update blamed src/a.py more than once: {spawns:?}");
+    let owned = engine.dispatch("ownership", &chisel::json::Value::object(vec![
+        ("file_path".into(), chisel::json::Value::String("src/a.py".into())),
+    ])).unwrap();
+    let rows = owned.as_array().expect("ownership rows");
+    let line_count: i64 = rows.iter().map(|row| row.get("line_count").and_then(|v| v.as_i64()).unwrap_or(0)).sum();
+    assert_eq!(line_count, line_len, "{owned:?}");
+    let text = chisel::json::to_string(&owned).unwrap();
+    assert!(!text.contains("Not Committed Yet"), "{text}");
+    let snap = fs::read_to_string(store.join("store")).unwrap();
+    assert!(!snap.contains("Not Committed Yet"), "{snap}");
+}
+
 fn unit_churn_count(snap: &str, file: &str) -> usize {
     let doc = chisel::json::parse(snap).unwrap();
     doc.get("churn")
