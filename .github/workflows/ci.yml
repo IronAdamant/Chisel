@@ -43,6 +43,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.0
+      - name: Install the Python oracle
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Chisel and pytest
+        run: pip install -e ".[dev]"
       - name: Reject crate dependencies
         run: |
           python3 - << 'PY'
