@@ -36,3 +36,95 @@ jobs:
 
       - name: Benchmark smoke (timing thresholds)
         run: python scripts/benchmark_chisel.py
+
+  rust-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+      - name: Reject crate dependencies
+        run: |
+          python3 - << 'PY'
+          import pathlib, tomllib
+          data = tomllib.load(open("Cargo.toml", "rb"))
+          deps = data.get("dependencies") or {}
+          dev = data.get("dev-dependencies") or {}
+          if deps or dev:
+              raise SystemExit(f"dependency tables must be empty: {deps} {dev}")
+          if pathlib.Path("build.rs").exists():
+              raise SystemExit("build.rs is not allowed")
+          PY
+          cargo metadata --format-version 1 --no-deps > /tmp/metadata.json
+          python3 - << 'PY'
+          import json
+          data = json.load(open("/tmp/metadata.json"))
+          pkg = next(p for p in data["packages"] if p["name"] == "chisel")
+          if pkg["dependencies"]:
+              raise SystemExit(pkg["dependencies"])
+          print("dependency_count", len(pkg["dependencies"]))
+          PY
+      - name: Test
+        run: cargo test -- --test-threads=8
+
+  rust-linux-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        run: cargo build --release --target x86_64-unknown-linux-musl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chisel-x86_64-unknown-linux-musl
+          path: target/x86_64-unknown-linux-musl/release/chisel
+
+  rust-macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: aarch64-apple-darwin
+      - name: Build
+        run: cargo build --release --target aarch64-apple-darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chisel-aarch64-apple-darwin
+          path: target/aarch64-apple-darwin/release/chisel
+
+  rust-macos-x64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: x86_64-apple-darwin
+      - name: Build
+        run: cargo build --release --target x86_64-apple-darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chisel-x86_64-apple-darwin
+          path: target/x86_64-apple-darwin/release/chisel
+
+  rust-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-msvc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chisel-x86_64-pc-windows-msvc
+          path: target/x86_64-pc-windows-msvc/release/chisel.exe

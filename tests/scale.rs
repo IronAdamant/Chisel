@@ -3,8 +3,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn scratch(name: &str) -> PathBuf {
     let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -34,6 +35,42 @@ fn commit_all(dir: &Path, msg: &str) {
         .status()
         .unwrap();
     assert!(status.success(), "{msg}");
+}
+
+fn overlap_runner(log: Arc<Mutex<Vec<String>>>, inflight: Arc<AtomicUsize>, max_seen: Arc<AtomicUsize>) -> chisel::git::GitRunner {
+    Arc::new(move |repo, args| {
+        log.lock().unwrap().push(args.join(" "));
+        let tracked = args.iter().any(|arg| *arg == "blame" || arg.starts_with("-L:"));
+        if tracked {
+            let now = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+            max_seen.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        let mut cmd = Command::new("git");
+        cmd.args(args).current_dir(repo);
+        let out = cmd.output();
+        if tracked {
+            inflight.fetch_sub(1, Ordering::SeqCst);
+        }
+        out
+    })
+}
+
+fn churn_signature(snap: &str) -> Vec<String> {
+    let doc = chisel::json::parse(snap).unwrap();
+    doc.get("churn")
+        .and_then(|v| v.as_array())
+        .unwrap()
+        .iter()
+        .map(|row| {
+            format!(
+                "{}|{}|{}",
+                row.get("file_path").and_then(|v| v.as_str()).unwrap_or(""),
+                row.get("unit_name").and_then(|v| v.as_str()).unwrap_or(""),
+                row.get("churn_score").and_then(|v| v.as_f64()).unwrap_or(0.0)
+            )
+        })
+        .collect()
 }
 
 fn recording_runner(log: Arc<Mutex<Vec<String>>>) -> chisel::git::GitRunner {
@@ -79,9 +116,11 @@ fn one_changed_file_blames_only_that_file() {
     fs::write(dir.join("src/a.py"), "def a():\n    return 3\n").unwrap();
     let log = Arc::new(Mutex::new(Vec::new()));
     engine.set_git_runner(recording_runner(Arc::clone(&log)));
+    engine.source_reads = 0;
     let update = engine.update().unwrap();
     let text = chisel::json::to_string(&update).unwrap();
     assert!(text.contains("\"edge_rebuild_skipped\":true") || text.contains("\"edge_rebuild_skipped\": true"), "{text}");
+    assert_eq!(engine.source_reads, 0, "source-only update reread tests");
     let spawns = log.lock().unwrap().clone();
     let blames: Vec<_> = spawns.iter().filter(|s| s.contains("blame")).cloned().collect();
     assert!(blames.iter().any(|s| s.contains("src/a.py")), "{blames:?}");
@@ -372,7 +411,7 @@ fn unimplemented_flag_exits_nonzero() {
     let dir = scratch("flag");
     fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
     let out = Command::new(bin)
-        .args(["--json", "analyze", "--no-proximity", "--project-dir"]).arg(&dir)
+        .args(["--json", "analyze", "--not-a-chisel-flag", "--project-dir"]).arg(&dir)
         .output().unwrap();
     assert_ne!(out.status.code(), Some(0));
     let text = String::from_utf8_lossy(&out.stderr);
@@ -733,4 +772,392 @@ fn unscoped_reads_aggregate_and_update_uses_longest_prefix() {
     let diff = engine.diff_impact().unwrap();
     let diff_text = chisel::json::to_string(&diff).unwrap();
     assert!(!diff_text.contains("stale_db"), "{diff_text}");
+}
+
+#[test]
+fn git_pool_overlaps_at_most_eight_and_merges_in_path_order() {
+    let dir = scratch("pool");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    for i in 0..12 {
+        fs::write(dir.join(format!("src/f{i:02}.py")), format!("def f{i}():\n    return {i}\n")).unwrap();
+    }
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let inflight = Arc::new(AtomicUsize::new(0));
+    let max_seen = Arc::new(AtomicUsize::new(0));
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.set_git_runner(overlap_runner(Arc::clone(&log), Arc::clone(&inflight), Arc::clone(&max_seen)));
+    engine.analyze().unwrap();
+    let peak = max_seen.load(Ordering::SeqCst);
+    assert!(peak > 1 && peak <= 8, "in-flight git peak {peak}");
+    let spawns = log.lock().unwrap().clone();
+    let logged = spawns.iter().filter(|s| s.contains("-L:")).count();
+    let blamed = spawns.iter().filter(|s| s.contains("blame")).count();
+    assert_eq!(logged, 12, "{spawns:?}");
+    assert_eq!(blamed, 12, "{spawns:?}");
+    let first = churn_signature(&fs::read_to_string(store.join("store")).unwrap());
+    let file_rows = first.iter().filter(|row| row.contains("||") || row.split('|').nth(1).unwrap_or("x").is_empty()).count();
+    let unit_at = first.iter().position(|row| !row.split('|').nth(1).unwrap_or("").is_empty()).unwrap();
+    assert!(file_rows >= 12, "{first:?}");
+    assert!(first[..unit_at].iter().all(|row| row.split('|').nth(1).unwrap_or("x").is_empty()));
+    max_seen.store(0, Ordering::SeqCst);
+    engine.analyze().unwrap();
+    let second = churn_signature(&fs::read_to_string(store.join("store")).unwrap());
+    assert_eq!(first, second);
+    let snap = fs::read_to_string(store.join("store")).unwrap();
+    assert!(snap.contains("\"branch_co_changes\":[]") || snap.contains("\"branch_co_changes\": []"), "{snap}");
+    assert!(snap.contains("branch_coupling_commits") && snap.contains("\"0\""), "{snap}");
+}
+
+fn commit_as(dir: &Path, msg: &str, author: &str, date: &str) {
+    git(dir, &["add", "-A"]);
+    let status = Command::new("git")
+        .args(["commit", "-m", msg])
+        .env("GIT_AUTHOR_NAME", author)
+        .env("GIT_AUTHOR_EMAIL", format!("{author}@example.com"))
+        .env("GIT_COMMITTER_NAME", author)
+        .env("GIT_COMMITTER_EMAIL", format!("{author}@example.com"))
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
+        .current_dir(dir)
+        .status()
+        .unwrap();
+    assert!(status.success(), "{msg}");
+}
+
+#[test]
+fn feature_branch_co_change_feeds_risk_and_matches_python() {
+    let dir = scratch("branch");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src/c.py"), "def c():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    for i in 0..8 {
+        let author = if i % 2 == 0 { "Ada" } else { "Bea" };
+        let text = fs::read_to_string(dir.join("src/c.py")).unwrap();
+        fs::write(dir.join("src/c.py"), format!("{text}\n# {i}\n")).unwrap();
+        commit_as(&dir, &format!("c{i}"), author, &format!("2024-03-{:02}T00:00:00+00:00", i + 1));
+    }
+    git(&dir, &["checkout", "-b", "feature"]);
+    fs::write(dir.join("src/a.py"), "def a():\n    return 1\n").unwrap();
+    fs::write(dir.join("src/b.py"), "def b():\n    return 2\n").unwrap();
+    commit_as(&dir, "pair", "Ada", "2024-04-01T00:00:00+00:00");
+    let py_store = dir.join("py-store");
+    let rs_store = dir.join("rs-store");
+    let py = Command::new("/Library/Frameworks/Python.framework/Versions/3.14/bin/chisel")
+        .args(["analyze", ".", "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(&py_store)
+        .arg("--json")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(py.status.success(), "{}", String::from_utf8_lossy(&py.stderr));
+    let mut engine = chisel::Engine::open(&dir, Some(&rs_store)).unwrap();
+    engine.analyze().unwrap();
+    let snap = fs::read_to_string(rs_store.join("store")).unwrap();
+    assert!(snap.contains("\"file_a\":\"src/a.py\"") && snap.contains("\"file_b\":\"src/b.py\""), "{snap}");
+    assert!(snap.contains("branch_coupling_commits"), "{snap}");
+    let py_risk = Command::new("/Library/Frameworks/Python.framework/Versions/3.14/bin/chisel")
+        .args(["risk-map", "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(&py_store)
+        .arg("--json")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(py_risk.status.success(), "{}", String::from_utf8_lossy(&py_risk.stderr));
+    let rs_risk = engine.risk_map().unwrap();
+    let rs_text = chisel::json::to_string(&rs_risk).unwrap();
+    let py_text = String::from_utf8_lossy(&py_risk.stdout);
+    let status = Command::new("python3")
+        .args(["-c", "import json,sys; a=json.loads(sys.argv[1]); b=json.loads(sys.argv[2]); assert a==b, (a,b)"])
+        .arg(py_text.trim())
+        .arg(&rs_text)
+        .status()
+        .unwrap();
+    assert!(status.success(), "python {}\nrust {}", py_text, rs_text);
+    assert!(rs_text.contains("\"branch_coupling_commits\":1") || rs_text.contains("\"branch_coupling_commits\": 1"), "{rs_text}");
+}
+
+#[test]
+fn jest_blocks_and_require_confidence_match_python() {
+    let src = "\
+describe.only('suite', () => {});\n\
+it.skip('one', () => {});\n\
+test.todo('two', () => {});\n\
+const MODULE = './calc';\n\
+require(MODULE);\n\
+require(unknownName);\n\
+require(`./${name}`);\n\
+require('./' + name);\n\
+require(flag ? './prod' : './dev');\n\
+new Function('return require(\"x\")');\n\
+function add() { return 1; }\n";
+    let units = chisel::extract::extract_code_units("src/calc.test.js", src);
+    let kinds: Vec<(String, String)> = units.iter().map(|u| (u.name.clone(), u.unit_type.clone())).collect();
+    assert!(kinds.iter().any(|(n, t)| n == "suite" && t == "test_suite"), "{kinds:?}");
+    assert!(kinds.iter().any(|(n, t)| n == "one" && t == "test_case"), "{kinds:?}");
+    assert!(kinds.iter().any(|(n, t)| n == "two" && t == "test_case"), "{kinds:?}");
+    let deps = chisel::extract::extract_deps("src/calc.test.js", src);
+    assert!(deps.iter().any(|d| d.dep_type == "tainted_import" && (d.confidence - 1.0).abs() < 1e-9 && d.module_path.as_deref() == Some("./calc")), "{deps:?}");
+    assert!(deps.iter().any(|d| d.name == "require(unknownName)" && (d.confidence - 0.3).abs() < 1e-9), "{deps:?}");
+    assert!(deps.iter().any(|d| (d.confidence - 0.4).abs() < 1e-9 && d.module_path.as_deref() == Some("./${name}")), "{deps:?}");
+    assert!(deps.iter().any(|d| (d.confidence - 0.2).abs() < 1e-9 && d.name.contains('+')), "{deps:?}");
+    assert!(deps.iter().any(|d| (d.confidence - 0.3).abs() < 1e-9 && d.module_path.as_deref() == Some("./prod|./dev")), "{deps:?}");
+    assert!(deps.iter().any(|d| d.dep_type == "eval_import" && d.confidence == 0.0), "{deps:?}");
+    let file = scratch("jsdeps").join("sample.js");
+    fs::write(&file, src).unwrap();
+    let py = Command::new("python3")
+        .arg("-c")
+        .arg("import json,sys; sys.path.insert(0, sys.argv[1]); from chisel.test_mapper import _extract_js_deps; rows=_extract_js_deps(open(sys.argv[2]).read()); print(json.dumps([{'dep_type':r['dep_type'],'confidence':r.get('confidence',1.0),'module_path':r.get('module_path')} for r in rows if r['dep_type']!='call']))")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(py.status.success(), "{}", String::from_utf8_lossy(&py.stderr));
+    let py_rows: Vec<(String, f64, String)> = {
+        let v = chisel::json::parse(&String::from_utf8_lossy(&py.stdout)).unwrap();
+        v.as_array().unwrap().iter().map(|row| {
+            (
+                row.get("dep_type").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                row.get("confidence").and_then(|x| x.as_f64()).unwrap_or(1.0),
+                row.get("module_path").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            )
+        }).collect()
+    };
+    for (ty, conf, module) in &py_rows {
+        assert!(
+            deps.iter().any(|d| d.dep_type == *ty && (d.confidence - *conf).abs() < 1e-9 && d.module_path.clone().unwrap_or_default() == *module),
+            "missing python dep {ty} {conf} {module} in {deps:?}\npython {py_rows:?}"
+        );
+    }
+}
+
+#[test]
+fn record_result_changes_failure_rate_and_instability() {
+    let dir = scratch("fail");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::create_dir_all(dir.join("tests")).unwrap();
+    fs::write(dir.join("src/calc.py"), "def add(a, b):\n    return a + b\n").unwrap();
+    fs::write(dir.join("tests/test_calc.py"), "from src.calc import add\n\ndef test_add():\n    assert add(1, 1) == 2\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    let before = engine.suggest_tests("src/calc.py").unwrap();
+    let row = before.as_array().and_then(|a| a.first()).expect("suggestion");
+    let tid = row.get("test_id").and_then(|v| v.as_str()).unwrap().to_string();
+    let before_rel = row.get("relevance").and_then(|v| v.as_f64()).unwrap();
+    assert!(before_rel > 0.0, "{before_rel}");
+    assert_eq!(row.get("failure_rate").and_then(|v| v.as_f64()), Some(0.0));
+    engine.record_result(&tid, false).unwrap();
+    let after = engine.suggest_tests("src/calc.py").unwrap();
+    let again = after.as_array().unwrap().iter().find(|r| r.get("test_id").and_then(|v| v.as_str()) == Some(tid.as_str())).unwrap();
+    let after_rel = again.get("relevance").and_then(|v| v.as_f64()).unwrap();
+    assert!((again.get("failure_rate").and_then(|v| v.as_f64()).unwrap() - 1.0).abs() < 1e-9, "{again:?}");
+    assert!(after_rel > before_rel, "{before_rel} -> {after_rel}");
+    let risk = engine.risk_map().unwrap();
+    let text = chisel::json::to_string(&risk).unwrap();
+    assert!(text.contains("\"test_instability\":1") || text.contains("\"test_instability\": 1"), "{text}");
+}
+
+fn write_exec(path: &Path, body: &str) {
+    fs::write(path, body).unwrap();
+    let status = Command::new("chmod").args(["+x"]).arg(path).status().unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn extractor_failure_falls_back_and_success_replaces_units() {
+    let dir = scratch("ext");
+    fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let bad = dir.join("bad.sh");
+    let nope = dir.join("nope.sh");
+    let ok = dir.join("ok.sh");
+    write_exec(&bad, "#!/bin/sh\ncat >/dev/null\nexit 1\n");
+    write_exec(&nope, "#!/bin/sh\ncat >/dev/null\nprintf 'nope\\n'\n");
+    write_exec(&ok, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '[{\"name\":\"from_extractor\",\"unit_type\":\"function\",\"line_start\":1,\"line_end\":2}]'\n");
+    let bin = env!("CARGO_BIN_EXE_chisel");
+    let run = |script: &Path, store: &Path| {
+        Command::new(bin)
+            .env("CHISEL_EXTRACTOR", script)
+            .args(["analyze", ".", "--project-dir"])
+            .arg(&dir)
+            .arg("--storage-dir")
+            .arg(store)
+            .arg("--json")
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    };
+    let failed = run(&bad, &dir.join("bad-store"));
+    let failed_out = String::from_utf8_lossy(&failed.stdout);
+    assert!(failed.status.success(), "{}", String::from_utf8_lossy(&failed.stderr));
+    assert!(failed_out.contains("extractor_warnings"), "{failed_out}");
+    assert!(failed_out.contains("CHISEL_EXTRACTOR failed"), "{failed_out}");
+    let snap = fs::read_to_string(dir.join("bad-store/store")).unwrap();
+    assert!(snap.contains("\"name\":\"a\""), "builtin fallback missing: {snap}");
+    let junk = run(&nope, &dir.join("nope-store"));
+    let junk_out = String::from_utf8_lossy(&junk.stdout);
+    assert!(junk.status.success() && junk_out.contains("bad JSON"), "{junk_out}");
+    let snap = fs::read_to_string(dir.join("nope-store/store")).unwrap();
+    assert!(snap.contains("\"name\":\"a\""), "{snap}");
+    let custom = run(&ok, &dir.join("ok-store"));
+    assert!(custom.status.success(), "{}", String::from_utf8_lossy(&custom.stderr));
+    let custom_out = String::from_utf8_lossy(&custom.stdout);
+    assert!(!custom_out.contains("extractor_warnings"), "{custom_out}");
+    let snap = fs::read_to_string(dir.join("ok-store/store")).unwrap();
+    assert!(snap.contains("from_extractor"), "{snap}");
+    assert!(!snap.contains("\"name\":\"a\""), "builtin unit leaked: {snap}");
+}
+
+#[test]
+fn stale_generation_returns_status_error_and_retry_keeps_other_writer() {
+    let dir = scratch("stale");
+    fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    let mut other = chisel::store::Store::open(&store).unwrap();
+    other.doc.insert("token", chisel::json::Value::String("winner".into()));
+    other.save().unwrap();
+    let recorded = engine.dispatch("record_result", &chisel::json::Value::object(vec![
+        ("test_id".into(), chisel::json::Value::String("tests/test_a.py:test_a".into())),
+        ("passed".into(), chisel::json::Value::Bool(false)),
+    ])).unwrap();
+    let text = chisel::json::to_string(&recorded).unwrap();
+    assert!(text.contains("\"recorded\":true") || text.contains("\"recorded\": true"), "{text}");
+    let snap = fs::read_to_string(store.join("store")).unwrap();
+    assert!(snap.contains("winner"), "retry clobbered the other writer: {snap}");
+    assert!(snap.contains("tests/test_a.py:test_a"), "{snap}");
+    engine.store.fail_stale_remaining = 3;
+    let err = engine.dispatch("record_result", &chisel::json::Value::object(vec![
+        ("test_id".into(), chisel::json::Value::String("tests/test_a.py:test_a".into())),
+        ("passed".into(), chisel::json::Value::Bool(false)),
+    ])).unwrap();
+    let err_text = chisel::json::to_string(&err).unwrap();
+    assert!(err_text.contains("\"status\":\"error\"") || err_text.contains("\"status\": \"error\""), "{err_text}");
+    assert!(err_text.contains("stale generation"), "{err_text}");
+}
+
+#[test]
+fn triage_limit_and_schema_flags_change_results() {
+    let dir = scratch("flags");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src/calc.py"), "def add(a, b):\n    return a + b\n\ndef sub(a, b):\n    return a - b\n").unwrap();
+    fs::write(dir.join("src/extra.py"), "from src.calc import add\n\ndef wrapper():\n    return add(1, 1)\n").unwrap();
+    fs::write(dir.join("src/fresh.py"), "def fresh():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    fs::write(dir.join("src/brand_new.py"), "def brand():\n    return 9\n").unwrap();
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    assert_eq!(engine.bare_index_builds, 0, "no tests means no bare-name index");
+    let summary = chisel::json::to_string(&engine.analyze().unwrap()).unwrap();
+    assert!(summary.contains("test_*.py") && summary.contains("*.spec.ts"), "{summary}");
+    fs::create_dir_all(dir.join("tests")).unwrap();
+    fs::write(dir.join("tests/test_calc.py"), "from src.calc import add, sub\n\ndef test_add():\n    assert add(1, 1) == 2\n\ndef test_sub():\n    assert sub(1, 1) == 0\n").unwrap();
+    engine.analyze().unwrap();
+    assert_eq!(engine.bare_index_builds, 1, "one index per test file");
+    let line = engine.dispatch("risk_map", &chisel::json::Value::object(vec![
+        ("coverage_mode".into(), chisel::json::Value::String("line".into())),
+        ("proximity_adjustment".into(), chisel::json::Value::Bool(true)),
+    ])).unwrap();
+    let unit = engine.dispatch("risk_map", &chisel::json::Value::object(vec![
+        ("coverage_mode".into(), chisel::json::Value::String("unit".into())),
+        ("proximity_adjustment".into(), chisel::json::Value::Bool(false)),
+    ])).unwrap();
+    let line_text = chisel::json::to_string(&line).unwrap();
+    let unit_text = chisel::json::to_string(&unit).unwrap();
+    assert_ne!(line_text, unit_text, "coverage mode and proximity did not change risk");
+    assert!(unit_text.contains("\"coverage_gap_mode\":\"unit\"") || unit_text.contains("\"coverage_gap_mode\": \"unit\""), "{unit_text}");
+    let boosted = engine.dispatch("risk_map", &chisel::json::Value::object(vec![])).unwrap();
+    let plain = engine.dispatch("risk_map", &chisel::json::Value::object(vec![
+        ("exclude_new_file_boost".into(), chisel::json::Value::Bool(true)),
+    ])).unwrap();
+    let boosted_text = chisel::json::to_string(&boosted).unwrap();
+    let plain_text = chisel::json::to_string(&plain).unwrap();
+    assert!(boosted_text.contains("brand_new.py"), "{boosted_text}");
+    assert_ne!(boosted_text, plain_text, "exclude_new_file_boost did not change risk");
+    let triage = engine.dispatch("triage", &chisel::json::Value::object(vec![
+        ("limit".into(), chisel::json::Value::Int(1)),
+    ])).unwrap();
+    let triage_text = chisel::json::to_string(&triage).unwrap();
+    assert!(triage_text.contains("\"truncated\":true") || triage_text.contains("\"truncated\": true"), "{triage_text}");
+    let files = triage.get("top_risk_files").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(files.len(), 1, "{triage_text}");
+}
+
+#[test]
+fn second_process_sees_job_progress_and_cancel() {
+    let dir = scratch("jobproc");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    for i in 0..8 {
+        fs::write(dir.join(format!("src/f{i}.py")), "def f():\n    return 1\n").unwrap();
+    }
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    std::env::set_var("CHISEL_JOB_PACE_MS", "250");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    let job = engine.start_job("analyze").unwrap();
+    let id = job.get("job_id").and_then(|v| v.as_str()).unwrap().to_string();
+    let bin = env!("CARGO_BIN_EXE_chisel");
+    let mut saw_progress = false;
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let out = Command::new(bin)
+            .args(["job-status", &id, "--project-dir"])
+            .arg(&dir)
+            .arg("--storage-dir")
+            .arg(&store)
+            .arg("--json")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        if text.contains("progress_pct") && !text.contains("\"progress_pct\":0") && !text.contains("\"progress_pct\": 0") {
+            saw_progress = true;
+            break;
+        }
+    }
+    assert!(saw_progress, "second process did not observe progress");
+    let cancel = Command::new(bin)
+        .args(["cancel-job", &id, "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(&store)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(cancel.status.success(), "{}", String::from_utf8_lossy(&cancel.stderr));
+    let mut saw_cancel = false;
+    let mut last_status = String::new();
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let out = Command::new(bin)
+            .args(["job-status", &id, "--project-dir"])
+            .arg(&dir)
+            .arg("--storage-dir")
+            .arg(&store)
+            .arg("--json")
+            .output()
+            .unwrap();
+        last_status = format!("stdout={} stderr={} code={:?}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr), out.status.code());
+        if last_status.contains("cancelled") || last_status.contains("cancel_requested") {
+            saw_cancel = true;
+            break;
+        }
+    }
+    std::env::remove_var("CHISEL_JOB_PACE_MS");
+    assert!(saw_cancel, "second process did not observe cancel: {last_status}");
 }

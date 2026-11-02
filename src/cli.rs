@@ -28,6 +28,9 @@ pub struct Args {
     pub kind: Option<String>,
     /// Set only by `--passed` or `--failed`. Absent means the caller did not choose.
     pub passed: Option<bool>,
+    pub coverage_mode: Option<String>,
+    pub proximity_adjustment: Option<bool>,
+    pub exclude_new_file_boost: bool,
 }
 
 pub fn parse(argv: &[String]) -> Result<Args, String> {
@@ -50,6 +53,9 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     let mut git_ref = None;
     let mut kind = None;
     let mut passed: Option<bool> = None;
+    let mut coverage_mode = None;
+    let mut proximity_adjustment = None;
+    let mut exclude_new_file_boost = false;
     let mut i = 0;
     let mut after_dd = false;
     while i < argv.len() {
@@ -122,6 +128,13 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
                 return Err("status=error pass only one of --passed or --failed".into());
             }
             passed = Some(false);
+        } else if a == "--coverage-mode" {
+            i += 1;
+            coverage_mode = Some(argv.get(i).ok_or("missing --coverage-mode")?.clone());
+        } else if a == "--no-proximity" {
+            proximity_adjustment = Some(false);
+        } else if a == "--exclude-new-file-boost" {
+            exclude_new_file_boost = true;
         } else if a.starts_with("--") {
             return Err(format!("status=error unknown or unimplemented flag {a}"));
         } else if command.is_empty() {
@@ -137,6 +150,7 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     Ok(Args {
         command, project_dir, storage_dir, json, positionals, host, port, ttl, purpose, test_command,
         force, working_tree, auto_update, limit, shard, directory, git_ref, kind, passed,
+        coverage_mode, proximity_adjustment, exclude_new_file_boost,
     })
 }
 
@@ -256,6 +270,15 @@ fn call_args(args: &Args) -> Value {
     }
     if let Some(kind) = &args.kind {
         pairs.push(("kind".into(), Value::String(kind.clone())));
+    }
+    if let Some(mode) = &args.coverage_mode {
+        pairs.push(("coverage_mode".into(), Value::String(mode.clone())));
+    }
+    if let Some(proximity) = args.proximity_adjustment {
+        pairs.push(("proximity_adjustment".into(), Value::Bool(proximity)));
+    }
+    if args.exclude_new_file_boost {
+        pairs.push(("exclude_new_file_boost".into(), Value::Bool(true)));
     }
     if matches!(args.command.as_str(), "job-status" | "cancel-job") {
         if let Some(id) = args.positionals.first() {

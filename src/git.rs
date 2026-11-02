@@ -98,6 +98,15 @@ impl GitAnalyzer {
         self.run(&["rev-parse", "--verify", name]).is_ok()
     }
 
+    pub fn merge_base(&self, base: &str) -> Result<String, GitError> {
+        Ok(self.run(&["merge-base", "HEAD", base])?.trim().to_string())
+    }
+
+    pub fn parse_log_range(&self, range: &str) -> Result<Vec<Commit>, GitError> {
+        let raw = self.run(&["log", "--format=COMMIT_START%n%H|%an|%ae|%aI|%s", "--numstat", range])?;
+        Ok(parse_log_output(&raw))
+    }
+
     pub fn changed_files(&self, r#ref: &str) -> Result<Vec<String>, GitError> {
         let raw = self.run(&["diff", "--name-only", r#ref])?;
         Ok(raw.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())

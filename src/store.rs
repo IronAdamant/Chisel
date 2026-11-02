@@ -32,6 +32,8 @@ pub struct Store {
     lock: ProcessLock,
     pub doc: Value,
     loaded_generation: i64,
+    /// Test hook: the next N saves fail as a stale generation and do not publish.
+    pub fail_stale_remaining: i64,
     units_by_id: HashMap<String, Value>,
     units_by_file: HashMap<String, Vec<Value>>,
     edges_by_code: HashMap<String, Vec<Value>>,
@@ -61,6 +63,7 @@ impl Store {
             lock,
             doc: empty_doc(),
             loaded_generation: 0,
+            fail_stale_remaining: 0,
             units_by_id: HashMap::new(),
             units_by_file: HashMap::new(),
             edges_by_code: HashMap::new(),
@@ -97,6 +100,18 @@ impl Store {
     }
 
     pub fn save(&mut self) -> Result<(), StoreError> {
+        self.edit_and_save(|_| {})
+    }
+
+    /// Hold the exclusive lock from the in-memory edit through the rename.
+    pub fn edit_and_save<F>(&mut self, edit: F) -> Result<(), StoreError>
+    where
+        F: FnOnce(&mut Value),
+    {
+        if self.fail_stale_remaining > 0 {
+            self.fail_stale_remaining -= 1;
+            return Err(StoreError("stale generation".into()));
+        }
         {
             let _guard = self.lock.exclusive().map_err(|e| StoreError(e.to_string()))?;
             let disk = read_snapshot(&self.snapshot_path())?;
@@ -104,6 +119,7 @@ impl Store {
             if disk_gen != self.loaded_generation {
                 return Err(StoreError("stale generation".into()));
             }
+            edit(&mut self.doc);
             let gen = disk_gen + 1;
             self.doc.insert("generation", Value::Int(gen));
             write_snapshot_file(&self.temp_path(), &self.doc)?;
