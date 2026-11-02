@@ -4,8 +4,9 @@
 
 use crate::json::{self, Value};
 use crate::lock::{LockGuard, ProcessLock};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const STORE_NAME: &str = "store";
@@ -30,6 +31,14 @@ pub struct Store {
     dir: PathBuf,
     lock: ProcessLock,
     pub doc: Value,
+    loaded_generation: i64,
+    units_by_id: HashMap<String, Value>,
+    units_by_file: HashMap<String, Vec<Value>>,
+    edges_by_code: HashMap<String, Vec<Value>>,
+    churn_by_file: HashMap<String, Vec<Value>>,
+    hash_by_file: HashMap<String, String>,
+    blame_by_file: HashMap<String, Vec<Value>>,
+    co_by_file: HashMap<String, Vec<Value>>,
 }
 
 impl Store {
@@ -37,10 +46,28 @@ impl Store {
         reject_storage_dir(dir)?;
         fs::create_dir_all(dir).map_err(|e| StoreError(e.to_string()))?;
         let lock = ProcessLock::open(dir).map_err(|e| StoreError(e.to_string()))?;
+        {
+            // Only a crashed writer leaves store.tmp. A live writer holds this
+            // exclusive lock across write and rename, so deleting here cannot
+            // remove a temp file that is about to be published.
+            let _guard = lock.exclusive().map_err(|e| StoreError(e.to_string()))?;
+            let tmp = dir.join(TMP_NAME);
+            if tmp.exists() {
+                let _ = fs::remove_file(&tmp);
+            }
+        }
         let mut store = Store {
             dir: dir.to_path_buf(),
             lock,
             doc: empty_doc(),
+            loaded_generation: 0,
+            units_by_id: HashMap::new(),
+            units_by_file: HashMap::new(),
+            edges_by_code: HashMap::new(),
+            churn_by_file: HashMap::new(),
+            hash_by_file: HashMap::new(),
+            blame_by_file: HashMap::new(),
+            co_by_file: HashMap::new(),
         };
         store.reload()?;
         Ok(store)
@@ -60,18 +87,30 @@ impl Store {
     }
 
     pub fn reload(&mut self) -> Result<(), StoreError> {
-        let _guard = self.lock.shared().map_err(|e| StoreError(e.to_string()))?;
-        self.doc = read_snapshot(&self.snapshot_path())?;
+        {
+            let _guard = self.lock.shared().map_err(|e| StoreError(e.to_string()))?;
+            self.doc = read_snapshot(&self.snapshot_path())?;
+            self.loaded_generation = self.doc.get("generation").and_then(|v| v.as_i64()).unwrap_or(0);
+        }
+        self.reindex();
         Ok(())
     }
 
     pub fn save(&mut self) -> Result<(), StoreError> {
-        let gen = self.doc.get("generation").and_then(|v| v.as_i64()).unwrap_or(0);
-        self.doc.insert("generation", Value::Int(gen + 1));
-        let guard = self.lock.exclusive().map_err(|e| StoreError(e.to_string()))?;
-        write_snapshot_file(&self.temp_path(), &self.doc)?;
-        self.publish_temp()?;
-        drop(guard);
+        {
+            let _guard = self.lock.exclusive().map_err(|e| StoreError(e.to_string()))?;
+            let disk = read_snapshot(&self.snapshot_path())?;
+            let disk_gen = disk.get("generation").and_then(|v| v.as_i64()).unwrap_or(0);
+            if disk_gen != self.loaded_generation {
+                return Err(StoreError("stale generation".into()));
+            }
+            let gen = disk_gen + 1;
+            self.doc.insert("generation", Value::Int(gen));
+            write_snapshot_file(&self.temp_path(), &self.doc)?;
+            self.publish_temp()?;
+            self.loaded_generation = gen;
+        }
+        self.reindex();
         Ok(())
     }
 
@@ -113,6 +152,92 @@ impl Store {
 
     pub fn array(&self, key: &str) -> Vec<Value> {
         self.doc.get(key).and_then(|v| v.as_array()).unwrap_or(&[]).to_vec()
+    }
+
+    pub fn array_len(&self, key: &str) -> usize {
+        self.doc.get(key).and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)
+    }
+
+    pub fn units_by_file(&self, file: &str) -> Vec<Value> {
+        self.units_by_file.get(file).cloned().unwrap_or_default()
+    }
+
+    pub fn unit_by_id(&self, id: &str) -> Option<Value> {
+        self.units_by_id.get(id).cloned()
+    }
+
+    pub fn edges_for_code(&self, code_id: &str) -> Vec<Value> {
+        self.edges_by_code.get(code_id).cloned().unwrap_or_default()
+    }
+
+    pub fn churn_for_file(&self, file: &str) -> Vec<Value> {
+        self.churn_by_file.get(file).cloned().unwrap_or_default()
+    }
+
+    pub fn hash_for_file(&self, file: &str) -> String {
+        self.hash_by_file.get(file).cloned().unwrap_or_default()
+    }
+
+    pub fn blame_for_file(&self, file: &str) -> Vec<Value> {
+        self.blame_by_file.get(file).cloned().unwrap_or_default()
+    }
+
+    pub fn co_for_file(&self, file: &str) -> Vec<Value> {
+        self.co_by_file.get(file).cloned().unwrap_or_default()
+    }
+
+    fn reindex(&mut self) {
+        let units = self.doc.get("code_units").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+        let edges = self.doc.get("test_edges").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+        let churn = self.doc.get("churn").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+        let hashes = self.doc.get("file_hashes").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+        let blame = self.doc.get("blame").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+        let co = self.doc.get("co_changes").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+        self.units_by_id.clear();
+        self.units_by_file.clear();
+        self.edges_by_code.clear();
+        self.churn_by_file.clear();
+        self.hash_by_file.clear();
+        self.blame_by_file.clear();
+        self.co_by_file.clear();
+        for row in units {
+            if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
+                self.units_by_id.insert(id.to_string(), row.clone());
+            }
+            if let Some(file) = row.get("file_path").and_then(|v| v.as_str()) {
+                self.units_by_file.entry(file.to_string()).or_default().push(row);
+            }
+        }
+        for row in edges {
+            if let Some(id) = row.get("code_id").and_then(|v| v.as_str()) {
+                self.edges_by_code.entry(id.to_string()).or_default().push(row);
+            }
+        }
+        for row in churn {
+            if let Some(file) = row.get("file_path").and_then(|v| v.as_str()) {
+                self.churn_by_file.entry(file.to_string()).or_default().push(row);
+            }
+        }
+        for row in hashes {
+            if let (Some(file), Some(hash)) = (row.get("file_path").and_then(|v| v.as_str()), row.get("hash").and_then(|v| v.as_str())) {
+                self.hash_by_file.insert(file.to_string(), hash.to_string());
+            }
+        }
+        for row in blame {
+            if let Some(file) = row.get("file_path").and_then(|v| v.as_str()) {
+                self.blame_by_file.entry(file.to_string()).or_default().push(row);
+            }
+        }
+        for row in co {
+            let a = row.get("file_a").and_then(|v| v.as_str()).unwrap_or("");
+            let b = row.get("file_b").and_then(|v| v.as_str()).unwrap_or("");
+            if !a.is_empty() {
+                self.co_by_file.entry(a.to_string()).or_default().push(row.clone());
+            }
+            if !b.is_empty() && b != a {
+                self.co_by_file.entry(b.to_string()).or_default().push(row);
+            }
+        }
     }
 }
 

@@ -132,6 +132,9 @@ impl Value {
 }
 
 pub fn parse(input: &str) -> Result<Value, Error> {
+    if input.len() > 32 * 1024 * 1024 {
+        return Err(Error { message: "json exceeds 32MiB".into() });
+    }
     let mut p = Parser {
         bytes: input.as_bytes(),
         i: 0,

@@ -30,19 +30,17 @@ Chisel gives AI coding assistants the intelligence to understand the blast radiu
 
 ## Install
 
-Available on [PyPI](https://pypi.org/project/chisel-test-impact/):
-
-```bash
-pip install chisel-test-impact
-```
-
-Or from source:
+The tool you run is the Rust binary. Build it from this repo. The `chisel/` Python package is the oracle used to check results. It is not the server to install.
 
 ```bash
 git clone https://github.com/IronAdamant/Chisel.git
 cd Chisel
-pip install -e .
+cargo build --release
 ```
+
+The binary is `target/release/chisel`. `target/release/chisel-mcp` is the same program and starts the stdio MCP server. Put either on `PATH`.
+
+Storage is a snapshot file at `.chisel/store`. Chisel does not open `chisel.db`. Pass `--json` and branch on the `status` field. `no_data` means run `analyze`. `stale_db` means run `update` or pass `auto_update`.
 
 ## Use with Claude Code (MCP)
 
@@ -54,16 +52,19 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.j
     "chisel": {
       "command": "chisel-mcp",
       "env": {
-        "CHISEL_PROJECT_DIR": "/path/to/your/project"
+        "CHISEL_PROJECT_DIR": "/path/to/your/project",
+        "CHISEL_STORAGE_DIR": "/path/to/your/project/.chisel"
       }
     }
   }
 }
 ```
 
+`chisel-mcp` speaks stdio MCP (Content-Length JSON-RPC). `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` are honored when the CLI flags are absent.
+
 Run `analyze` first to build the project graph, then `diff_impact` after edits to see which tests to run. For large repos, `analyze` with `force=True` automatically falls back to a background job so you don't hit MCP timeouts. Working-tree analysis (`--working-tree`) reuses a cached static import index and falls back to fast stem-matching for untracked files to stay within timeout budgets.
 
-**Monorepo sharding:** Split large codebases across multiple SQLite databases with the `CHISEL_SHARDS` environment variable or `.chisel/shards.toml`. Query tools automatically aggregate across shards; writes route to the correct shard by file path.
+**Monorepo sharding:** `CHISEL_SHARDS` or `.chisel/shards.toml` gives each shard its own snapshot under `.chisel/shards/<shard>/`. Unscoped reads aggregate. Writes use the longest path prefix. Cross-shard test edges are unsupported. An unknown shard returns `status: "error"`.
 
 After running tests, call `record_result` so Chisel can track failure rates and test instability over time. Or use `chisel run -- pytest tests/` to run tests and record results automatically.
 
@@ -71,18 +72,13 @@ There is also an installable Claude Code **skill** with the distilled agent prot
 
 ## Use with Cursor, Windsurf, Cline, or other MCP clients
 
-Chisel exposes a standard MCP interface. For stdio-based clients:
+Stdio MCP for local clients:
 
 ```bash
-pip install chisel-test-impact[mcp]
 chisel-mcp
 ```
 
-For HTTP-based clients:
-
-```bash
-chisel serve --port 8377
-```
+HTTP is a separate JSON API, not an MCP URL. `chisel serve --port 8377` answers `GET /health`, `GET /tools`, and `POST /call`. There is no `/mcp` path.
 
 ## Quickstart (CLI)
 
@@ -119,9 +115,8 @@ chisel update
 ```bash
 git clone https://github.com/IronAdamant/Chisel.git
 cd Chisel
-pip install -e .
-
-chisel analyze .
+cargo build --release
+./target/release/chisel analyze .
 chisel risk-map
 chisel diff-impact
 chisel test-gaps
@@ -153,20 +148,20 @@ chisel test-gaps
 | `start_job` | Run analyze/update in background (avoids MCP timeouts). Optional `shard` param |
 | `job_status` | Poll a background job until complete |
 | `cancel_job` | Request cooperative cancellation of a running background job |
-| `optimize_storage` | Compact and vacuum the SQLite database |
+| `optimize_storage` | Rewrite the snapshot file at `.chisel/store` |
 
 ## Features
 
-- **Zero dependencies** — stdlib only, Python 3.11+, works anywhere
+- **Zero dependencies** — the Rust binary links only the standard library. No crates.io crates. System `git` is required at runtime.
 - **Multi-language** — Python, JavaScript/TypeScript, Go, Rust, C#, Java, Kotlin, C/C++, Swift, PHP, Ruby, Dart
 - **Framework-aware** — pytest, Jest, Go test, Rust #[test], Playwright, xUnit/NUnit/MSTest, JUnit (incl. parameterized), XCTest + Swift Testing, PHPUnit, RSpec, Minitest, gtest, Dart test
 - **Incremental** — only re-processes changed files, not the whole repo; a no-change `update` is near-instant
 - **gitignore-aware** — ignored trees (vendored deps, build output, fixtures) are never scanned; untracked files still are (`CHISEL_INCLUDE_IGNORED=1` to override)
 - **Branch-aware** — `diff_impact` auto-detects feature branch vs main
 - **Multi-agent safe** — cross-process locks so parallel agents don't corrupt the graph
-- **MCP + CLI** — stdio and HTTP MCP servers, plus a full CLI with 28 subcommands
+- **MCP + CLI** — stdio MCP (`chisel serve-mcp` or `chisel-mcp`) and a JSON HTTP API (`GET /health`, `GET /tools`, `POST /call`), plus a CLI with 28 subcommands
 - **CI-friendly** — real exit codes (`chisel analyze && pytest` just works); copy-paste GitHub Actions example in `examples/github-actions/`
-- **Monorepo sharding** — split analysis across per-directory SQLite databases (`CHISEL_SHARDS`)
+- **Monorepo sharding** — one snapshot per shard under `.chisel/shards/<shard>/` (`CHISEL_SHARDS` or `.chisel/shards.toml`). Cross-shard test edges are unsupported.
 - **Custom extractors** — plug in tree-sitter or LSP via `register_extractor()` if you need it
 
 ## Ecosystem

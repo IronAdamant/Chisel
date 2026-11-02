@@ -18,12 +18,22 @@ pub struct Args {
     pub ttl: i64,
     pub purpose: Option<String>,
     pub test_command: Vec<String>,
+    pub force: bool,
+    pub working_tree: bool,
+    pub auto_update: bool,
+    pub limit: Option<i64>,
+    pub shard: Option<String>,
+    pub directory: Option<String>,
+    pub git_ref: Option<String>,
+    pub kind: Option<String>,
+    /// Set only by `--passed` or `--failed`. Absent means the caller did not choose.
+    pub passed: Option<bool>,
 }
 
 pub fn parse(argv: &[String]) -> Result<Args, String> {
     let mut command = String::new();
-    let mut project_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut storage_dir = None;
+    let mut project_dir = env::var("CHISEL_PROJECT_DIR").map(PathBuf::from).unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let mut storage_dir = env::var("CHISEL_STORAGE_DIR").ok().map(PathBuf::from);
     let mut json = false;
     let mut positionals = Vec::new();
     let mut host = "127.0.0.1".to_string();
@@ -31,6 +41,15 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     let mut ttl = 300i64;
     let mut purpose = None;
     let mut test_command = Vec::new();
+    let mut force = false;
+    let mut working_tree = false;
+    let mut auto_update = false;
+    let mut limit = None;
+    let mut shard = None;
+    let mut directory = None;
+    let mut git_ref = None;
+    let mut kind = None;
+    let mut passed: Option<bool> = None;
     let mut i = 0;
     let mut after_dd = false;
     while i < argv.len() {
@@ -69,13 +88,42 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
         } else if a == "--purpose" {
             i += 1;
             purpose = Some(argv.get(i).ok_or("missing --purpose")?.clone());
-        } else if a == "--force" || a == "--working-tree" || a == "--auto-update" || a == "--fallback" || a == "--no-exclude-tests" || a == "--no-proximity" {
-            // accepted so agent command lines do not fail
-        } else if a.starts_with("--") {
-            // ignore unknown flags that take no value, except ones we know take a value
-            if matches!(a.as_str(), "--limit" | "--ref" | "--directory" | "--unit" | "--min-count" | "--shard" | "--coverage-mode" | "--agent-id" | "--ttl" | "--top-n") {
-                i += 1;
+        } else if a == "--force" {
+            force = true;
+        } else if a == "--working-tree" {
+            working_tree = true;
+        } else if a == "--auto-update" {
+            auto_update = true;
+        } else if a == "--limit" {
+            i += 1;
+            limit = Some(argv.get(i).ok_or("missing --limit")?.parse().map_err(|_| "bad limit")?);
+        } else if a == "--shard" {
+            i += 1;
+            shard = Some(argv.get(i).ok_or("missing --shard")?.clone());
+        } else if a == "--directory" {
+            i += 1;
+            directory = Some(argv.get(i).ok_or("missing --directory")?.clone());
+        } else if a == "--ref" {
+            i += 1;
+            git_ref = Some(argv.get(i).ok_or("missing --ref")?.clone());
+        } else if a == "--kind" {
+            i += 1;
+            kind = Some(argv.get(i).ok_or("missing --kind")?.clone());
+        } else if a == "--job-id" {
+            i += 1;
+            positionals.push(argv.get(i).ok_or("missing --job-id")?.clone());
+        } else if a == "--passed" {
+            if passed == Some(false) {
+                return Err("status=error pass only one of --passed or --failed".into());
             }
+            passed = Some(true);
+        } else if a == "--failed" {
+            if passed == Some(true) {
+                return Err("status=error pass only one of --passed or --failed".into());
+            }
+            passed = Some(false);
+        } else if a.starts_with("--") {
+            return Err(format!("status=error unknown or unimplemented flag {a}"));
         } else if command.is_empty() {
             command = a.clone();
         } else {
@@ -86,7 +134,10 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     if command.is_empty() {
         return Err("missing command".into());
     }
-    Ok(Args { command, project_dir, storage_dir, json, positionals, host, port, ttl, purpose, test_command })
+    Ok(Args {
+        command, project_dir, storage_dir, json, positionals, host, port, ttl, purpose, test_command,
+        force, working_tree, auto_update, limit, shard, directory, git_ref, kind, passed,
+    })
 }
 
 fn tool_name(command: &str) -> String {
@@ -147,8 +198,16 @@ fn call_args(args: &Args) -> Value {
             }
             "record-result" => {
                 pairs.push(("test_id".into(), Value::String(first.clone())));
-                let passed = args.positionals.get(1).map(|s| s != "false" && s != "0").unwrap_or(true);
-                pairs.push(("passed".into(), Value::Bool(passed)));
+                let outcome = args.passed.or_else(|| {
+                    args.positionals.get(1).and_then(|flag| match flag.as_str() {
+                        "true" | "1" | "passed" | "PASSED" => Some(true),
+                        "false" | "0" | "failed" | "FAILED" => Some(false),
+                        _ => None,
+                    })
+                });
+                if let Some(passed) = outcome {
+                    pairs.push(("passed".into(), Value::Bool(passed)));
+                }
             }
             "analyze" | "risk-map" | "test-gaps" => {
                 pairs.push(("directory".into(), Value::String(first.clone())));
@@ -174,7 +233,52 @@ fn call_args(args: &Args) -> Value {
     if let Some(purpose) = &args.purpose {
         pairs.push(("purpose".into(), Value::String(purpose.clone())));
     }
+    if args.force {
+        pairs.push(("force".into(), Value::Bool(true)));
+    }
+    if args.working_tree {
+        pairs.push(("working_tree".into(), Value::Bool(true)));
+    }
+    if args.auto_update {
+        pairs.push(("auto_update".into(), Value::Bool(true)));
+    }
+    if let Some(limit) = args.limit {
+        pairs.push(("limit".into(), Value::Int(limit)));
+    }
+    if let Some(shard) = &args.shard {
+        pairs.push(("shard".into(), Value::String(shard.clone())));
+    }
+    if let Some(directory) = &args.directory {
+        pairs.push(("directory".into(), Value::String(directory.clone())));
+    }
+    if let Some(git_ref) = &args.git_ref {
+        pairs.push(("ref".into(), Value::String(git_ref.clone())));
+    }
+    if let Some(kind) = &args.kind {
+        pairs.push(("kind".into(), Value::String(kind.clone())));
+    }
+    if matches!(args.command.as_str(), "job-status" | "cancel-job") {
+        if let Some(id) = args.positionals.first() {
+            pairs.push(("job_id".into(), Value::String(id.clone())));
+        }
+    }
     Value::object(pairs)
+}
+
+pub fn parse_jest_json(text: &str) -> Vec<(String, bool)> {
+    let Ok(doc) = json::parse(text) else { return Vec::new() };
+    let Some(suites) = doc.get("testResults").and_then(|v| v.as_array()) else { return Vec::new() };
+    let mut out = Vec::new();
+    for suite in suites {
+        let name = suite.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(assertions) = suite.get("assertionResults").and_then(|v| v.as_array()) else { continue };
+        for assertion in assertions {
+            let title = assertion.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let passed = assertion.get("status").and_then(|v| v.as_str()) == Some("passed");
+            out.push((format!("{name}:{title}"), passed));
+        }
+    }
+    out
 }
 
 fn emit(json_output: bool, command: &str, result: &Value) -> Result<(), String> {
@@ -253,7 +357,13 @@ fn run_tests(args: &Args) -> Result<i32, String> {
     }
     let mut cmd_args = args.test_command.clone();
     let program = cmd_args.remove(0);
-    let framework = if program == "pytest" || program.ends_with("/pytest") { "pytest" } else { "" };
+    let framework = if program == "pytest" || program.ends_with("/pytest") {
+        "pytest"
+    } else if program == "jest" || program.ends_with("/jest") {
+        "jest"
+    } else {
+        ""
+    };
     if framework == "pytest" && !cmd_args.iter().any(|a| a == "-v" || a == "--verbose") {
         cmd_args.push("-v".into());
     }
@@ -280,17 +390,17 @@ fn run_tests(args: &Args) -> Result<i32, String> {
     let _ = io::stderr().write_all(&err_buf);
     let status = child.wait().map_err(|e| e.to_string())?;
     let code = status.code().unwrap_or(1);
-    if framework == "pytest" {
+    if framework == "pytest" || framework == "jest" {
         let text = String::from_utf8_lossy(&out_buf);
+        let rows = if framework == "jest" {
+            parse_jest_json(&text)
+        } else {
+            text.lines().filter_map(parse_pytest_line).collect()
+        };
         let mut engine = Engine::open(&args.project_dir, args.storage_dir.as_deref())?;
-        let mut recorded = 0;
-        for line in text.lines() {
-            if let Some((id, passed)) = parse_pytest_line(line) {
-                engine.record_result(&id, passed)?;
-                recorded += 1;
-            }
-        }
+        let recorded = rows.len();
         if recorded > 0 {
+            engine.record_results_batch(&rows)?;
             println!("\n[chisel] Recorded {recorded} test result(s)");
         } else {
             println!("\n[chisel] No test results parsed from output");

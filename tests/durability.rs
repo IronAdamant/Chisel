@@ -87,3 +87,18 @@ fn shared_reader_never_sees_a_torn_snapshot() {
     assert!(!text.contains("TORN"), "{text}");
     assert!(text.contains("OK"), "reader produced no consistent samples: {text:?}");
 }
+
+#[test]
+fn two_writers_do_not_silently_overwrite() {
+    let dir = scratch();
+    let mut first = chisel::store::Store::open(&dir).unwrap();
+    let mut second = chisel::store::Store::open(&dir).unwrap();
+    first.doc.insert("token", chisel::json::Value::String("winner".into()));
+    first.save().unwrap();
+    second.doc.insert("token", chisel::json::Value::String("loser".into()));
+    let err = second.save().unwrap_err();
+    assert!(err.to_string().contains("stale"), "{err}");
+    let loaded = chisel::store::Store::open(&dir).unwrap();
+    assert_eq!(loaded.doc.get("token").and_then(|v| v.as_str()), Some("winner"));
+    assert!(!dir.join("store.tmp").exists());
+}

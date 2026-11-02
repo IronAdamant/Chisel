@@ -1,5 +1,7 @@
 # Chisel — CLAUDE.md
 
+The Rust tree is `src/`. This file describes the Python oracle under `chisel/`. For the binary an agent should run, read `AGENTS.md`.
+
 Test impact analysis and code intelligence for LLM agents. Zero external dependencies.
 
 ## Audience (how to read this project)

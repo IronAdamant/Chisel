@@ -1,46 +1,59 @@
 ---
 name: chisel
-description: Run Chisel test-impact analysis on any git project — which tests to run after a change, what's risky, what's untested. Use when the user asks to run chisel, find impacted tests, check risk or coverage gaps, or after a batch of code edits in a project with a .chisel/ DB (or to bootstrap one with `chisel analyze`).
+description: Run Chisel test-impact analysis on any git project — which tests to run after a change, what's risky, what's untested. Use when the user asks to run chisel, find impacted tests, check risk or coverage gaps, or after a batch of code edits.
 ---
 
 # Chisel — Test Impact Analysis for Agents
 
-Chisel (source: `~/Documents/coding_projects/Chisel`, CLI: `chisel`, MCP server: `chisel`, PyPI: `chisel-test-impact`) maps tests to code and code to git history, answering: **what to run, what's risky, who touched it.** Zero dependencies, per-project `.chisel/` SQLite DB.
+The binary is `chisel`, built from `src/` with `cargo build --release`. `chisel-mcp` is the same binary and starts stdio MCP. The Python tree `chisel/` is the oracle, not the server to install. Do not pip-install a package to get this binary.
 
-## Core loop (day-to-day)
+Storage is the snapshot `.chisel/store`. Chisel does not open `chisel.db`.
+
+## Core loop
 
 ```bash
-chisel analyze .                  # first time, or after big structural changes
-# ... edit code ...
-chisel diff-impact                # which tests are impacted by my changes?
-chisel run -- pytest tests/      # run tests AND auto-record pass/fail results
-chisel triage                     # top risks + coverage gaps + stale tests in one call
-chisel update                     # incremental refresh (near-instant when nothing changed)
+chisel --json analyze .
+chisel --json diff-impact
+chisel --json suggest-tests src/calc.py
+chisel --json triage
+chisel --json update
+chisel run -- pytest tests/
 ```
 
-Prefer the MCP tools when the `chisel` server is connected (26 tools): `diff_impact`, `suggest_tests`, `triage`, `risk_map`, `test_gaps`, `record_result`, `stats`; `start_job`/`job_status`/`cancel_job` for long analyses. Pass `auto_update=true` on query tools to refresh a stale DB inline. The CLI is equivalent and scripting-safe.
+Prefer MCP when `chisel-mcp` is connected (26 tools). HTTP `chisel serve` is `GET /health`, `GET /tools`, and `POST /call` only. It is not an MCP URL and it has no `/mcp` path.
 
-## Key facts (v0.13–0.15+)
+Always pass `--json` on the CLI and branch on `status` before treating a payload as a list. `no_data`, `stale_db`, and `no_changes` exit 0. `error` and `git_error` exit 1.
 
-- **gitignore-aware**: ignored trees (vendored deps, build output, fixture dirs) are never scanned or traversed; untracked-but-not-ignored files ARE visible, so working-tree analysis still works. `CHISEL_INCLUDE_IGNORED=1` overrides; non-git projects are unfiltered.
-- **Real CLI exit codes** since v0.13: `chisel analyze && pytest` scripting works (`status: error|git_error` → 1).
-- **No-op `update` is near-instant** (`edge_rebuild_skipped: true`); a one-file update rebuilds in seconds, not minutes.
-- **Uncommitted files**: pass `working_tree=true` (CLI: `--working-tree`) to `risk_map` / `test_gaps` / `suggest_tests` / `diff_impact` / `triage`.
-- **CLI defaults match engine** for `risk-map`: line-weighted coverage + proximity on; `--auto-update` on the same tools that support MCP `auto_update`.
-- **Monorepos**: `CHISEL_SHARDS=pkg1,pkg2` (or `.chisel/shards.toml`); `shard` param on `analyze`/`update`/`start_job` (MCP and CLI `--shard`). Query tools aggregate across shards; cross-shard *test edges* are not yet routed.
-- **`source` trust order** on suggestions: `hybrid > direct > import_graph > co_change > static_require > working_tree > fallback`.
-- **Solo-author repos**: co-change coupling is naturally sparse — rely on `import_partners` / `import_coupling`.
-- **Risk scores**: read `_meta.uniform_components` (and `reweighted`) before trusting the composite; `exclude_new_file_boost=true` for stable long-term rankings.
-- **`stale_tests`**: DB edges only (no working-tree mode).
+## Status values
 
-## When tools return empty
+| Status | What to do |
+|---|---|
+| `no_data` | `analyze` |
+| `stale_db` | `update`, or call again with `auto_update` true |
+| `no_changes` | Nothing in the diff to impact |
+| `no_edges` | No test edges yet. Check that test filenames match the discovery patterns |
+| `git_error` | Git failed. Read `error`, `cwd`, and `project_dir` |
+| `error` | Missing required argument or unknown shard. Read `message` |
+| `auto_queued` | `force` analyze on more than 300 code files. Poll `job_status` with the returned `job_id` |
+| `unsupported` | That call is not available. Read `message` |
 
-| Symptom | Action |
-|---------|--------|
-| `no_data` | Run `analyze` on the repo root. |
-| `stale_db` | `auto_update=true`, or run `analyze`/`update`. |
-| New/untracked file invisible | `working_tree=true`. |
-| `suggest_tests` empty | `fallback_to_all=true` or `working_tree=true`. |
-| MCP timeout on analyze | `start_job` + poll `job_status`, or run `chisel analyze` in a terminal. |
+`auto_update` runs inline only when at most 50 files changed and no job is running. Otherwise the tool still returns and sets `auto_update_skip_reason` to `too_many_changed_files` or `background_job_running`.
 
-Full protocol: `docs/AGENT_PLAYBOOK.md` and `docs/LLM_CONTRACT.md` in the Chisel repo.
+## Flags that change results
+
+- `working_tree` true re-reads the worktree. Leave it false to use the snapshot.
+- `suggest_tests` requires `file_path`. `impact` requires `files`. A missing required argument is `status: "error"`, not an empty list.
+- `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` apply when the CLI flags are absent.
+- `CHISEL_INCLUDE_IGNORED=1` scans ignored files. Non-git projects are unfiltered.
+- Shards: `CHISEL_SHARDS` or `.chisel/shards.toml`. One snapshot per shard. Unscoped reads aggregate. Unknown shard is `status: "error"`. Cross-shard test edges are unsupported.
+- Above 2000 code files, file-level churn still runs and per-function `git log -L` does not (`unit_churn_skipped`).
+- A no-op `update` sets `edge_rebuild_skipped` true and does not run `git blame` or `git log -L`.
+- `chisel run` records pytest and Jest and forwards the test process exit code. One snapshot flush for the whole run.
+- `stats` returns counts. It does not embed every historical result.
+- List tools apply a default limit and set `truncated` when the cap cuts the list.
+- Suggestion `source` is one of `direct`, `co_change`, `import_graph`, `static_require`, `hybrid`, `fallback`, `working_tree`.
+- Locks are advisory rows in the snapshot.
+
+## When a repo is large
+
+`start_job` with `kind` `analyze` or `update` returns `queued` and a real `job_id` before the work finishes. Poll `job_status`. `cancel_job` is observed between files. Do not wait on a synchronous `analyze` of a monorepo inside an MCP timeout.

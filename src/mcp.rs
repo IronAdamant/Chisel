@@ -3,6 +3,7 @@
 
 use crate::engine::Engine;
 use crate::json::{self, Value};
+use crate::next_steps::compute_next_steps;
 use crate::schemas::{tool_list_json, TOOL_NAMES};
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -33,6 +34,9 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
                     ("name".into(), Value::String("chisel".into())),
                     ("version".into(), Value::String(env!("CARGO_PKG_VERSION").into())),
                 ])),
+                ("instructions".into(), Value::String(
+                    "Storage is .chisel/store. Branch on status. Call analyze when status is no_data. Call diff_impact after edits. This process is stdio MCP (chisel serve-mcp).".into()
+                )),
             ]),
             "tools/list" => tool_list_json(),
             "tools/call" => {
@@ -45,9 +49,12 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
                 }
                 match engine.dispatch(name, args) {
                     Ok(result) => {
-                        let text = json::to_string_pretty(&Value::object(vec![
-                            ("result".into(), result),
-                        ])).unwrap_or_else(|_| "{\"result\":null}".into());
+                        let steps = compute_next_steps(name, &result);
+                        let mut payload = vec![("result".into(), result)];
+                        if !steps.is_empty() {
+                            payload.push(("next_steps".into(), Value::Array(steps)));
+                        }
+                        let text = json::to_string_pretty(&Value::object(payload)).unwrap_or_else(|_| "{\"result\":null}".into());
                         Value::object(vec![
                             ("content".into(), Value::Array(vec![Value::object(vec![
                                 ("type".into(), Value::String("text".into())),

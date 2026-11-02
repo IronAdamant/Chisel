@@ -194,8 +194,12 @@ fn run_records_pytest_and_forwards_exit_code() {
         .unwrap();
     assert_eq!(out.status.code(), Some(1), "stderr {}", String::from_utf8_lossy(&out.stderr));
     let stats = run(bin(), &dir, &store, &["stats"]);
-    assert!(stats.contains("test_ok") || stats.contains("PASSED") || stats.contains("\"passed\": true") || stats.contains("true"), "{stats}");
-    assert!(stats.contains("false"), "{stats}");
+    assert!(stats.contains("\"passed\": 1"), "{stats}");
+    assert!(stats.contains("\"failed\": 1"), "{stats}");
+    assert!(!stats.contains("recorded_results"), "{stats}");
+    let snap = fs::read_to_string(store.join("store")).unwrap();
+    assert!(snap.contains("test_ok"), "{snap}");
+    assert!(snap.contains("test_bad"), "{snap}");
 }
 
 #[test]

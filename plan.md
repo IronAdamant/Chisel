@@ -1,6 +1,6 @@
 # Chisel Rust rewrite
 
-Status: plan only. Do not start implementation until there is an explicit go-ahead.
+Status: specification. Execution is `plan/rust_finish.md`. The port is not finished until that file's scale bar and the cutover check below are both true.
 
 This document is the long-term rewrite of Chisel into Rust. The reason for the rewrite is faster checks and faster tool calls for agents. Calendar time for the port is unlimited. Build pace stays slow.
 

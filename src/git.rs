@@ -1,7 +1,19 @@
 //! Git porcelain via the system git binary. Lossy UTF-8. No libgit2.
 
 use std::process::{Command, Output};
+use std::sync::Arc;
 use std::time::Duration;
+
+/// `repo_dir` plus the argument list. Tests wrap this to count spawns and still call git.
+pub type GitRunner = Arc<dyn Fn(&str, &[&str]) -> Result<Output, std::io::Error> + Send + Sync>;
+
+pub fn real_git_runner() -> GitRunner {
+    Arc::new(|repo, args| {
+        let mut cmd = Command::new("git");
+        cmd.args(args).current_dir(repo);
+        cmd.output()
+    })
+}
 
 #[derive(Clone, Debug)]
 pub struct GitFile {
@@ -40,22 +52,41 @@ impl std::fmt::Display for GitError {
 
 pub struct GitAnalyzer {
     pub repo_dir: String,
+    runner: GitRunner,
 }
 
 impl GitAnalyzer {
     pub fn new(repo_dir: impl Into<String>) -> Self {
-        Self { repo_dir: repo_dir.into() }
+        Self { repo_dir: repo_dir.into(), runner: real_git_runner() }
+    }
+
+    pub fn set_runner(&mut self, runner: GitRunner) {
+        self.runner = runner;
+    }
+
+    pub fn fork(&self) -> GitAnalyzer {
+        GitAnalyzer { repo_dir: self.repo_dir.clone(), runner: Arc::clone(&self.runner) }
     }
 
     fn run(&self, args: &[&str]) -> Result<String, GitError> {
-        let mut cmd = Command::new("git");
-        cmd.args(args).current_dir(&self.repo_dir);
-        let output = cmd.output().map_err(|e| GitError(format!("git {} failed: {e}", args.join(" "))))?;
+        let output = (self.runner)(&self.repo_dir, args).map_err(|e| GitError(format!("git {} failed: {e}", args.join(" "))))?;
         finish(args, output)
     }
 
     pub fn parse_log(&self) -> Result<Vec<Commit>, GitError> {
-        let raw = self.run(&["log", "--format=COMMIT_START%n%H|%an|%ae|%aI|%s", "--numstat"])?;
+        self.parse_log_since(None)
+    }
+
+    pub fn parse_log_since(&self, since: Option<&str>) -> Result<Vec<Commit>, GitError> {
+        let since_arg;
+        let mut args = vec!["log", "--format=COMMIT_START%n%H|%an|%ae|%aI|%s", "--numstat"];
+        if let Some(since) = since {
+            if !since.is_empty() {
+                since_arg = format!("--since={since}");
+                args.push(&since_arg);
+            }
+        }
+        let raw = self.run(&args)?;
         Ok(parse_log_output(&raw))
     }
 

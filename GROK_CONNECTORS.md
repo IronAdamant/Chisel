@@ -1,36 +1,32 @@
 # Grok Connectors / BYO MCP Support
 
-This project is ready for Grok Connectors (Bring Your Own MCP) and Grok Build.
+Chisel's MCP server is the Rust binary over stdio. It is not an HTTP URL and it is not the Python package.
 
-The MCP server provides test impact analysis, risk mapping, churn analysis, and code intelligence for LLM agents. It works with any MCP-compatible client, including future Grok Build local agents and remote MCP connections in Grok.
+## Local MCP
 
-## For Grok Connectors (BYO MCP)
+```bash
+cargo build --release
+```
 
-When Grok supports adding custom MCP servers:
+Point the client at the binary:
 
-1. Start the server locally (example for this project):
-   ```bash
-   python -m chisel.mcp_server --port 8377
-   ```
-   Or use stdio mode for local agents if available.
+- **command**: `chisel-mcp` (or `chisel serve-mcp`)
+- **env**: `CHISEL_PROJECT_DIR` set to the project root, and optionally `CHISEL_STORAGE_DIR` set to `<project>/.chisel`
 
-2. For remote access from Grok, expose the HTTP endpoint over HTTPS using a secure tunnel.
+`chisel-mcp` speaks Content-Length JSON-RPC on stdin and stdout. The first tool call on an empty snapshot returns `status: "no_data"`. Call `analyze`, then `diff_impact` after edits.
 
-3. Add to Grok Connectors / remote MCP config:
-   - **server_url**: `https://your-https-tunnel/mcp`
-   - **server_label**: `chisel`
-   - **server_description**: "Test impact analysis, risk assessment, churn patterns, and code ownership intelligence for safe LLM-driven code changes. Cross-language support."
+## HTTP
 
-The server implements MCP tools for impact queries, risk scoring, and ownership mapping. Grok will discover the tools automatically.
+`chisel serve --port 8377` is a one-shot JSON API:
 
-## For Grok Build (Local)
+- `GET /health`
+- `GET /tools`
+- `POST /call` with `{"tool","arguments"}`
 
-Once Grok Build is available:
-- Use Chisel alongside Grok Build agents to automatically assess the blast radius of proposed changes, prioritize low-risk paths, and surface high-impact diffs for review (or auto-approve safe ones).
-- Prevents risky autonomous changes by providing precise test and ownership data.
+That port is not MCP. Do not configure a connector `server_url` of `https://…/mcp` against it.
 
-No changes to your existing workflows are required. This project was built to be backend-agnostic and work with any LLM/IDE/CLI via MCP.
+## What the agent should branch on
 
-See README.md for full setup.
+`no_data`, `no_changes`, `no_edges`, `git_error`, `stale_db`, `error`, `unsupported`, `auto_queued`. Pass `--json` on the CLI. Exit code alone is not enough: `no_data` and `stale_db` exit 0.
 
-For questions or to contribute Grok-specific adapters, open an issue.
+Storage is the snapshot `.chisel/store`. Advisory file locks are records in that snapshot. They do not lock source files on disk.

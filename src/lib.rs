@@ -10,6 +10,7 @@ pub mod impact;
 pub mod json;
 pub mod lock;
 pub mod mcp;
+pub mod next_steps;
 pub mod schemas;
 pub mod store;
 

@@ -635,8 +635,66 @@ fn name_calls(content: &str) -> Vec<Dep> {
     dedupe(deps)
 }
 
+fn quoted_token(s: &str) -> Option<String> {
+    let t = s.trim_start();
+    let q = t.chars().next()?;
+    if q != '\'' && q != '"' && q != '`' {
+        return None;
+    }
+    let rest = &t[q.len_utf8()..];
+    let end = rest.find(q)?;
+    Some(rest[..end].to_string())
+}
+
+fn import_names(clause: &str) -> Vec<String> {
+    let clause = clause.trim().trim_end_matches(';');
+    let mut names = Vec::new();
+    if let Some(start) = clause.find('{') {
+        if let Some(end) = clause[start..].find('}') {
+            for part in clause[start + 1..start + end].split(',') {
+                let part = part.trim();
+                if part.is_empty() { continue; }
+                let name = part.split_whitespace().next().unwrap_or(part);
+                let name = name.split(" as ").next().unwrap_or(name).trim();
+                if !name.is_empty() && name != "*" {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    let head = clause.split('{').next().unwrap_or("").trim().trim_end_matches(',');
+    if !head.is_empty() && head != "*" && !head.starts_with("type ") {
+        if let Some(name) = head.split_whitespace().next() {
+            if name != "type" && name != "{" {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names
+}
+
 fn js_deps(content: &str) -> Vec<Dep> {
     let mut deps = name_calls(content);
+    for line in content.lines() {
+        let t = line.trim().trim_start_matches("export ");
+        let Some(rest) = t.strip_prefix("import ") else { continue };
+        let Some((clause, after)) = rest.split_once(" from ") else { continue };
+        let Some(path) = quoted_token(after) else { continue };
+        let names = import_names(clause);
+        let names = if names.is_empty() {
+            vec![path.rsplit(['/', '.']).find(|s| !s.is_empty() && *s != "ts" && *s != "js" && *s != "tsx" && *s != "jsx").unwrap_or(&path).to_string()]
+        } else {
+            names
+        };
+        for name in names {
+            deps.push(Dep {
+                name,
+                dep_type: "import".into(),
+                module_path: Some(path.clone()),
+                confidence: 1.0,
+            });
+        }
+    }
     // require('path') and from 'path'
     let mut i = 0;
     let b = content.as_bytes();
@@ -718,6 +776,33 @@ fn dedupe(deps: Vec<Dep>) -> Vec<Dep> {
         out.push(d);
     }
     out
+}
+
+pub fn matches_relative_import(from_file: &str, code_file: &str, module_path: &str) -> bool {
+    if !module_path.starts_with('.') {
+        return false;
+    }
+    let from = from_file.replace('\\', "/");
+    let from_dir = from.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+    let mut parts: Vec<&str> = from_dir.split('/').filter(|s| !s.is_empty()).collect();
+    for seg in module_path.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            parts.pop();
+            continue;
+        }
+        let seg = seg.split('.').next().unwrap_or(seg);
+        parts.push(seg);
+    }
+    let joined = parts.join("/");
+    let code = code_file.replace('\\', "/");
+    let code_stem = code.rsplit('.').next().map(|ext| {
+        let known = matches!(ext, "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py");
+        if known { code.trim_end_matches(&format!(".{ext}")).to_string() } else { code.clone() }
+    }).unwrap_or(code);
+    code_stem == joined
 }
 
 pub fn matches_import_path(code_file: &str, module_path: &str) -> bool {

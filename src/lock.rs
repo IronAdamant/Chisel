@@ -61,7 +61,10 @@ fn lock_fd(file: &File, kind: LockKind) -> io::Result<()> {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = (file, kind);
-        Ok(())
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "file locking is not implemented on this platform",
+        ))
     }
 }
 
@@ -79,11 +82,16 @@ fn unix_flock(file: &File, kind: LockKind) -> io::Result<()> {
         LockKind::Exclusive => LOCK_EX,
         LockKind::Unlock => LOCK_UN,
     };
-    let rc = unsafe { flock(file.as_raw_fd(), op) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
+    loop {
+        let rc = unsafe { flock(file.as_raw_fd(), op) };
+        if rc == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() == Some(4) {
+            continue;
+        }
+        return Err(err);
     }
 }
 
