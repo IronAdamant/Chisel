@@ -4,7 +4,7 @@
 use crate::engine::Engine;
 use crate::json::{self, Value};
 use crate::next_steps::compute_next_steps;
-use crate::schemas::{tool_list_json, TOOL_NAMES};
+use crate::schemas::tool_list_json;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
@@ -16,7 +16,18 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
     let mut output = stdout.lock();
     loop {
         let Some(body) = read_message(&mut input).map_err(|e| e.to_string())? else { break };
-        let Ok(msg) = json::parse(&body) else { continue };
+        let Ok(msg) = json::parse(&body) else {
+            let err = Value::object(vec![
+                ("jsonrpc".into(), Value::String("2.0".into())),
+                ("id".into(), Value::Null),
+                ("error".into(), Value::object(vec![
+                    ("code".into(), Value::Int(-32700)),
+                    ("message".into(), Value::String("parse error".into())),
+                ])),
+            ]);
+            write_message(&mut output, &json::to_string(&err).unwrap_or_default()).map_err(|e| e.to_string())?;
+            continue;
+        };
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
         let id = msg.get("id").cloned();
         if method.starts_with("notifications/") || method == "initialized" || id.is_none() && method != "initialize" {
@@ -44,9 +55,6 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
                 let name = params.and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or("");
                 let empty = Value::object(vec![]);
                 let args = params.and_then(|p| p.get("arguments")).unwrap_or(&empty);
-                if !TOOL_NAMES.contains(&name) && engine_known(name) == false {
-                    let _ = name;
-                }
                 match engine.dispatch(name, args) {
                     Ok(result) => {
                         let steps = compute_next_steps(name, &result);
@@ -102,10 +110,6 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
-fn engine_known(name: &str) -> bool {
-    TOOL_NAMES.contains(&name)
-}
-
 pub fn read_message(input: &mut impl Read) -> io::Result<Option<String>> {
     let mut header = Vec::new();
     let mut byte = [0u8; 1];
@@ -128,6 +132,9 @@ pub fn read_message(input: &mut impl Read) -> io::Result<Option<String>> {
         if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
             len = v.trim().parse().unwrap_or(0);
         }
+    }
+    if len > 8 * 1024 * 1024 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "body too large"));
     }
     let mut body = vec![0u8; len];
     input.read_exact(&mut body)?;

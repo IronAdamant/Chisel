@@ -520,18 +520,12 @@ fn write_string(out: &mut String, s: &str) {
 }
 
 fn format_float(f: f64) -> String {
-    if f == 0.0 {
+    if !f.is_finite() || f == 0.0 {
         return "0.0".into();
     }
-    let mut s = format!("{f:.12}");
-    if let Some(dot) = s.find('.') {
-        while s.ends_with('0') {
-            s.pop();
-        }
-        if s.ends_with('.') {
-            s.push('0');
-        }
-        let _ = dot;
+    let mut s = format!("{f}");
+    if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+        s.push_str(".0");
     }
     s
 }

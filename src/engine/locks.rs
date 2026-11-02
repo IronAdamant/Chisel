@@ -1,17 +1,5 @@
 use super::*;
-use crate::extract::{self, CodeUnit, Dep};
-use crate::git::{self, GitAnalyzer};
-use crate::hash::sha256_hex;
-use crate::impact::{self, RiskInputs};
 use crate::json::Value;
-use crate::store::{self, Store};
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 impl Engine {
     pub(super) fn active_locks(&self) -> Vec<Value> {
@@ -20,9 +8,13 @@ impl Engine {
     }
 
     pub(super) fn file_lock_tool(&mut self, name: &str, args: &Value) -> Result<Value, String> {
+        self.store.reload().map_err(|e| e.to_string())?;
         let file = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let agent = args.get("agent_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let ttl = args.get("ttl").and_then(|v| v.as_i64()).unwrap_or(300);
+        if matches!(name, "acquire_file_lock" | "refresh_file_lock") && ttl <= 0 {
+            return Err("status=error ttl must be greater than 0".into());
+        }
         let purpose = args.get("purpose").and_then(|v| v.as_str()).map(|s| s.to_string());
         self.drop_expired_locks();
         match name {

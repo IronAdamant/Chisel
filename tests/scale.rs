@@ -1100,12 +1100,12 @@ fn extensions_toml_runs_an_external_program_without_an_env_var() {
         &script,
         "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '[{\"name\":\"from_toml\",\"unit_type\":\"function\",\"line_start\":1,\"line_end\":2}]'\n",
     );
-    fs::write(dir.join(".chisel/extensions.toml"), "extractor = \"tools/extract.sh\"\n").unwrap();
+    fs::write(dir.join(".chisel/extensions.toml"), "[tools]\nextractor = \"tools/extract.sh\"\n").unwrap();
     init_repo(&dir);
     commit_all(&dir, "init");
     let bin = env!("CARGO_BIN_EXE_chisel");
     let out = Command::new(bin)
-        .args(["analyze", ".", "--json", "--project-dir"])
+        .args(["analyze", ".", "--allow-repo-extractor", "--json", "--project-dir"])
         .arg(&dir)
         .arg("--storage-dir")
         .arg(dir.join("store"))
@@ -1119,6 +1119,111 @@ fn extensions_toml_runs_an_external_program_without_an_env_var() {
     let snap = fs::read_to_string(dir.join("store/store")).unwrap();
     assert!(snap.contains("from_toml"), "{snap}");
     assert!(!snap.contains("\"name\":\"a\""), "{snap}");
+}
+
+#[test]
+fn repo_extractor_is_skipped_unless_allowed() {
+    let dir = scratch("ext-skip");
+    fs::create_dir_all(dir.join(".chisel")).unwrap();
+    let marker = dir.join("ran.txt");
+    let script = dir.join("run.sh");
+    let body = format!("#!/bin/sh\ncat >/dev/null\nprintf ran > '{}'\nprintf '%s\\n' '[{{\"name\":\"x\",\"unit_type\":\"function\",\"line_start\":1,\"line_end\":1}}]'\n", marker.display());
+    write_exec(&script, &body);
+    fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
+    fs::write(dir.join(".chisel/extensions.toml"), "[tools]\nextractor = \"run.sh\"\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let bin = env!("CARGO_BIN_EXE_chisel");
+    let out = Command::new(bin)
+        .args(["analyze", ".", "--json", "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(dir.join("store"))
+        .env_remove("CHISEL_EXTRACTOR")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("repo extractor skipped"), "{text}");
+    assert!(!marker.exists(), "default analyze ran the repo program");
+    let snap = fs::read_to_string(dir.join("store/store")).unwrap();
+    assert!(snap.contains("\"name\":\"a\""), "{snap}");
+}
+
+#[test]
+fn diff_ref_starting_with_dash_does_not_reach_git() {
+    let dir = scratch("ref");
+    fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let marker = dir.join("pwn.txt");
+    let bin = env!("CARGO_BIN_EXE_chisel");
+    let out = Command::new(bin)
+        .args(["diff-impact", "--ref", &format!("--output={}", marker.display()), "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(dir.join("store"))
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(!out.status.success() || String::from_utf8_lossy(&out.stdout).contains("error"), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(!marker.exists(), "git created {}", marker.display());
+}
+
+#[test]
+fn update_drops_deleted_and_renamed_files() {
+    let dir = scratch("rm");
+    fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
+    fs::write(dir.join("b.py"), "def b():\n    return 2\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    fs::remove_file(dir.join("b.py")).unwrap();
+    fs::rename(dir.join("a.py"), dir.join("a2.py")).unwrap();
+    commit_all(&dir, "rename");
+    let summary = engine.update().unwrap();
+    let text = chisel::json::to_string(&summary).unwrap();
+    let snap = fs::read_to_string(store.join("store")).unwrap();
+    assert!(snap.contains("a2.py"), "{snap}");
+    assert!(!snap.contains("\"file_path\":\"a.py\""), "{text} {snap}");
+    assert!(!snap.contains("\"file_path\":\"b.py\""), "{snap}");
+    let doc = chisel::json::parse(&snap).unwrap();
+    let units = doc.get("code_units").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(units.len(), 1, "{snap}");
+}
+
+#[test]
+fn lock_check_reloads_a_lock_taken_by_another_handle() {
+    let dir = scratch("lock-reload");
+    fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut first = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    first.analyze().unwrap();
+    let mut second = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    let args = chisel::json::Value::object(vec![
+        ("file_path".into(), chisel::json::Value::String("a.py".into())),
+        ("agent_id".into(), chisel::json::Value::String("ada".into())),
+        ("ttl".into(), chisel::json::Value::Int(60)),
+    ]);
+    first.dispatch("acquire_file_lock", &args).unwrap();
+    let seen = second.dispatch("check_file_lock", &args).unwrap();
+    let text = chisel::json::to_string(&seen).unwrap();
+    assert!(text.contains("ada"), "{text}");
+    let bad = args_with_ttl(0);
+    let err = first.dispatch("acquire_file_lock", &bad);
+    assert!(err.is_err(), "ttl 0 should fail");
+}
+
+fn args_with_ttl(ttl: i64) -> chisel::json::Value {
+    chisel::json::Value::object(vec![
+        ("file_path".into(), chisel::json::Value::String("a.py".into())),
+        ("agent_id".into(), chisel::json::Value::String("ada".into())),
+        ("ttl".into(), chisel::json::Value::Int(ttl)),
+    ])
 }
 
 #[test]
@@ -1538,6 +1643,93 @@ fn watch_polls_git_status_and_updates() {
     }
     assert!(latest.contains("watching"), "{latest}");
     fs::write(dir.join("src/a.py"), "def a():\n    return 2\n").unwrap();
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(8) {
+        if let Ok(text) = rx.recv_timeout(Duration::from_millis(200)) {
+            latest = text;
+        }
+        if latest.contains("files_updated") {
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        latest.contains("\"files_updated\": 1") || latest.contains("\"files_updated\":1"),
+        "{latest}"
+    );
+}
+
+#[test]
+fn watch_keeps_running_after_a_git_index_lock() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Instant;
+    let dir = scratch("watch-lock");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src/a.py"), "def a():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let bin = env!("CARGO_BIN_EXE_chisel");
+    let analyzed = Command::new(bin)
+        .args(["analyze", ".", "--json", "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(&store)
+        .output()
+        .unwrap();
+    assert!(analyzed.status.success(), "{}", String::from_utf8_lossy(&analyzed.stderr));
+    let mut child = Command::new(bin)
+        .args(["watch", "--interval", "1", "--json", "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(&store)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut acc = String::new();
+        let mut tmp = [0u8; 256];
+        loop {
+            match stdout.read(&mut tmp) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    acc.push_str(&String::from_utf8_lossy(&tmp[..n]));
+                    if tx.send(acc.clone()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let mut latest = String::new();
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        if let Ok(text) = rx.recv_timeout(Duration::from_millis(200)) {
+            latest = text;
+            if latest.contains("watching") {
+                break;
+            }
+        }
+    }
+    fs::write(dir.join(".git/index.lock"), "busy").unwrap();
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(4) {
+        if let Ok(text) = rx.recv_timeout(Duration::from_millis(200)) {
+            latest = text;
+        }
+        if latest.contains("\"status\": \"error\"") || latest.contains("\"status\":\"error\"") {
+            break;
+        }
+    }
+    assert!(child.try_wait().unwrap().is_none(), "watch exited on the index lock: {latest}");
+    fs::remove_file(dir.join(".git/index.lock")).unwrap();
+    fs::write(dir.join("src/a.py"), "def a():\n    return 3\n").unwrap();
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(8) {
         if let Ok(text) = rx.recv_timeout(Duration::from_millis(200)) {

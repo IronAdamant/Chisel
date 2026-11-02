@@ -1,10 +1,16 @@
 use chisel::cli;
-use chisel::json::Value;
-use chisel::store::Store;
 use std::env;
+#[cfg(debug_assertions)]
+use chisel::json::Value;
+#[cfg(debug_assertions)]
+use chisel::store::Store;
+#[cfg(debug_assertions)]
 use std::io::{self, Write};
+#[cfg(debug_assertions)]
 use std::path::PathBuf;
+#[cfg(debug_assertions)]
 use std::thread;
+#[cfg(debug_assertions)]
 use std::time::Duration;
 
 fn main() {
@@ -20,9 +26,11 @@ fn main() {
 
 fn real_main() -> Result<i32, String> {
     let mut argv: Vec<String> = env::args().skip(1).collect();
+    #[cfg(debug_assertions)]
     if argv.first().map(|s| s.as_str()) == Some("internal-pause-before-rename") {
         return pause_before_rename(&argv);
     }
+    #[cfg(debug_assertions)]
     if argv.first().map(|s| s.as_str()) == Some("internal-read-loop") {
         return read_loop(&argv);
     }
@@ -38,10 +46,12 @@ fn real_main() -> Result<i32, String> {
     cli::run(&args)
 }
 
+#[cfg(debug_assertions)]
 fn flag_value(argv: &[String], name: &str) -> Option<String> {
     argv.iter().position(|a| a == name).and_then(|i| argv.get(i + 1).cloned())
 }
 
+#[cfg(debug_assertions)]
 fn pause_before_rename(argv: &[String]) -> Result<i32, String> {
     let dir = PathBuf::from(flag_value(argv, "--storage-dir").ok_or("missing --storage-dir")?);
     let mut store = Store::open(&dir)?;
@@ -59,6 +69,7 @@ fn pause_before_rename(argv: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
+#[cfg(debug_assertions)]
 fn read_loop(argv: &[String]) -> Result<i32, String> {
     let dir = PathBuf::from(flag_value(argv, "--storage-dir").ok_or("missing --storage-dir")?);
     let start = std::time::Instant::now();

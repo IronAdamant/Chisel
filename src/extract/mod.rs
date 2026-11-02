@@ -42,13 +42,19 @@ pub fn path_has_code_extension(path: &str) -> bool {
 }
 
 pub fn extract_code_units(file_path: &str, content: &str) -> Vec<CodeUnit> {
-    extract_code_units_in(file_path, content, None)
+    extract_code_units_in(file_path, content, None, false)
 }
 
 /// `project`, when set, is where `.chisel/extensions.toml` is read.
 /// `CHISEL_EXTRACTOR` still wins over that file.
-pub fn extract_code_units_in(file_path: &str, content: &str, project: Option<&std::path::Path>) -> Vec<CodeUnit> {
-    if let Some(units) = external_units(file_path, project) {
+/// The file is ignored unless `allow_repo_extractor` is true.
+pub fn extract_code_units_in(
+    file_path: &str,
+    content: &str,
+    project: Option<&std::path::Path>,
+    allow_repo_extractor: bool,
+) -> Vec<CodeUnit> {
+    if let Some(units) = external_units(file_path, project, allow_repo_extractor) {
         return units;
     }
     builtin_units(file_path, content)
@@ -73,6 +79,7 @@ thread_local! {
 
 pub fn clear_extractor_warnings() {
     EXTRACTOR_WARNINGS.with(|w| w.borrow_mut().clear());
+    SKIP_NOTED.with(|n| n.set(false));
 }
 
 pub fn take_extractor_warnings() -> Vec<String> {
@@ -83,11 +90,24 @@ fn note_extractor_warning(message: String) {
     EXTRACTOR_WARNINGS.with(|w| w.borrow_mut().push(message));
 }
 
+thread_local! {
+    static SKIP_NOTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn note_once(message: &str) {
+    SKIP_NOTED.with(|n| {
+        if !n.get() {
+            n.set(true);
+            note_extractor_warning(message.to_string());
+        }
+    });
+}
+
 /// `CHISEL_EXTRACTOR` reads `{"path","language"}` on stdin and writes a JSON unit list.
 /// A missing variable reads `extractor` from `<project>/.chisel/extensions.toml`.
 /// A missing file keeps the built-in scanner. A bad run records a warning and falls back.
-fn external_units(file_path: &str, project: Option<&std::path::Path>) -> Option<Vec<CodeUnit>> {
-    let bin = configured_extractor(project)?;
+fn external_units(file_path: &str, project: Option<&std::path::Path>, allow_repo_extractor: bool) -> Option<Vec<CodeUnit>> {
+    let bin = configured_extractor(project, allow_repo_extractor)?;
     let lang = detect_language(file_path).unwrap_or("");
     match run_extractor(&bin, file_path, lang) {
         Ok(units) => Some(units),
@@ -98,16 +118,29 @@ fn external_units(file_path: &str, project: Option<&std::path::Path>) -> Option<
     }
 }
 
-fn configured_extractor(project: Option<&std::path::Path>) -> Option<String> {
+fn configured_extractor(project: Option<&std::path::Path>, allow_repo_extractor: bool) -> Option<String> {
     if let Ok(bin) = std::env::var("CHISEL_EXTRACTOR") {
         let bin = bin.trim();
         if !bin.is_empty() {
             return Some(bin.to_string());
         }
     }
+    if !allow_repo_extractor {
+        if let Some(project) = project {
+            if let Ok(text) = std::fs::read_to_string(project.join(".chisel").join("extensions.toml")) {
+                if extractor_from_toml(&text).is_some() {
+                    note_once("repo extractor skipped; pass --allow-repo-extractor");
+                }
+            }
+        }
+        return None;
+    }
     let project = project?;
     let text = std::fs::read_to_string(project.join(".chisel").join("extensions.toml")).ok()?;
-    let raw = extractor_from_toml(&text)?;
+    let Some(raw) = extractor_from_toml(&text) else {
+        note_once("extensions.toml has no extractor");
+        return None;
+    };
     let path = std::path::PathBuf::from(&raw);
     let resolved = if path.is_absolute() { path } else { project.join(path) };
     Some(resolved.to_string_lossy().into_owned())
@@ -116,10 +149,12 @@ fn configured_extractor(project: Option<&std::path::Path>) -> Option<String> {
 pub(crate) fn extractor_from_toml(text: &str) -> Option<String> {
     for line in text.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
             continue;
         }
-        let (key, rest) = line.split_once('=')?;
+        let Some((key, rest)) = line.split_once('=') else {
+            continue;
+        };
         if key.trim() != "extractor" {
             continue;
         }

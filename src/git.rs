@@ -44,6 +44,13 @@ pub struct BlameBlock {
 #[derive(Debug)]
 pub struct GitError(pub String);
 
+fn guard_ref(r: &str) -> Result<(), GitError> {
+    if r.starts_with('-') {
+        return Err(GitError("ref must not start with '-'".into()));
+    }
+    Ok(())
+}
+
 impl std::fmt::Display for GitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -95,20 +102,26 @@ impl GitAnalyzer {
     }
 
     pub fn branch_exists(&self, name: &str) -> bool {
-        self.run(&["rev-parse", "--verify", name]).is_ok()
+        if name.starts_with('-') {
+            return false;
+        }
+        self.run(&["rev-parse", "--verify", "--end-of-options", name]).is_ok()
     }
 
     pub fn merge_base(&self, base: &str) -> Result<String, GitError> {
-        Ok(self.run(&["merge-base", "HEAD", base])?.trim().to_string())
+        guard_ref(base)?;
+        Ok(self.run(&["merge-base", "HEAD", "--end-of-options", base])?.trim().to_string())
     }
 
     pub fn parse_log_range(&self, range: &str) -> Result<Vec<Commit>, GitError> {
-        let raw = self.run(&["log", "--format=COMMIT_START%n%H|%an|%ae|%aI|%s", "--numstat", range])?;
+        guard_ref(range)?;
+        let raw = self.run(&["log", "--format=COMMIT_START%n%H|%an|%ae|%aI|%s", "--numstat", "--end-of-options", range])?;
         Ok(parse_log_output(&raw))
     }
 
     pub fn changed_files(&self, r#ref: &str) -> Result<Vec<String>, GitError> {
-        let raw = self.run(&["diff", "--name-only", r#ref])?;
+        guard_ref(r#ref)?;
+        let raw = self.run(&["diff", "--name-only", "--end-of-options", r#ref])?;
         Ok(raw.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
     }
 
@@ -123,7 +136,8 @@ impl GitAnalyzer {
     }
 
     pub fn changed_functions(&self, file: &str, r#ref: &str) -> Result<Vec<String>, GitError> {
-        let raw = self.run(&["diff", "-U0", r#ref, "--", file])?;
+        guard_ref(r#ref)?;
+        let raw = self.run(&["diff", "-U0", "--end-of-options", r#ref, "--", file])?;
         Ok(parse_diff_functions(&raw))
     }
 

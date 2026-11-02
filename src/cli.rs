@@ -32,6 +32,7 @@ pub struct Args {
     pub proximity_adjustment: Option<bool>,
     pub exclude_new_file_boost: bool,
     /// `chisel watch` checks once and exits.
+    pub allow_repo_extractor: bool,
     pub once: bool,
     /// Seconds between worktree polls. Minimum 1.
     pub interval_secs: u64,
@@ -60,6 +61,7 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     let mut coverage_mode = None;
     let mut proximity_adjustment = None;
     let mut exclude_new_file_boost = false;
+    let mut allow_repo_extractor = false;
     let mut once = false;
     let mut interval_secs = 2u64;
     let mut i = 0;
@@ -117,7 +119,11 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
             directory = Some(argv.get(i).ok_or("missing --directory")?.clone());
         } else if a == "--ref" {
             i += 1;
-            git_ref = Some(argv.get(i).ok_or("missing --ref")?.clone());
+            let r = argv.get(i).ok_or("missing --ref")?.clone();
+            if r.starts_with('-') {
+                return Err("status=error ref must not start with '-'".into());
+            }
+            git_ref = Some(r);
         } else if a == "--kind" {
             i += 1;
             kind = Some(argv.get(i).ok_or("missing --kind")?.clone());
@@ -141,6 +147,8 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
             proximity_adjustment = Some(false);
         } else if a == "--exclude-new-file-boost" {
             exclude_new_file_boost = true;
+        } else if a == "--allow-repo-extractor" {
+            allow_repo_extractor = true;
         } else if a == "--once" {
             once = true;
         } else if a == "--interval" {
@@ -164,7 +172,7 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     Ok(Args {
         command, project_dir, storage_dir, json, positionals, host, port, ttl, purpose, test_command,
         force, working_tree, auto_update, limit, shard, directory, git_ref, kind, passed,
-        coverage_mode, proximity_adjustment, exclude_new_file_boost, once, interval_secs,
+        coverage_mode, proximity_adjustment, exclude_new_file_boost, allow_repo_extractor, once, interval_secs,
     })
 }
 
@@ -282,6 +290,9 @@ fn call_args(args: &Args) -> Value {
     }
     if let Some(git_ref) = &args.git_ref {
         pairs.push(("ref".into(), Value::String(git_ref.clone())));
+    }
+    if args.allow_repo_extractor {
+        pairs.push(("allow_repo_extractor".into(), Value::Bool(true)));
     }
     if let Some(kind) = &args.kind {
         pairs.push(("kind".into(), Value::String(kind.clone())));
@@ -492,6 +503,16 @@ fn worktree_fingerprint(dir: &PathBuf) -> Result<String, String> {
     ))
 }
 
+fn emit_watch_error(args: &Args, err: &str) -> Result<(), String> {
+    let body = Value::object(vec![
+        ("status".into(), Value::String("error".into())),
+        ("message".into(), Value::String(err.to_string())),
+    ]);
+    emit(args.json, "watch", &body)?;
+    let _ = io::stdout().flush();
+    Ok(())
+}
+
 fn watch(args: &Args) -> Result<i32, String> {
     use std::thread;
     use std::time::Duration;
@@ -505,14 +526,32 @@ fn watch(args: &Args) -> Result<i32, String> {
     let _ = io::stdout().flush();
     loop {
         thread::sleep(Duration::from_secs(args.interval_secs));
-        let current = worktree_fingerprint(&args.project_dir)?;
+        let current = match worktree_fingerprint(&args.project_dir) {
+            Ok(value) => value,
+            Err(err) => {
+                emit_watch_error(args, &err)?;
+                if args.once || !args.project_dir.exists() {
+                    return Err(err);
+                }
+                continue;
+            }
+        };
         if current != previous {
-            let result = engine.update()?;
-            emit(args.json, "update", &result)?;
-            let _ = io::stdout().flush();
-            previous = current;
-            if args.once {
-                return Ok(0);
+            match engine.update() {
+                Ok(result) => {
+                    emit(args.json, "update", &result)?;
+                    let _ = io::stdout().flush();
+                    previous = current;
+                    if args.once {
+                        return Ok(0);
+                    }
+                }
+                Err(err) => {
+                    emit_watch_error(args, &err)?;
+                    if args.once || !args.project_dir.exists() {
+                        return Err(err);
+                    }
+                }
             }
         } else if args.once {
             let quiet = Value::object(vec![

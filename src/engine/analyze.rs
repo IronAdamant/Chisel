@@ -2,14 +2,11 @@ use super::*;
 use crate::extract::{self, CodeUnit};
 use crate::git::{self, GitAnalyzer};
 use crate::hash::sha256_hex;
-use crate::impact::{self, RiskInputs};
+use crate::impact::{self};
 use crate::json::Value;
-use crate::store::{self, Store};
+use crate::store::{self};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -55,7 +52,7 @@ impl Engine {
             let abs = self.project_dir.join(rel);
             let content = fs::read(&abs).unwrap_or_default();
             let text = String::from_utf8_lossy(&content);
-            let units = extract::extract_code_units_in(rel, &text, Some(&self.project_dir));
+            let units = extract::extract_code_units_in(rel, &text, Some(&self.project_dir), self.allow_repo_extractor);
             let hash = sha256_hex(&content);
             for u in &units {
                 all_units.push(unit_obj(rel, u, &hash));
@@ -231,11 +228,12 @@ impl Engine {
                 changed.push(rel.clone());
             }
         }
+        let removed: Vec<String> = before.keys().filter(|path| !files.iter().any(|f| f == *path)).cloned().collect();
         let since = store::meta_get(&self.store.doc, "last_commit_date");
         let known: BTreeSet<String> = self.store.array("commits").iter().filter_map(|c| c.get("hash").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
         let new_commits: Vec<git::Commit> = git.parse_log_since(since.as_deref()).unwrap_or_default().into_iter().filter(|c| !known.contains(&c.hash)).collect();
         let commit_touch: BTreeSet<String> = new_commits.iter().flat_map(|c| c.files.iter().map(|f| f.path.clone())).collect();
-        if changed.is_empty() && new_commits.is_empty() {
+        if changed.is_empty() && new_commits.is_empty() && removed.is_empty() {
             return Ok(Value::object(vec![
                 ("files_updated".into(), Value::Int(0)),
                 ("code_units_found".into(), Value::Int(self.store.array("code_units").len() as i64)),
@@ -245,7 +243,7 @@ impl Engine {
             ]));
         }
         // Changed files and new commits only. Untouched files keep their units, blame, and edges.
-        let summary = self.analyze_subset(&git, &files, &changed, &new_commits, &commit_touch)?;
+        let summary = self.analyze_subset(&git, &files, &changed, &new_commits, &commit_touch, &removed)?;
         Ok(summary)
     }
 
@@ -256,6 +254,7 @@ impl Engine {
         changed: &[String],
         new_commits: &[git::Commit],
         _commit_touch: &BTreeSet<String>,
+        removed: &[String],
     ) -> Result<Value, String> {
         let changed_set: BTreeSet<&str> = changed.iter().map(|s| s.as_str()).collect();
         let mut units: Vec<Value> = self.store.array("code_units").into_iter().filter(|u| {
@@ -266,7 +265,7 @@ impl Engine {
             let abs = self.project_dir.join(rel);
             let content = fs::read(&abs).unwrap_or_default();
             let text = String::from_utf8_lossy(&content);
-            let extracted = extract::extract_code_units_in(rel, &text, Some(&self.project_dir));
+            let extracted = extract::extract_code_units_in(rel, &text, Some(&self.project_dir), self.allow_repo_extractor);
             let hash = sha256_hex(&content);
             for u in &extracted {
                 units.push(unit_obj(rel, u, &hash));
@@ -446,7 +445,7 @@ impl Engine {
                 if !units_by_file.contains_key(rel) {
                     let content = fs::read_to_string(self.project_dir.join(rel)).unwrap_or_default();
                     self.source_reads += 1;
-                    units_by_file.insert(rel.clone(), extract::extract_code_units_in(rel, &content, Some(&self.project_dir)));
+                    units_by_file.insert(rel.clone(), extract::extract_code_units_in(rel, &content, Some(&self.project_dir), self.allow_repo_extractor));
                 }
             }
             let (fresh_units, fresh_edges, fresh_static) = self.build_tests_and_edges(&tests_to_rebuild, &units_by_file);
@@ -475,9 +474,10 @@ impl Engine {
         }).collect();
         imports.extend(self.build_import_edges(&changed_sources));
         self.store.doc.insert("import_edges", Value::Array(imports));
+        self.drop_removed_paths(removed);
         self.store.save()?;
         let mut summary = vec![
-            ("files_updated".into(), Value::Int(changed.len() as i64)),
+            ("files_updated".into(), Value::Int((changed.len() + removed.len()) as i64)),
             ("code_units_found".into(), Value::Int(self.store.array("code_units").len() as i64)),
             ("new_commits".into(), Value::Int(new_commits.len() as i64)),
             ("edge_rebuild_skipped".into(), Value::Bool(edge_rebuild_skipped)),
@@ -488,6 +488,39 @@ impl Engine {
         }
         push_extractor_warnings(&mut summary);
         Ok(Value::object(summary))
+    }
+
+    fn drop_removed_paths(&mut self, removed: &[String]) {
+        if removed.is_empty() {
+            return;
+        }
+        let gone = |path: &str| removed.iter().any(|p| p == path);
+        let id_gone = |id: &str| removed.iter().any(|path| id.starts_with(&format!("{path}:")));
+        let keep_units = |rows: Vec<Value>| -> Vec<Value> {
+            rows.into_iter().filter(|row| row.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !gone(p))).collect()
+        };
+        self.store.doc.insert("code_units", Value::Array(keep_units(self.store.array("code_units"))));
+        self.store.doc.insert("test_units", Value::Array(keep_units(self.store.array("test_units"))));
+        self.store.doc.insert("churn", Value::Array(keep_units(self.store.array("churn"))));
+        self.store.doc.insert("blame", Value::Array(keep_units(self.store.array("blame"))));
+        self.store.doc.insert("file_hashes", Value::Array(keep_units(self.store.array("file_hashes"))));
+        let edges: Vec<Value> = self.store.array("test_edges").into_iter().filter(|edge| {
+            let tid = edge.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
+            let code_id = edge.get("code_id").and_then(|v| v.as_str()).unwrap_or("");
+            let code_file = edge.get("code_file").and_then(|v| v.as_str()).unwrap_or("");
+            !id_gone(tid) && !id_gone(code_id) && !gone(code_file)
+        }).collect();
+        self.store.doc.insert("test_edges", Value::Array(edges));
+        let static_rows: Vec<Value> = self.store.array("static_test_imports").into_iter().filter(|row| {
+            row.get("test_file").and_then(|v| v.as_str()).is_none_or(|p| !gone(p))
+                && row.get("code_file").and_then(|v| v.as_str()).is_none_or(|p| !gone(p))
+        }).collect();
+        self.store.doc.insert("static_test_imports", Value::Array(static_rows));
+        let imports: Vec<Value> = self.store.array("import_edges").into_iter().filter(|row| {
+            row.get("importer_file").and_then(|v| v.as_str()).is_none_or(|p| !gone(p))
+                && row.get("imported_file").and_then(|v| v.as_str()).is_none_or(|p| !gone(p))
+        }).collect();
+        self.store.doc.insert("import_edges", Value::Array(imports));
     }
 
     pub(super) fn scan_code_files(&self, git: &GitAnalyzer) -> Vec<String> {

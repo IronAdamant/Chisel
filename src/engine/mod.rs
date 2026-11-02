@@ -193,6 +193,8 @@ pub struct Engine {
     /// When set, `working_tree` reads are allowed. Default false.
     pub include_ignored: bool,
     pub working_tree: bool,
+    /// When true, `.chisel/extensions.toml` may name a program to execute.
+    pub allow_repo_extractor: bool,
     pub shards: Vec<(String, String)>,
     only_files: Option<BTreeSet<String>>,
     active_job: Option<String>,
@@ -226,6 +228,7 @@ impl Engine {
             git,
             include_ignored,
             working_tree: false,
+            allow_repo_extractor: false,
             shards: Vec::new(),
             only_files: None,
             active_job: None,

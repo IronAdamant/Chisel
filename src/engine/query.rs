@@ -1,17 +1,12 @@
 use super::*;
-use crate::extract::{self, CodeUnit, Dep};
-use crate::git::{self, GitAnalyzer};
+use crate::extract::{self};
+use crate::git::{self};
 use crate::hash::sha256_hex;
 use crate::impact::{self, RiskInputs};
 use crate::json::Value;
 use crate::store::{self, Store};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn cross_edge_key(edge: &Value) -> String {
     format!(
@@ -732,7 +727,7 @@ impl Engine {
         let mut live: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for path in known.keys() {
             let content = fs::read_to_string(self.project_dir.join(path)).unwrap_or_default();
-            let names = extract::extract_code_units_in(path, &content, Some(&self.project_dir)).into_iter().map(|u| u.name).collect();
+            let names = extract::extract_code_units_in(path, &content, Some(&self.project_dir), self.allow_repo_extractor).into_iter().map(|u| u.name).collect();
             live.insert(path.clone(), names);
         }
         let mut test_files: BTreeSet<String> = self.store.array("test_units").into_iter().filter_map(|t| t.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
@@ -1305,6 +1300,15 @@ impl Engine {
             }
         }
         self.working_tree = args.get("working_tree").and_then(|v| v.as_bool()).unwrap_or(false);
+        self.allow_repo_extractor = args.get("allow_repo_extractor").and_then(|v| v.as_bool()).unwrap_or(false);
+        if let Some(r) = args.get("ref").and_then(|v| v.as_str()) {
+            if r.starts_with('-') {
+                return Ok(Value::object(vec![
+                    ("status".into(), Value::String("error".into())),
+                    ("message".into(), Value::String("ref must not start with '-'".into())),
+                ]));
+            }
+        }
         if let Some(mode) = args.get("coverage_mode").and_then(|v| v.as_str()) {
             if !mode.is_empty() {
                 self.coverage_mode = mode.to_string();
