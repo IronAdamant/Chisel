@@ -31,6 +31,10 @@ pub struct Args {
     pub coverage_mode: Option<String>,
     pub proximity_adjustment: Option<bool>,
     pub exclude_new_file_boost: bool,
+    /// `chisel watch` checks once and exits.
+    pub once: bool,
+    /// Seconds between worktree polls. Minimum 1.
+    pub interval_secs: u64,
 }
 
 pub fn parse(argv: &[String]) -> Result<Args, String> {
@@ -56,6 +60,8 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     let mut coverage_mode = None;
     let mut proximity_adjustment = None;
     let mut exclude_new_file_boost = false;
+    let mut once = false;
+    let mut interval_secs = 2u64;
     let mut i = 0;
     let mut after_dd = false;
     while i < argv.len() {
@@ -135,6 +141,14 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
             proximity_adjustment = Some(false);
         } else if a == "--exclude-new-file-boost" {
             exclude_new_file_boost = true;
+        } else if a == "--once" {
+            once = true;
+        } else if a == "--interval" {
+            i += 1;
+            interval_secs = argv.get(i).ok_or("missing --interval")?.parse().map_err(|_| "bad interval")?;
+            if interval_secs == 0 {
+                interval_secs = 1;
+            }
         } else if a.starts_with("--") {
             return Err(format!("status=error unknown or unimplemented flag {a}"));
         } else if command.is_empty() {
@@ -150,7 +164,7 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     Ok(Args {
         command, project_dir, storage_dir, json, positionals, host, port, ttl, purpose, test_command,
         force, working_tree, auto_update, limit, shard, directory, git_ref, kind, passed,
-        coverage_mode, proximity_adjustment, exclude_new_file_boost,
+        coverage_mode, proximity_adjustment, exclude_new_file_boost, once, interval_secs,
     })
 }
 
@@ -187,6 +201,7 @@ pub fn run(args: &Args) -> Result<i32, String> {
             return Ok(0);
         }
         "run" => return run_tests(args),
+        "watch" => return watch(args),
         _ => {}
     }
     let mut engine = Engine::open(&args.project_dir, args.storage_dir.as_deref())?;
@@ -456,11 +471,65 @@ fn parse_pytest_line(line: &str) -> Option<(String, bool)> {
     Some((id, passed))
 }
 
+fn worktree_fingerprint(dir: &PathBuf) -> Result<String, String> {
+    let status = Command::new("git")
+        .args(["status", "--porcelain=v1", "-uall"])
+        .current_dir(dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !status.status.success() {
+        return Err(String::from_utf8_lossy(&status.stderr).trim().to_string());
+    }
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    Ok(format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&head.stdout).trim(),
+        String::from_utf8_lossy(&status.stdout)
+    ))
+}
+
+fn watch(args: &Args) -> Result<i32, String> {
+    use std::thread;
+    use std::time::Duration;
+    let mut engine = Engine::open(&args.project_dir, args.storage_dir.as_deref())?;
+    let mut previous = worktree_fingerprint(&args.project_dir)?;
+    let ready = Value::object(vec![
+        ("status".into(), Value::String("watching".into())),
+        ("interval_secs".into(), Value::Int(args.interval_secs as i64)),
+    ]);
+    emit(args.json, "watch", &ready)?;
+    let _ = io::stdout().flush();
+    loop {
+        thread::sleep(Duration::from_secs(args.interval_secs));
+        let current = worktree_fingerprint(&args.project_dir)?;
+        if current != previous {
+            let result = engine.update()?;
+            emit(args.json, "update", &result)?;
+            let _ = io::stdout().flush();
+            previous = current;
+            if args.once {
+                return Ok(0);
+            }
+        } else if args.once {
+            let quiet = Value::object(vec![
+                ("status".into(), Value::String("no_changes".into())),
+            ]);
+            emit(args.json, "watch", &quiet)?;
+            let _ = io::stdout().flush();
+            return Ok(0);
+        }
+    }
+}
+
 pub fn help() {
     println!("Chisel — test impact analysis and code intelligence");
     println!("usage: chisel [--json] [--project-dir DIR] [--storage-dir DIR] <command> ...");
     println!("commands: analyze, impact, suggest-tests, churn, ownership, coupling, risk-map,");
     println!("  stale-tests, history, who-reviews, diff-impact, update, test-gaps, record-result,");
-    println!("  run, stats, start-job, job-status, cancel-job, triage, serve, serve-mcp,");
+    println!("  run, watch, stats, start-job, job-status, cancel-job, triage, serve, serve-mcp,");
     println!("  acquire-lock, release-lock, refresh-lock, check-lock, check-locks, list-locks");
 }

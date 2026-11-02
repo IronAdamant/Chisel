@@ -49,6 +49,7 @@ Always pass `--json` on the CLI and branch on `status` before treating a payload
 - Above 2000 code files, file-level churn still runs and per-function `git log -L` does not (`unit_churn_skipped`).
 - A no-op `update` sets `edge_rebuild_skipped` true and does not run `git blame` or `git log -L`.
 - `chisel run` records pytest and Jest and forwards the test process exit code. One snapshot flush for the whole run.
+- `chisel watch` polls `git status` and runs `update` when the worktree changes. `--interval` is seconds. `--once` exits after one check.
 - `stats` returns counts. It does not embed every historical result.
 - List tools apply a default limit and set `truncated` when the cap cuts the list.
 - Suggestion `source` is one of `direct`, `co_change`, `import_graph`, `static_require`, `hybrid`, `fallback`, `working_tree`.

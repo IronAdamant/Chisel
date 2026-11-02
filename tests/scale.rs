@@ -1446,3 +1446,79 @@ fn working_tree_stale_sees_a_deleted_name_before_update() {
     assert!(text.contains("working_tree"), "{text}");
     assert!(text.contains("src/calc.py:sub:function"), "{text}");
 }
+
+#[test]
+fn watch_polls_git_status_and_updates() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Instant;
+    let dir = scratch("watch");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src/a.py"), "def a():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let bin = env!("CARGO_BIN_EXE_chisel");
+    let analyzed = Command::new(bin)
+        .args(["analyze", ".", "--json", "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(&store)
+        .output()
+        .unwrap();
+    assert!(analyzed.status.success(), "{}", String::from_utf8_lossy(&analyzed.stderr));
+    let mut child = Command::new(bin)
+        .args(["watch", "--interval", "1", "--json", "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(&store)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut acc = String::new();
+        let mut tmp = [0u8; 256];
+        loop {
+            match stdout.read(&mut tmp) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    acc.push_str(&String::from_utf8_lossy(&tmp[..n]));
+                    if tx.send(acc.clone()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let mut latest = String::new();
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        if let Ok(text) = rx.recv_timeout(Duration::from_millis(200)) {
+            latest = text;
+            if latest.contains("watching") {
+                break;
+            }
+        }
+    }
+    assert!(latest.contains("watching"), "{latest}");
+    fs::write(dir.join("src/a.py"), "def a():\n    return 2\n").unwrap();
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(8) {
+        if let Ok(text) = rx.recv_timeout(Duration::from_millis(200)) {
+            latest = text;
+        }
+        if latest.contains("files_updated") {
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        latest.contains("\"files_updated\": 1") || latest.contains("\"files_updated\":1"),
+        "{latest}"
+    );
+}
