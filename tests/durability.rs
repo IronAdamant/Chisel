@@ -105,3 +105,48 @@ fn two_writers_do_not_silently_overwrite() {
     assert_eq!(loaded.doc.get("token").and_then(|v| v.as_str()), Some("winner"));
     assert!(!dir.join("store.tmp").exists());
 }
+
+fn lock_paths(snapshot: &str) -> Vec<String> {
+    let doc = chisel::json::parse(snapshot).unwrap();
+    doc.get("file_locks")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|row| row.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect()
+}
+
+#[test]
+fn optimize_storage_drops_expired_locks_from_the_snapshot() {
+    let dir = scratch();
+    let project = dir.join("proj");
+    let storage = dir.join("storage");
+    fs::create_dir_all(&project).unwrap();
+    let run = |args: &[&str], clock: &str| {
+        let out = Command::new(bin())
+            .args(args)
+            .arg("--json")
+            .arg("--project-dir")
+            .arg(&project)
+            .arg("--storage-dir")
+            .arg(&storage)
+            .env("CHISEL_NOW", clock)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?} stderr {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let now = "1700000000";
+    run(&["acquire-lock", "src/live.py", "live", "--ttl", "1000"], now);
+    run(&["acquire-lock", "src/old.py", "old", "--ttl", "10"], now);
+    let before = fs::read_to_string(storage.join("store")).unwrap();
+    let mut before_paths = lock_paths(&before);
+    before_paths.sort();
+    assert_eq!(before_paths, vec!["src/live.py".to_string(), "src/old.py".to_string()], "{before}");
+    let optimized = run(&["optimize-storage"], "1700000020");
+    let body = chisel::json::parse(optimized.trim()).unwrap();
+    assert_eq!(body.get("optimized").and_then(|v| v.as_bool()), Some(true), "{optimized}");
+    let after = fs::read_to_string(storage.join("store")).unwrap();
+    assert_eq!(lock_paths(&after), vec!["src/live.py".to_string()], "{after}");
+    assert!(!after.contains("src/old.py"), "{after}");
+}

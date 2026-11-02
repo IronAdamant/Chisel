@@ -1158,6 +1158,7 @@ impl Engine {
             },
             "churn" | "ownership" | "coupling" | "history" | "who_reviews" => self.simple_file_tool(name, args),
             "optimize_storage" => {
+                self.drop_expired_locks();
                 self.store.save()?;
                 Ok(Value::object(vec![("optimized".into(), Value::Bool(true))]))
             }
