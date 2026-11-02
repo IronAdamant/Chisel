@@ -44,3 +44,5 @@ Shards are one snapshot each under `.chisel/shards/<shard>/`, configured by `CHI
 Scores are heuristics. Read `_meta.uniform_components` before trusting a composite risk score. `flakiness_trend` is present when a covering test has dated results in the current week and in an older week of the last 28 days. It does not change risk weights. `record_result` stores `recorded_at`.
 
 Test filenames that produce edges include `test_*.py`, `*_test.py`, `*.test.ts`, `*.spec.ts`, `*_test.go`, and `*_test.rs`.
+
+`CHISEL_EXTRACTOR` or `extractor` in `.chisel/extensions.toml` names an executable. That program may use its own libraries. Chisel does not link them. `CHISEL_EXTRACTOR` overrides the file. A bad run falls back to the built-in scanner.

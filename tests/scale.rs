@@ -1090,6 +1090,38 @@ fn extractor_failure_falls_back_and_success_replaces_units() {
 }
 
 #[test]
+fn extensions_toml_runs_an_external_program_without_an_env_var() {
+    let dir = scratch("ext-toml");
+    fs::create_dir_all(dir.join(".chisel")).unwrap();
+    fs::create_dir_all(dir.join("tools")).unwrap();
+    fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
+    let script = dir.join("tools/extract.sh");
+    write_exec(
+        &script,
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '[{\"name\":\"from_toml\",\"unit_type\":\"function\",\"line_start\":1,\"line_end\":2}]'\n",
+    );
+    fs::write(dir.join(".chisel/extensions.toml"), "extractor = \"tools/extract.sh\"\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let bin = env!("CARGO_BIN_EXE_chisel");
+    let out = Command::new(bin)
+        .args(["analyze", ".", "--json", "--project-dir"])
+        .arg(&dir)
+        .arg("--storage-dir")
+        .arg(dir.join("store"))
+        .env_remove("CHISEL_EXTRACTOR")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(!text.contains("extractor_warnings"), "{text}");
+    let snap = fs::read_to_string(dir.join("store/store")).unwrap();
+    assert!(snap.contains("from_toml"), "{snap}");
+    assert!(!snap.contains("\"name\":\"a\""), "{snap}");
+}
+
+#[test]
 fn stale_generation_returns_status_error_and_retry_keeps_other_writer() {
     let dir = scratch("stale");
     fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();

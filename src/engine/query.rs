@@ -732,7 +732,7 @@ impl Engine {
         let mut live: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for path in known.keys() {
             let content = fs::read_to_string(self.project_dir.join(path)).unwrap_or_default();
-            let names = extract::extract_code_units(path, &content).into_iter().map(|u| u.name).collect();
+            let names = extract::extract_code_units_in(path, &content, Some(&self.project_dir)).into_iter().map(|u| u.name).collect();
             live.insert(path.clone(), names);
         }
         let mut test_files: BTreeSet<String> = self.store.array("test_units").into_iter().filter_map(|t| t.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();

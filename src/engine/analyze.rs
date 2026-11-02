@@ -55,7 +55,7 @@ impl Engine {
             let abs = self.project_dir.join(rel);
             let content = fs::read(&abs).unwrap_or_default();
             let text = String::from_utf8_lossy(&content);
-            let units = extract::extract_code_units(rel, &text);
+            let units = extract::extract_code_units_in(rel, &text, Some(&self.project_dir));
             let hash = sha256_hex(&content);
             for u in &units {
                 all_units.push(unit_obj(rel, u, &hash));
@@ -266,7 +266,7 @@ impl Engine {
             let abs = self.project_dir.join(rel);
             let content = fs::read(&abs).unwrap_or_default();
             let text = String::from_utf8_lossy(&content);
-            let extracted = extract::extract_code_units(rel, &text);
+            let extracted = extract::extract_code_units_in(rel, &text, Some(&self.project_dir));
             let hash = sha256_hex(&content);
             for u in &extracted {
                 units.push(unit_obj(rel, u, &hash));
@@ -446,7 +446,7 @@ impl Engine {
                 if !units_by_file.contains_key(rel) {
                     let content = fs::read_to_string(self.project_dir.join(rel)).unwrap_or_default();
                     self.source_reads += 1;
-                    units_by_file.insert(rel.clone(), extract::extract_code_units(rel, &content));
+                    units_by_file.insert(rel.clone(), extract::extract_code_units_in(rel, &content, Some(&self.project_dir)));
                 }
             }
             let (fresh_units, fresh_edges, fresh_static) = self.build_tests_and_edges(&tests_to_rebuild, &units_by_file);

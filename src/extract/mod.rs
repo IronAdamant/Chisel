@@ -42,7 +42,13 @@ pub fn path_has_code_extension(path: &str) -> bool {
 }
 
 pub fn extract_code_units(file_path: &str, content: &str) -> Vec<CodeUnit> {
-    if let Some(units) = external_units(file_path) {
+    extract_code_units_in(file_path, content, None)
+}
+
+/// `project`, when set, is where `.chisel/extensions.toml` is read.
+/// `CHISEL_EXTRACTOR` still wins over that file.
+pub fn extract_code_units_in(file_path: &str, content: &str, project: Option<&std::path::Path>) -> Vec<CodeUnit> {
+    if let Some(units) = external_units(file_path, project) {
         return units;
     }
     builtin_units(file_path, content)
@@ -78,14 +84,10 @@ fn note_extractor_warning(message: String) {
 }
 
 /// `CHISEL_EXTRACTOR` reads `{"path","language"}` on stdin and writes a JSON unit list.
-/// A missing variable keeps the built-in scanner. A bad run records a warning and falls back.
-fn external_units(file_path: &str) -> Option<Vec<CodeUnit>> {
-    let Ok(bin) = std::env::var("CHISEL_EXTRACTOR") else {
-        return None;
-    };
-    if bin.is_empty() {
-        return None;
-    }
+/// A missing variable reads `extractor` from `<project>/.chisel/extensions.toml`.
+/// A missing file keeps the built-in scanner. A bad run records a warning and falls back.
+fn external_units(file_path: &str, project: Option<&std::path::Path>) -> Option<Vec<CodeUnit>> {
+    let bin = configured_extractor(project)?;
     let lang = detect_language(file_path).unwrap_or("");
     match run_extractor(&bin, file_path, lang) {
         Ok(units) => Some(units),
@@ -94,6 +96,40 @@ fn external_units(file_path: &str) -> Option<Vec<CodeUnit>> {
             None
         }
     }
+}
+
+fn configured_extractor(project: Option<&std::path::Path>) -> Option<String> {
+    if let Ok(bin) = std::env::var("CHISEL_EXTRACTOR") {
+        let bin = bin.trim();
+        if !bin.is_empty() {
+            return Some(bin.to_string());
+        }
+    }
+    let project = project?;
+    let text = std::fs::read_to_string(project.join(".chisel").join("extensions.toml")).ok()?;
+    let raw = extractor_from_toml(&text)?;
+    let path = std::path::PathBuf::from(&raw);
+    let resolved = if path.is_absolute() { path } else { project.join(path) };
+    Some(resolved.to_string_lossy().into_owned())
+}
+
+pub(crate) fn extractor_from_toml(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, rest) = line.split_once('=')?;
+        if key.trim() != "extractor" {
+            continue;
+        }
+        let value = rest.trim().trim_matches('"').trim_matches('\'');
+        if value.is_empty() {
+            return None;
+        }
+        return Some(value.to_string());
+    }
+    None
 }
 
 fn run_extractor(bin: &str, file_path: &str, lang: &str) -> Result<Vec<CodeUnit>, String> {
