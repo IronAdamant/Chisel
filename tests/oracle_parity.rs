@@ -43,6 +43,8 @@ fn write_fixture(dir: &Path) {
     git(dir, &["init", "-b", "main"]);
     git(dir, &["config", "user.email", "a@example.com"]);
     git(dir, &["config", "user.name", "Solo"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
     for (date, msg, paths) in [
         ("2024-01-15T12:00:00+00:00", "init", vec!["."]),
         ("2024-02-15T12:00:00+00:00", "touch", vec!["src/calc.py", "src/extra.py"]),
@@ -145,6 +147,7 @@ fn read_tools_match_python_oracle() {
     assert!(analyze.contains("code_files_scanned"));
 }
 
+#[cfg(unix)]
 #[test]
 fn run_records_pytest_and_forwards_exit_code() {
     let dir = scratch("run");

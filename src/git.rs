@@ -170,6 +170,10 @@ fn finish(args: &[&str], output: Output) -> Result<String, GitError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn utc_z(date: &str) -> String {
+    date.strip_suffix("+00:00").map(|prefix| format!("{prefix}Z")).unwrap_or_else(|| date.to_string())
+}
+
 pub fn parse_log_output(raw: &str) -> Vec<Commit> {
     let mut commits = Vec::new();
     for block in raw.split("COMMIT_START") {
@@ -187,7 +191,7 @@ pub fn parse_log_output(raw: &str) -> Vec<Commit> {
             hash: parts[0].into(),
             author: parts[1].into(),
             author_email: parts[2].into(),
-            date: parts[3].into(),
+            date: utc_z(parts[3]),
             message: parts[4].into(),
             files: Vec::new(),
         };

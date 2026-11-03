@@ -25,6 +25,8 @@ fn init_repo(dir: &Path) {
     git(dir, &["init", "-b", "main"]);
     git(dir, &["config", "user.email", "a@example.com"]);
     git(dir, &["config", "user.name", "Solo"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
 }
 
 fn commit_all(dir: &Path, msg: &str) {
@@ -191,6 +193,7 @@ fn batch_record_flushes_once_and_jest_parses() {
     assert_eq!(after, before + 1);
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_run_records_jest_stdout() {
     let dir = scratch("jestcli");
@@ -531,6 +534,7 @@ fn project_dir_env_and_stdio_call_and_long_prefix() {
     assert!(text.contains("next_steps"), "{text}");
 }
 
+#[cfg(unix)]
 #[test]
 fn chisel_run_pytest_flushes_once() {
     let dir = scratch("pyflush");
@@ -860,7 +864,7 @@ fn unscoped_reads_aggregate_and_update_uses_longest_prefix() {
     let front = fs::read_to_string(store.join("shards/frontend/store")).unwrap();
     let root = fs::read_to_string(store.join("store")).unwrap_or_default();
     let new_hash = chisel::hash::sha256_hex(b"def w():\n    return 9\n");
-    assert!(web.contains(&format!("\"file_path\":\"frontend/web/w.py\"")) && web.contains(&new_hash), "longest prefix did not store the updated file: {web}");
+    assert!(web.contains("\"file_path\":\"frontend/web/w.py\"") && web.contains(&new_hash), "longest prefix did not store the updated file: {web}");
     assert!(!front.contains("\"file_path\":\"frontend/web/w.py\""), "shorter prefix stored the longer-prefix file");
     assert!(!root.contains("\"file_path\":\"frontend/web/w.py\""), "root snapshot stored a shard file");
     let diff = engine.diff_impact().unwrap();
@@ -1037,12 +1041,14 @@ fn record_result_changes_failure_rate_and_instability() {
     assert!(text.contains("\"test_instability\":1") || text.contains("\"test_instability\": 1"), "{text}");
 }
 
+#[cfg(unix)]
 fn write_exec(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
     let status = Command::new("chmod").args(["+x"]).arg(path).status().unwrap();
     assert!(status.success());
 }
 
+#[cfg(unix)]
 #[test]
 fn extractor_failure_falls_back_and_success_replaces_units() {
     let dir = scratch("ext");
@@ -1089,6 +1095,7 @@ fn extractor_failure_falls_back_and_success_replaces_units() {
     assert!(!snap.contains("\"name\":\"a\""), "builtin unit leaked: {snap}");
 }
 
+#[cfg(unix)]
 #[test]
 fn extensions_toml_runs_an_external_program_without_an_env_var() {
     let dir = scratch("ext-toml");
@@ -1121,6 +1128,7 @@ fn extensions_toml_runs_an_external_program_without_an_env_var() {
     assert!(!snap.contains("\"name\":\"a\""), "{snap}");
 }
 
+#[cfg(unix)]
 #[test]
 fn repo_extractor_is_skipped_unless_allowed() {
     let dir = scratch("ext-skip");
@@ -1235,6 +1243,7 @@ fn lock_check_reloads_a_lock_taken_by_another_handle() {
     assert!(err.is_err(), "negative ttl should fail");
 }
 
+#[cfg(unix)]
 #[test]
 fn tool_argument_cannot_run_a_repo_extractor() {
     let dir = scratch("ext-arg");
@@ -1269,6 +1278,7 @@ fn tool_argument_cannot_run_a_repo_extractor() {
     assert!(marker.exists(), "cli opt-in did not run the extractor");
 }
 
+#[cfg(unix)]
 #[test]
 fn repo_extractor_outside_the_project_is_rejected() {
     let dir = scratch("ext-out");
@@ -1324,7 +1334,7 @@ fn oversized_mcp_body_is_discarded_and_the_next_message_is_read() {
     use std::io::Cursor;
     let header = format!("Content-Length: {}\r\n\r\n", 8 * 1024 * 1024 + 1);
     let mut bytes = header.into_bytes();
-    bytes.extend(std::iter::repeat(b'x').take(8 * 1024 * 1024 + 1));
+    bytes.extend(std::iter::repeat_n(b'x', 8 * 1024 * 1024 + 1));
     let next = b"Content-Length: 2\r\n\r\n{}";
     bytes.extend_from_slice(next);
     let mut input = Cursor::new(bytes);
@@ -1630,29 +1640,32 @@ fn flakiness_trend_uses_week_buckets_and_pytest_ids_join() {
     let planted_doc = chisel::json::parse(&planted).unwrap();
     let add_again = planted_doc.as_array().unwrap().iter().find(|r| r.get("test_id").and_then(|v| v.as_str()) == Some("tests/test_calc.py:test_add")).unwrap();
     assert!(add_again.get("failure_rate").and_then(|v| v.as_f64()).unwrap() > 0.0, "{add_again:?}");
-    let pytest = dir.join("pytest");
-    fs::write(&pytest, "#!/bin/sh\necho 'tests/test_calc.py::test_add FAILED'\nexit 1\n").unwrap();
-    let _ = Command::new("chmod").arg("+x").arg(&pytest).status();
-    let bin = env!("CARGO_BIN_EXE_chisel");
-    let run = Command::new(bin)
-        .args(["run", "--project-dir"])
-        .arg(&dir)
-        .arg("--storage-dir")
-        .arg(&store)
-        .arg("--")
-        .arg(&pytest)
-        .env("CHISEL_NOW", now.to_string())
-        .current_dir(&dir)
-        .output()
-        .unwrap();
-    assert_eq!(run.status.code(), Some(1), "{}", String::from_utf8_lossy(&run.stderr));
-    let snap = fs::read_to_string(store.join("store")).unwrap();
-    assert!(snap.contains("tests/test_calc.py:test_add"), "{snap}");
-    assert!(!snap.contains("tests/test_calc.py::test_add"), "{snap}");
-    let after = chisel_at(&dir, &store, &["suggest-tests", "src/calc.py"], &now.to_string());
-    let after_doc = chisel::json::parse(&after).unwrap();
-    let joined = after_doc.as_array().unwrap().iter().find(|r| r.get("test_id").and_then(|v| v.as_str()) == Some("tests/test_calc.py:test_add")).unwrap();
-    assert!(joined.get("failure_rate").and_then(|v| v.as_f64()).unwrap() > 0.0, "{joined:?}");
+    #[cfg(unix)]
+    {
+        let pytest = dir.join("pytest");
+        fs::write(&pytest, "#!/bin/sh\necho 'tests/test_calc.py::test_add FAILED'\nexit 1\n").unwrap();
+        let _ = Command::new("chmod").arg("+x").arg(&pytest).status();
+        let bin = env!("CARGO_BIN_EXE_chisel");
+        let run = Command::new(bin)
+            .args(["run", "--project-dir"])
+            .arg(&dir)
+            .arg("--storage-dir")
+            .arg(&store)
+            .arg("--")
+            .arg(&pytest)
+            .env("CHISEL_NOW", now.to_string())
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(run.status.code(), Some(1), "{}", String::from_utf8_lossy(&run.stderr));
+        let snap = fs::read_to_string(store.join("store")).unwrap();
+        assert!(snap.contains("tests/test_calc.py:test_add"), "{snap}");
+        assert!(!snap.contains("tests/test_calc.py::test_add"), "{snap}");
+        let after = chisel_at(&dir, &store, &["suggest-tests", "src/calc.py"], &now.to_string());
+        let after_doc = chisel::json::parse(&after).unwrap();
+        let joined = after_doc.as_array().unwrap().iter().find(|r| r.get("test_id").and_then(|v| v.as_str()) == Some("tests/test_calc.py:test_add")).unwrap();
+        assert!(joined.get("failure_rate").and_then(|v| v.as_f64()).unwrap() > 0.0, "{joined:?}");
+    }
 }
 
 #[test]
