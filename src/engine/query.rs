@@ -44,8 +44,7 @@ impl Engine {
         if !self.has_data() {
             return Ok(Self::no_data());
         }
-        let tests = self.test_file_set();
-        let mut files: Vec<String> = self.store.array("churn").into_iter().filter_map(|c| c.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).filter(|p| !tests.contains(p)).collect();
+        let mut files: Vec<String> = self.store.array("churn").into_iter().filter_map(|c| c.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).filter(|p| !looks_like_test(p)).collect();
         files.sort();
         files.dedup();
         let query_min: i64 = store::meta_get(&self.store.doc, "co_change_query_min").and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -121,9 +120,9 @@ impl Engine {
                 }
             }
             partners.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
-            let mut import_neighbors: Vec<String> = neighbor_map.get(f).map(|s| s.iter().cloned().filter(|n| self.project_dir.join(n).exists()).collect()).unwrap_or_default();
+            let mut import_neighbors: Vec<String> = neighbor_map.get(f).map(|s| s.iter().filter(|n| self.project_dir.join(n.as_str()).exists()).cloned().collect()).unwrap_or_default();
             import_neighbors.sort();
-            let file_units = self.store.units_by_file(f);
+            let file_units: Vec<Value> = self.store.units_by_file(f).into_iter().filter(|u| !is_test_unit_row(u)).collect();
             let mut tested_lines = 0i64;
             let mut total_lines = 0i64;
             let mut tested_units = 0i64;
@@ -1424,13 +1423,12 @@ impl Engine {
     }
 
     pub(super) fn gap_rows(&self) -> Vec<Value> {
-        let tests = self.test_file_set();
         let edges = self.store.array("test_edges");
         let churn = self.store.array("churn");
         let mut gaps = Vec::new();
         for u in self.store.array("code_units") {
             let path = u.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            if tests.contains(path) { continue; }
+            if looks_like_test(path) || is_test_unit_row(&u) { continue; }
             let id = u.get("id").and_then(|v| v.as_str()).unwrap_or("");
             if edges.iter().any(|e| e.get("code_id").and_then(|v| v.as_str()) == Some(id)) {
                 continue;
@@ -1675,41 +1673,58 @@ impl Engine {
         let history = self.history_rows(file);
         if history.is_empty() { return Vec::new(); }
         let now = impact::now_unix();
-        let mut stats: BTreeMap<String, (i64, String, i64, i64, String, f64, f64)> = BTreeMap::new();
+        struct ReviewerTotals {
+            commits: i64,
+            email: String,
+            insertions: i64,
+            deletions: i64,
+            last_date: String,
+            score: f64,
+            last_ts: f64,
+        }
+        let mut stats: BTreeMap<String, ReviewerTotals> = BTreeMap::new();
         for c in &history {
             let author = c.get("author").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let email = c.get("author_email").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let date = c.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let ins = c.get("insertions").and_then(|v| v.as_i64()).unwrap_or(0);
             let del = c.get("deletions").and_then(|v| v.as_i64()).unwrap_or(0);
-            let slot = stats.entry(author).or_insert((0, String::new(), 0, 0, String::new(), 0.0, 0.0));
-            slot.0 += 1;
-            if !email.is_empty() { slot.1 = email; }
-            slot.2 += ins;
-            slot.3 += del;
+            let slot = stats.entry(author).or_insert(ReviewerTotals {
+                commits: 0,
+                email: String::new(),
+                insertions: 0,
+                deletions: 0,
+                last_date: String::new(),
+                score: 0.0,
+                last_ts: 0.0,
+            });
+            slot.commits += 1;
+            if !email.is_empty() { slot.email = email; }
+            slot.insertions += ins;
+            slot.deletions += del;
             if let Some(ts) = impact::parse_iso_unix(&date) {
-                if date > slot.4 {
-                    slot.4 = date.clone();
-                    slot.6 = ts;
+                if date > slot.last_date {
+                    slot.last_date = date.clone();
+                    slot.last_ts = ts;
                 }
                 let days = ((now - ts) / 86400.0).max(0.0);
-                slot.5 += 1.0 / (1.0 + days);
+                slot.score += 1.0 / (1.0 + days);
             } else {
-                slot.5 += 0.01;
+                slot.score += 0.01;
             }
         }
-        let total: f64 = stats.values().map(|s| s.5).sum();
-        let mut rows: Vec<Value> = stats.into_iter().map(|(author, (commits, email, ins, del, last, score, last_ts))| {
-            let days = if last_ts > 0.0 { Some(crate::json::py_round((now - last_ts) / 86400.0, 0) as i64) } else { None };
-            let pct = if total > 0.0 { score / total * 100.0 } else { 0.0 };
+        let total: f64 = stats.values().map(|s| s.score).sum();
+        let mut rows: Vec<Value> = stats.into_iter().map(|(author, totals)| {
+            let days = if totals.last_ts > 0.0 { Some(crate::json::py_round((now - totals.last_ts) / 86400.0, 0) as i64) } else { None };
+            let pct = if total > 0.0 { totals.score / total * 100.0 } else { 0.0 };
             Value::object(vec![
                 ("author".into(), Value::String(author)),
-                ("author_email".into(), Value::String(email)),
-                ("recent_commits".into(), Value::Int(commits)),
-                ("last_commit_date".into(), Value::String(last)),
+                ("author_email".into(), Value::String(totals.email)),
+                ("recent_commits".into(), Value::Int(totals.commits)),
+                ("last_commit_date".into(), Value::String(totals.last_date)),
                 ("days_since_last_commit".into(), days.map(Value::Int).unwrap_or(Value::Null)),
-                ("insertions".into(), Value::Int(ins)),
-                ("deletions".into(), Value::Int(del)),
+                ("insertions".into(), Value::Int(totals.insertions)),
+                ("deletions".into(), Value::Int(totals.deletions)),
                 ("percentage".into(), Value::Float(crate::json::py_round(pct, 2))),
                 ("role".into(), Value::String("suggested_reviewer".into())),
             ])

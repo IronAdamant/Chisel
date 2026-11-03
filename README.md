@@ -157,7 +157,7 @@ The same binary has been run on flask, requests, cJSON, quixbugs, and the Probat
 
 - **Zero dependencies** — the Rust binary links only the standard library. No crates.io crates. System `git` is required at runtime.
 - **Multi-language** — Python, JavaScript/TypeScript, Go, Rust, C#, Java, Kotlin, C/C++, Swift, PHP, Ruby, Dart
-- **Framework-aware** — pytest, Jest, Go test, Rust #[test], Playwright, xUnit/NUnit/MSTest, JUnit (incl. parameterized), XCTest + Swift Testing, PHPUnit, RSpec, Minitest, gtest, Dart test
+- **Framework-aware** — pytest, Jest, Go test, Rust `#[test]` (including `#[tokio::test]` and `#[rstest]`, in `tests/*.rs` and in source files), Playwright, xUnit/NUnit/MSTest, JUnit (incl. parameterized), XCTest + Swift Testing, PHPUnit, RSpec, Minitest, gtest, Dart test
 - **Incremental** — `update` recomputes changed files and newer commits. A no-op update sets `edge_rebuild_skipped` and does not run `git blame` or per-function `git log -L`. Above 2000 code files, file-level churn still runs and per-function `git log -L` does not (`unit_churn_skipped`).
 - **gitignore-aware** — ignored trees (vendored deps, build output, fixtures) are never scanned; untracked files still are (`CHISEL_INCLUDE_IGNORED=1` to override)
 - **Branch-aware** — `diff_impact` auto-detects feature branch vs main. Feature-branch co-change comes from `merge-base..HEAD`. `main` and `master` keep that list empty.

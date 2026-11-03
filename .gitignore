@@ -29,6 +29,6 @@ PLAN_NEXT.md
 PLAN_COMPLETED.md
 plan/
 
-# Wikifier runtime cache (state files like file_health.md ARE versioned)
+# Wikifier runtime cache. Generated maps of the old Python package are not versioned.
 .wikifier_staging/
 .coordinationhub/

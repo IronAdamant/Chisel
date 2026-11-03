@@ -1,11 +1,49 @@
 # Architecture
 
-Chisel is a zero-dependency Rust program. `AGENTS.md` is the agent contract.
+Chisel is a zero-dependency Rust program. `AGENTS.md` is the agent contract. `plan.md` records the layout and the rules that stay in force.
 
-`src/engine` analyzes the worktree, answers queries, and records advisory locks. `src/extract` scans source files. `src/store.rs` reads and writes one snapshot, `.chisel/store`, with a temp file, fsync, and rename. It does not open `chisel.db` and it rejects `:memory:` and `file:` paths.
+The crate exposes two binaries. `chisel` is `src/main.rs`. `chisel-mcp` is `src/bin/chisel-mcp.rs`. Both call `cli::entry`. When the program name is `chisel-mcp`, the entry inserts `serve-mcp` and speaks stdio MCP. `chisel serve` is HTTP only: `GET /health`, `GET /tools`, and `POST /call` on `127.0.0.1:8377`. There is no `/mcp` path.
 
-Git is a subprocess. HTTP is `GET /health`, `GET /tools`, and `POST /call` on `127.0.0.1:8377`. There is no `/mcp` path. MCP is stdio Content-Length JSON-RPC from `chisel serve-mcp` or the `chisel-mcp` name of the same binary.
+## Flow
 
-Status values: `no_data`, `no_changes`, `no_edges`, `git_error`, `stale_db`, `error`, `unsupported`, `auto_queued`.
+1. `analyze` lists code files through git (or a walk when ignored files are included), extracts units, and writes one snapshot.
+2. Test files come from `looks_like_test` in `src/engine/mod.rs`. That is the only filename classifier. Rust files under the top-level `tests/` directory are test files. Functions with a `#[test]`-family attribute are test units even inside a source file.
+3. Edges are calls and imports from those test units to code units. `suggest-tests`, `diff-impact`, `test-gaps`, and `risk-map` read the snapshot.
+4. `update` recomputes changed files. A no-op update sets `edge_rebuild_skipped` and does not run `git blame` or per-function `git log -L`.
+5. `risk-map` and `test-gaps` skip paths that `looks_like_test` accepts. A source file that also holds `#[test]` functions stays in those answers. The test functions themselves are not listed as untested code.
 
-Do not pip-install this project. Do not store analysis in SQLite.
+## Modules
+
+| Module | Responsibility |
+|---|---|
+| `src/cli.rs` | Flags, subcommands, `chisel run`, `chisel watch`. |
+| `src/engine/analyze.rs` | Full and incremental scans, test units, edges. |
+| `src/engine/query.rs` | Read tools: impact, suggestions, risk, gaps, triage. |
+| `src/engine/locks.rs` | Advisory lock rows in the snapshot. |
+| `src/extract` | Python syntax units, brace-language units, import and call deps. |
+| `src/syntax.rs` | Built-in Python and JavaScript syntax tree used by the scanners. |
+| `src/store.rs` | One snapshot file. Write to a temp file, fsync, rename. |
+| `src/git.rs` | Porcelain via `std::process`. A ref that starts with `-` is rejected. |
+| `src/impact.rs` | Churn, coupling, coverage gap, risk score. |
+| `src/json.rs` | Parser, serializer, Python-compatible rounding for scores. |
+| `src/hash.rs` | SHA-256 for file content. |
+| `src/http.rs` | The small JSON HTTP server. |
+| `src/mcp.rs` | Content-Length framing and the tool bridge. |
+| `src/fswatch.rs` | OS change notification. `collect_files` is only compiled for the kqueue path. |
+| `src/lock.rs` | Cross-process shared and exclusive locks. |
+| `src/schemas.rs` | Tool list. Missing required arguments are `status: "error"`. |
+| `src/next_steps.rs` | Hint rows attached to tool results. |
+
+Shards are one snapshot each under `.chisel/shards/<shard>/`. Writes use the longest path prefix. Unscoped reads aggregate. Cross-shard test edges are written to the parent snapshot and overlaid for impact, suggestions, diff, risk coverage, and stale tests.
+
+## Storage and git
+
+`.chisel/store` is the snapshot. Chisel does not open `chisel.db`. `:memory:` and `file:` storage paths are rejected. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` apply when the CLI flags are absent.
+
+Git is a subprocess. Locks are advisory records. They do not lock source files.
+
+## Status
+
+`no_data`, `no_changes`, `no_edges`, `git_error`, `stale_db`, `error`, `unsupported`, `auto_queued`. `no_data` and `stale_db` exit 0. `error` and `git_error` exit 1.
+
+Do not pip-install this project. Do not store analysis in SQLite. Do not add a crates.io dependency.

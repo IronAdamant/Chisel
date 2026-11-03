@@ -1,4 +1,4 @@
-//! The 26 tool names, in the same order as `chisel/schemas.py`.
+//! The 26 tool names and their input schemas.
 //! Schema bodies are the Python descriptions and parameter objects, embedded
 //! so the binary does not import Python at runtime.
 

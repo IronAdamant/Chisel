@@ -113,7 +113,7 @@ impl Engine {
                 }
             }
             let score = impact::churn_score(&dates, now);
-            churn_rows.push(churn_row(rel, "", count, authors.len() as i64, ins, del, &last, score));
+            churn_rows.push(churn_row(rel, "", ChurnCounts { commits: count, authors: authors.len() as i64, insertions: ins, deletions: del }, &last, score));
         }
         if files.len() <= 2000 {
             let tasks = unit_log_tasks(&files, &units_by_file);
@@ -126,7 +126,7 @@ impl Engine {
                 let func_dates: Vec<String> = func_commits.iter().map(|c| c.date.clone()).collect();
                 let func_score = impact::churn_score(&func_dates, now);
                 let func_count = func_dates.iter().filter(|d| impact::parse_iso_unix(d).is_some()).count() as i64;
-                churn_rows.push(churn_row(&task.0, &task.1, func_count, 1, 0, 0, "", func_score));
+                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: 1, insertions: 0, deletions: 0 }, "", func_score));
             }
         }
         self.store.doc.insert("churn", Value::Array(churn_rows));
@@ -354,7 +354,7 @@ impl Engine {
                 }
             }
             let score = impact::churn_score(&dates, now);
-            churn_rows.push(churn_row(rel, "", count, authors.len() as i64, ins, del, &last, score));
+            churn_rows.push(churn_row(rel, "", ChurnCounts { commits: count, authors: authors.len() as i64, insertions: ins, deletions: del }, &last, score));
         }
         if !skip_unit {
             let stored_units = self.store.array("code_units");
@@ -375,7 +375,7 @@ impl Engine {
                 let func_dates: Vec<String> = func_commits.iter().map(|c| c.date.clone()).collect();
                 let func_score = impact::churn_score(&func_dates, now);
                 let func_count = func_dates.iter().filter(|d| impact::parse_iso_unix(d).is_some()).count() as i64;
-                churn_rows.push(churn_row(&task.0, &task.1, func_count, 1, 0, 0, "", func_score));
+                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: 1, insertions: 0, deletions: 0 }, "", func_score));
             }
         }
         self.store.doc.insert("churn", Value::Array(churn_rows));
@@ -420,6 +420,14 @@ impl Engine {
         let changed_tests: Vec<String> = changed.iter().filter(|p| looks_like_test(p)).cloned().collect();
         let changed_sources: Vec<String> = changed.iter().filter(|p| !looks_like_test(p)).cloned().collect();
         let mut tests_to_rebuild = changed_tests.clone();
+        let prior_tests = self.store.array("test_units");
+        for path in &changed_sources {
+            let fresh = units_by_file.get(path).is_some_and(|units| units.iter().any(|u| is_test_unit_type(&u.unit_type)));
+            let prior = prior_tests.iter().any(|u| u.get("file_path").and_then(|v| v.as_str()) == Some(path.as_str()));
+            if fresh || prior {
+                tests_to_rebuild.push(path.clone());
+            }
+        }
         if !changed_sources.is_empty() || !removed.is_empty() {
             let known_tests = self.store.array("test_units");
             for edge in self.store.array("test_edges") {
@@ -553,33 +561,31 @@ impl Engine {
 
     pub(super) fn build_tests_and_edges(&mut self, files: &[String], units_by_file: &BTreeMap<String, Vec<CodeUnit>>) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
         let mut test_units = Vec::new();
-        let mut test_files = Vec::new();
         for rel in files {
-            if !looks_like_test(rel) {
+            let units = units_by_file.get(rel).cloned().unwrap_or_default();
+            let as_file = looks_like_test(rel);
+            let framework = if rel.ends_with(".py") {
+                "pytest"
+            } else if rel.ends_with(".go") {
+                "go"
+            } else {
+                "test"
+            };
+            let selected: Vec<CodeUnit> = if as_file {
+                units.into_iter().filter(|u| {
+                    extract::is_test_name(&u.name, framework) || is_test_unit_type(&u.unit_type)
+                }).collect()
+            } else {
+                units.into_iter().filter(|u| is_test_unit_type(&u.unit_type)).collect()
+            };
+            if !as_file && selected.is_empty() {
                 continue;
             }
-            test_files.push(rel.clone());
             let abs = self.project_dir.join(rel);
             let content = fs::read_to_string(&abs).unwrap_or_default();
             self.source_reads += 1;
             let hash = sha256_hex(content.as_bytes());
-            let framework = if rel.ends_with(".py") { "pytest" } else if rel.ends_with(".go") { "go" } else { "test" };
-            let units = units_by_file.get(rel).cloned().unwrap_or_default();
-            let before_n = test_units.len();
-            for u in units {
-                if extract::is_test_name(&u.name, framework) || u.unit_type == "test_case" || u.unit_type == "test_suite" {
-                    test_units.push(Value::object(vec![
-                        ("id".into(), Value::String(format!("{rel}:{}", u.name))),
-                        ("file_path".into(), Value::String(rel.clone())),
-                        ("name".into(), Value::String(u.name.clone())),
-                        ("framework".into(), Value::String(framework.into())),
-                        ("line_start".into(), Value::Int(u.line_start as i64)),
-                        ("line_end".into(), Value::Int(u.line_end as i64)),
-                        ("content_hash".into(), Value::String(hash.clone())),
-                    ]));
-                }
-            }
-            if test_units.len() == before_n {
+            if selected.is_empty() {
                 let stem = rel.rsplit(['/', '\\']).next().unwrap_or(rel);
                 test_units.push(Value::object(vec![
                     ("id".into(), Value::String(format!("{rel}:{stem}"))),
@@ -589,6 +595,18 @@ impl Engine {
                     ("line_start".into(), Value::Int(1)),
                     ("line_end".into(), Value::Int(1)),
                     ("content_hash".into(), Value::String(hash)),
+                ]));
+                continue;
+            }
+            for u in selected {
+                test_units.push(Value::object(vec![
+                    ("id".into(), Value::String(format!("{rel}:{}", u.name))),
+                    ("file_path".into(), Value::String(rel.clone())),
+                    ("name".into(), Value::String(u.name.clone())),
+                    ("framework".into(), Value::String(framework.into())),
+                    ("line_start".into(), Value::Int(u.line_start as i64)),
+                    ("line_end".into(), Value::Int(u.line_end as i64)),
+                    ("content_hash".into(), Value::String(hash.clone())),
                 ]));
             }
         }
@@ -643,12 +661,11 @@ impl Engine {
     }
 
     pub(super) fn build_import_edges(&self, files: &[String]) -> Vec<Value> {
-        let tests = self.test_file_set();
         let code_units = self.store.array("code_units");
         let mut edges = Vec::new();
         let mut seen = BTreeSet::new();
         for rel in files {
-            if tests.contains(rel) {
+            if looks_like_test(rel) {
                 continue;
             }
             let content = fs::read_to_string(self.project_dir.join(rel)).unwrap_or_default();

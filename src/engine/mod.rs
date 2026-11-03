@@ -38,11 +38,9 @@ pub(crate) fn shard_name_for<'a>(file: &str, shards: &'a [(String, String)]) -> 
     let mut best: Option<&str> = None;
     let mut best_len = 0usize;
     for (name, prefix) in shards {
-        if file == prefix.as_str() || file.starts_with(&format!("{prefix}/")) {
-            if prefix.len() >= best_len {
-                best = Some(name.as_str());
-                best_len = prefix.len();
-            }
+        if (file == prefix.as_str() || file.starts_with(&format!("{prefix}/"))) && prefix.len() >= best_len {
+            best = Some(name.as_str());
+            best_len = prefix.len();
         }
     }
     best
@@ -264,9 +262,17 @@ impl Engine {
 
 }
 
+/// Filename patterns `looks_like_test` accepts. Rust `#[test]` functions are separate: they are units, not names.
+pub(crate) fn test_file_patterns() -> &'static str {
+    "test_*.py, *_test.py, *_test.go, *_test.rs, tests/*.rs, *_test.dart, *_spec.rb, test_*.rb, *.test.js, *.test.jsx, *.test.ts, *.test.tsx, *.spec.js, *.spec.jsx, *.spec.ts, *.spec.tsx, *Test.cs, *Tests.cs, *Test.java, Test*.java, *Test.kt, *Test.swift, *Tests.swift, *Test.php"
+}
+
 pub(crate) fn analyze_hint(test_files: i64) -> String {
     if test_files == 0 {
-        "No test files matched test_*.py, *_test.py, *_test.go, *_test.rs, *.test.ts, *.test.js, *.spec.ts, or *.spec.js. For large repos, use start_job with kind='analyze' to avoid MCP timeouts.".into()
+        format!(
+            "No test files matched {}. Rust #[test] functions are still recorded when a file is not named like a test. For large repos, use start_job with kind='analyze' to avoid MCP timeouts.",
+            test_file_patterns()
+        )
     } else {
         "For large repos, use start_job with kind='analyze' to avoid MCP timeouts.".into()
     }
@@ -342,7 +348,7 @@ pub(crate) fn flakiness_trend(results: &[Value], test_id: &str, now: f64) -> Opt
             continue;
         };
         let age = now - when;
-        if age < 0.0 || age >= WINDOW {
+        if !(0.0..WINDOW).contains(&age) {
             continue;
         }
         let bucket = (age / WEEK) as usize;
@@ -443,14 +449,21 @@ pub(crate) fn now_secs() -> f64 {
     impact::now_unix()
 }
 
-pub(crate) fn churn_row(rel: &str, unit: &str, count: i64, authors: i64, ins: i64, del: i64, last: &str, score: f64) -> Value {
+pub(crate) struct ChurnCounts {
+    pub commits: i64,
+    pub authors: i64,
+    pub insertions: i64,
+    pub deletions: i64,
+}
+
+pub(crate) fn churn_row(rel: &str, unit: &str, counts: ChurnCounts, last: &str, score: f64) -> Value {
     Value::object(vec![
         ("file_path".into(), Value::String(rel.into())),
         ("unit_name".into(), Value::String(unit.into())),
-        ("commit_count".into(), Value::Int(count)),
-        ("distinct_authors".into(), Value::Int(authors)),
-        ("total_insertions".into(), Value::Int(ins)),
-        ("total_deletions".into(), Value::Int(del)),
+        ("commit_count".into(), Value::Int(counts.commits)),
+        ("distinct_authors".into(), Value::Int(counts.authors)),
+        ("total_insertions".into(), Value::Int(counts.insertions)),
+        ("total_deletions".into(), Value::Int(counts.deletions)),
         ("last_changed".into(), if last.is_empty() { Value::Null } else { Value::String(last.into()) }),
         ("churn_score".into(), Value::Float(score)),
     ])
@@ -468,6 +481,16 @@ pub(crate) fn unit_obj(rel: &str, u: &CodeUnit, hash: &str) -> Value {
     ])
 }
 
+pub(crate) fn is_test_unit_type(unit_type: &str) -> bool {
+    unit_type == "test_case" || unit_type == "test_suite"
+}
+
+pub(crate) fn is_test_unit_row(unit: &Value) -> bool {
+    unit.get("unit_type").and_then(|v| v.as_str()).is_some_and(is_test_unit_type)
+}
+
+/// One classifier for "this path is a test file".
+/// Cargo integration tests are any `.rs` file under the top-level `tests/` directory.
 pub(crate) fn looks_like_test(path: &str) -> bool {
     let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
     let ext_ok = |suffix: &str| name.ends_with(suffix);
@@ -494,6 +517,15 @@ pub(crate) fn looks_like_test(path: &str) -> bool {
         || name.ends_with("Test.swift")
         || name.ends_with("Tests.swift")
         || name.ends_with("Test.php")
+        || rust_integration_test(path, name)
+}
+
+fn rust_integration_test(path: &str, name: &str) -> bool {
+    if !name.ends_with(".rs") {
+        return false;
+    }
+    let normalized = path.replace('\\', "/");
+    normalized.split('/').next() == Some("tests")
 }
 
 pub(crate) fn resolved_import_files(deps: &[Dep], units: &[Value]) -> BTreeSet<String> {

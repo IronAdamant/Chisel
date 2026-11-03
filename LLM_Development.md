@@ -4,6 +4,17 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## 2026-11-03 -- Cargo test discovery, docs, CI, version
+
+- One test-file classifier. Rust files under `tests/` and `#[test]`-family functions are test units.
+- Removed `library.md`, `file_health.md`, `file_health.json`, and `pending_updates.md`. They described the deleted Python package or were empty. `plan.md`, `ARCHITECTURE.md`, `CLAUDE.md`, and `COMPLETE_PROJECT_DOCUMENTATION.md` now describe the Rust tree.
+- `chisel` and `chisel-mcp` no longer share `src/main.rs`. `collect_files` is compiled only for the kqueue path.
+- CI runs `cargo test` on macOS and Windows as well as Linux.
+- `--version` prints the package version. Removed `monitored_paths.txt` (it held one local absolute path).
+- Cleared the clippy warnings reported by `cargo clippy --all-targets`.
+
+---
+
 ## 2026-04-14 -- Review Thirteen fixes (kimi_review_2): risk_map crash, suggest_tests/diff_impact working_tree timeouts
 
 ### Summary

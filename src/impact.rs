@@ -29,24 +29,26 @@ pub fn weight(name: &str) -> f64 {
     }
 }
 
-pub fn compose_risk_score(
-    churn_norm: f64,
-    coupling_norm: f64,
-    coverage_gap: f64,
-    coverage_depth: f64,
-    author_concentration: f64,
-    test_instability: f64,
-    hidden_risk_factor: f64,
-    new_file_boost: f64,
-) -> f64 {
-    weight("churn") * churn_norm
-        + weight("coupling") * coupling_norm
-        + weight("coverage_gap") * coverage_gap
-        + weight("coverage_depth") * coverage_depth
-        + weight("author_concentration") * author_concentration
-        + weight("test_instability") * test_instability
-        + hidden_risk_factor
-        + new_file_boost
+pub struct RiskTerms {
+    pub churn_norm: f64,
+    pub coupling_norm: f64,
+    pub coverage_gap: f64,
+    pub coverage_depth: f64,
+    pub author_concentration: f64,
+    pub test_instability: f64,
+    pub hidden_risk_factor: f64,
+    pub new_file_boost: f64,
+}
+
+pub fn compose_risk_score(terms: &RiskTerms) -> f64 {
+    weight("churn") * terms.churn_norm
+        + weight("coupling") * terms.coupling_norm
+        + weight("coverage_gap") * terms.coverage_gap
+        + weight("coverage_depth") * terms.coverage_depth
+        + weight("author_concentration") * terms.author_concentration
+        + weight("test_instability") * terms.test_instability
+        + terms.hidden_risk_factor
+        + terms.new_file_boost
 }
 
 pub fn hidden_risk(dynamic_edge_count: f64) -> f64 {
@@ -209,7 +211,16 @@ pub fn score_file(inp: &RiskInputs) -> Value {
     } else {
         0.0
     };
-    let risk = compose_risk_score(churn_norm, coupling, gap, depth, inp.author_conc, inp.instability, hidden, new_boost);
+    let risk = compose_risk_score(&RiskTerms {
+        churn_norm,
+        coupling_norm: coupling,
+        coverage_gap: gap,
+        coverage_depth: depth,
+        author_concentration: inp.author_conc,
+        test_instability: inp.instability,
+        hidden_risk_factor: hidden,
+        new_file_boost: new_boost,
+    });
     let partners = Value::Array(inp.coupling_partners.iter().take(3).map(|(f, n)| {
         Value::object(vec![
             ("file".into(), Value::String(f.clone())),

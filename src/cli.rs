@@ -576,9 +576,31 @@ pub fn argv_is_mcp_binary(argv0: &str) -> bool {
     std::path::Path::new(argv0).file_stem().and_then(|s| s.to_str()) == Some("chisel-mcp")
 }
 
+pub fn version() {
+    println!("chisel {}", env!("CARGO_PKG_VERSION"));
+}
+
+pub fn entry() -> Result<i32, String> {
+    let mut argv: Vec<String> = env::args().skip(1).collect();
+    if argv.iter().any(|a| a == "--version") {
+        version();
+        return Ok(0);
+    }
+    let argv0 = env::args().next().unwrap_or_default();
+    if argv_is_mcp_binary(&argv0) {
+        argv.insert(0, "serve-mcp".into());
+    }
+    if argv.is_empty() || argv.iter().any(|a| a == "-h" || a == "--help") && argv.len() == 1 {
+        help();
+        return Ok(0);
+    }
+    let args = parse(&argv)?;
+    run(&args)
+}
+
 pub fn help() {
     println!("Chisel — test impact analysis and code intelligence");
-    println!("usage: chisel [--json] [--project-dir DIR] [--storage-dir DIR] <command> ...");
+    println!("usage: chisel [--json] [--version] [--project-dir DIR] [--storage-dir DIR] <command> ...");
     println!("commands: analyze, impact, suggest-tests, churn, ownership, coupling, risk-map,");
     println!("  stale-tests, history, who-reviews, diff-impact, update, test-gaps, record-result,");
     println!("  run, watch, stats, start-job, job-status, cancel-job, triage, serve, serve-mcp,");

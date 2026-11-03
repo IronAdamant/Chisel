@@ -53,10 +53,10 @@ fn parse_python(source: &str) -> Node {
     let mut stack: Vec<(usize, usize, String)> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        let (clean, next_depth) = strip_line(&lines[i], depth);
+        let (clean, next_depth) = strip_line(lines[i], depth);
         let trimmed = clean.trim();
         if depth == 0 {
-            let indent = indent_of(&lines[i]);
+            let indent = indent_of(lines[i]);
             stack.retain(|(_, ind, _)| *ind < indent);
             if let Some(name) = class_name(trimmed) {
                 let end = block_end(&lines, i, indent);
@@ -191,10 +191,9 @@ fn class_name(trimmed: &str) -> Option<String> {
 fn def_name(trimmed: &str) -> Option<(String, bool)> {
     let (rest, is_async) = if let Some(r) = trimmed.strip_prefix("async def ") {
         (r, true)
-    } else if let Some(r) = trimmed.strip_prefix("def ") {
-        (r, false)
     } else {
-        return None;
+        let r = trimmed.strip_prefix("def ")?;
+        (r, false)
     };
     let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
     if name.is_empty() { None } else { Some((name, is_async)) }

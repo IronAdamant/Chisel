@@ -5,7 +5,7 @@ mod brace;
 mod deps;
 mod python;
 
-pub use deps::{extract_deps, Dep, is_test_file, is_test_name, matches_import_path, matches_relative_import, proximity_weight};
+pub use deps::{extract_deps, Dep, is_test_name, matches_import_path, matches_relative_import, proximity_weight};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeUnit {
