@@ -530,20 +530,6 @@ pub fn proximity_weight(test_path: &str, code_path: &str) -> f64 {
     }
 }
 
-pub fn is_test_file(path: &str) -> bool {
-    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    if name.starts_with("test_") && name.ends_with(".py") {
-        return true;
-    }
-    if name.ends_with("_test.py") || name.ends_with("_test.go") {
-        return true;
-    }
-    if name.ends_with("Test.java") || name.ends_with("Tests.cs") || name.ends_with("Tests.swift") {
-        return true;
-    }
-    false
-}
-
 pub fn is_test_name(name: &str, framework: &str) -> bool {
     let bare = name.rsplit('.').next().unwrap_or(name);
     match framework {

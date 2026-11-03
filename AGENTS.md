@@ -43,6 +43,6 @@ Shards are one snapshot each under `.chisel/shards/<shard>/`, configured by `CHI
 
 Scores are heuristics. Read `_meta.uniform_components` before trusting a composite risk score. `flakiness_trend` is present when a covering test has dated results in the current week and in an older week of the last 28 days. It does not change risk weights. `record_result` stores `recorded_at`.
 
-Test filenames that produce edges include `test_*.py`, `*_test.py`, `*.test.ts`, `*.spec.ts`, `*_test.go`, and `*_test.rs`.
+Test filenames that produce edges include `test_*.py`, `*_test.py`, `*.test.ts`, `*.spec.ts`, `*_test.go`, `*_test.rs`, and any `.rs` file under the top-level `tests/` directory. Rust functions marked `#[test]`, `#[tokio::test]`, `#[rstest]`, or `#[test_case]` are test units even when the file is not named like a test.
 
 `CHISEL_EXTRACTOR` or `extractor` in `.chisel/extensions.toml` names an executable. That program may use its own libraries. Chisel does not link them. The toml file is ignored unless the process was started with `--allow-repo-extractor` or `CHISEL_ALLOW_REPO_EXTRACTOR=1`. A tool argument cannot turn it on. The path must stay inside the project. `CHISEL_EXTRACTOR` overrides the file. A bad run falls back to the built-in scanner. A git ref that starts with `-` is rejected.

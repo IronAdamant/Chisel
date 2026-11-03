@@ -44,8 +44,7 @@ impl Engine {
         if !self.has_data() {
             return Ok(Self::no_data());
         }
-        let tests = self.test_file_set();
-        let mut files: Vec<String> = self.store.array("churn").into_iter().filter_map(|c| c.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).filter(|p| !tests.contains(p)).collect();
+        let mut files: Vec<String> = self.store.array("churn").into_iter().filter_map(|c| c.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).filter(|p| !looks_like_test(p)).collect();
         files.sort();
         files.dedup();
         let query_min: i64 = store::meta_get(&self.store.doc, "co_change_query_min").and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -123,7 +122,7 @@ impl Engine {
             partners.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
             let mut import_neighbors: Vec<String> = neighbor_map.get(f).map(|s| s.iter().cloned().filter(|n| self.project_dir.join(n).exists()).collect()).unwrap_or_default();
             import_neighbors.sort();
-            let file_units = self.store.units_by_file(f);
+            let file_units: Vec<Value> = self.store.units_by_file(f).into_iter().filter(|u| !is_test_unit_row(u)).collect();
             let mut tested_lines = 0i64;
             let mut total_lines = 0i64;
             let mut tested_units = 0i64;
@@ -1424,13 +1423,12 @@ impl Engine {
     }
 
     pub(super) fn gap_rows(&self) -> Vec<Value> {
-        let tests = self.test_file_set();
         let edges = self.store.array("test_edges");
         let churn = self.store.array("churn");
         let mut gaps = Vec::new();
         for u in self.store.array("code_units") {
             let path = u.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            if tests.contains(path) { continue; }
+            if looks_like_test(path) || is_test_unit_row(&u) { continue; }
             let id = u.get("id").and_then(|v| v.as_str()).unwrap_or("");
             if edges.iter().any(|e| e.get("code_id").and_then(|v| v.as_str()) == Some(id)) {
                 continue;

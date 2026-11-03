@@ -41,9 +41,9 @@ fn language_fixtures_match_python_0_15_1() {
         (
             "rust/basic.rs",
             vec![
-                ("function", 2, 4, "test_addition"),
-                ("function", 7, 9, "test_async_fetch"),
-                ("function", 12, 14, "test_with_fixture"),
+                ("test_case", 2, 4, "test_addition"),
+                ("test_case", 7, 9, "test_async_fetch"),
+                ("test_case", 12, 14, "test_with_fixture"),
                 ("function", 16, 18, "plain_helper"),
             ],
         ),

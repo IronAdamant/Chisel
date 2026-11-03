@@ -61,7 +61,10 @@ pub(super) fn extract_brace(file_path: &str, content: &str, lang: &str) -> Vec<C
         if t.is_empty() {
             continue;
         }
-        if let Some((name, kind)) = decl_on_line(t, lang) {
+        if let Some((name, mut kind)) = decl_on_line(t, lang) {
+            if lang == "rust" && kind == "function" && rust_test_above(&cleaned, i) {
+                kind = "test_case".into();
+            }
             let end = brace_end(&cleaned, i);
             units.push(CodeUnit {
                 file_path: file_path.into(),
@@ -99,7 +102,8 @@ fn decl_on_line(t: &str, lang: &str) -> Option<(String, String)> {
         }
     }
     if lang == "rust" {
-        if let Some(name) = rust_fn_name(t) {
+        let body = strip_leading_rust_attrs(t);
+        if let Some(name) = rust_fn_name(body) {
             return Some((name, "function".into()));
         }
     }
@@ -206,6 +210,67 @@ fn go_func_name(t: &str) -> Option<String> {
     } else {
         ident(rest)
     }
+}
+
+fn strip_leading_rust_attrs(t: &str) -> &str {
+    let mut s = t.trim();
+    while s.starts_with("#[") {
+        let Some(end) = s.find(']') else { break };
+        s = s[end + 1..].trim_start();
+    }
+    s
+}
+
+fn rust_attr_head(line: &str) -> Option<&str> {
+    let rest = line.trim().strip_prefix("#[")?.trim_start();
+    let end = rest.find(']')?;
+    let head = rest[..end].split('(').next()?.trim();
+    if head.is_empty() { None } else { Some(head) }
+}
+
+fn is_rust_test_attr(head: &str) -> bool {
+    head == "test"
+        || head == "rstest"
+        || head == "test_case"
+        || head.ends_with("::test")
+        || head.ends_with("::rstest")
+        || head.ends_with("::test_case")
+}
+
+fn rust_test_above(lines: &[String], index: usize) -> bool {
+    if line_has_rust_test_attr(&lines[index]) {
+        return true;
+    }
+    let mut i = index;
+    while i > 0 {
+        i -= 1;
+        let t = lines[i].trim();
+        if t.is_empty() || t.starts_with("//") {
+            continue;
+        }
+        if let Some(head) = rust_attr_head(t) {
+            if is_rust_test_attr(head) {
+                return true;
+            }
+            continue;
+        }
+        return false;
+    }
+    false
+}
+
+fn line_has_rust_test_attr(line: &str) -> bool {
+    let mut rest = line.trim();
+    while let Some(start) = rest.find("#[") {
+        let after = &rest[start..];
+        let Some(head) = rust_attr_head(after) else { break };
+        if is_rust_test_attr(head) {
+            return true;
+        }
+        let Some(end) = after.find(']') else { break };
+        rest = after[end + 1..].trim_start();
+    }
+    false
 }
 
 fn rust_fn_name(t: &str) -> Option<String> {

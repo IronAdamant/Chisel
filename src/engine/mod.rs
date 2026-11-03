@@ -264,9 +264,17 @@ impl Engine {
 
 }
 
+/// Filename patterns `looks_like_test` accepts. Rust `#[test]` functions are separate: they are units, not names.
+pub(crate) fn test_file_patterns() -> &'static str {
+    "test_*.py, *_test.py, *_test.go, *_test.rs, tests/*.rs, *_test.dart, *_spec.rb, test_*.rb, *.test.js, *.test.jsx, *.test.ts, *.test.tsx, *.spec.js, *.spec.jsx, *.spec.ts, *.spec.tsx, *Test.cs, *Tests.cs, *Test.java, Test*.java, *Test.kt, *Test.swift, *Tests.swift, *Test.php"
+}
+
 pub(crate) fn analyze_hint(test_files: i64) -> String {
     if test_files == 0 {
-        "No test files matched test_*.py, *_test.py, *_test.go, *_test.rs, *.test.ts, *.test.js, *.spec.ts, or *.spec.js. For large repos, use start_job with kind='analyze' to avoid MCP timeouts.".into()
+        format!(
+            "No test files matched {}. Rust #[test] functions are still recorded when a file is not named like a test. For large repos, use start_job with kind='analyze' to avoid MCP timeouts.",
+            test_file_patterns()
+        )
     } else {
         "For large repos, use start_job with kind='analyze' to avoid MCP timeouts.".into()
     }
@@ -468,6 +476,16 @@ pub(crate) fn unit_obj(rel: &str, u: &CodeUnit, hash: &str) -> Value {
     ])
 }
 
+pub(crate) fn is_test_unit_type(unit_type: &str) -> bool {
+    unit_type == "test_case" || unit_type == "test_suite"
+}
+
+pub(crate) fn is_test_unit_row(unit: &Value) -> bool {
+    unit.get("unit_type").and_then(|v| v.as_str()).is_some_and(is_test_unit_type)
+}
+
+/// One classifier for "this path is a test file".
+/// Cargo integration tests are any `.rs` file under the top-level `tests/` directory.
 pub(crate) fn looks_like_test(path: &str) -> bool {
     let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
     let ext_ok = |suffix: &str| name.ends_with(suffix);
@@ -494,6 +512,15 @@ pub(crate) fn looks_like_test(path: &str) -> bool {
         || name.ends_with("Test.swift")
         || name.ends_with("Tests.swift")
         || name.ends_with("Test.php")
+        || rust_integration_test(path, name)
+}
+
+fn rust_integration_test(path: &str, name: &str) -> bool {
+    if !name.ends_with(".rs") {
+        return false;
+    }
+    let normalized = path.replace('\\', "/");
+    normalized.split('/').next() == Some("tests")
 }
 
 pub(crate) fn resolved_import_files(deps: &[Dep], units: &[Value]) -> BTreeSet<String> {
