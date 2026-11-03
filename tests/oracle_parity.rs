@@ -214,5 +214,5 @@ fn deleting_a_code_unit_leaves_stale_edges() {
     let stale = engine.stale_tests().unwrap();
     let text = chisel::json::to_string(&stale).unwrap();
     assert!(text.contains("src/calc.py:add:function"), "{text}");
-    assert!(text.contains("stale_tests"), "{text}");
+    assert!(text.contains("test_add"), "{text}");
 }

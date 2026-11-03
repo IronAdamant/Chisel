@@ -26,7 +26,7 @@ Status values: `no_data`, `no_changes`, `no_edges`, `git_error`, `stale_db`, `er
 | `src/impact.rs` | Risk math. |
 | `src/json.rs` | JSON parser and serializer. |
 | `src/http.rs` | `GET /health`, `GET /tools`, `POST /call`. No `/mcp` path. |
-| `src/mcp.rs` | Stdio Content-Length JSON-RPC. |
+| `src/mcp.rs` | Stdio MCP: newline-delimited JSON, plus Content-Length. |
 | `src/fswatch.rs` | `inotify`, `kqueue`, or `ReadDirectoryChangesW`, then the caller checks git. |
 | `src/lock.rs` | `flock` on Unix, `LockFileEx` on Windows. |
 | `src/schemas.rs` | The 26 tool names and input schemas. |

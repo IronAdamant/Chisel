@@ -210,6 +210,12 @@ pub struct Engine {
     coverage_mode: String,
     proximity_adjustment: bool,
     exclude_new_file_boost: bool,
+    /// Drop test files from risk, gaps, and triage unless the caller opts out.
+    pub exclude_tests: bool,
+    /// `suggest_tests` fallback_to_all. Stem fallback still runs when this is false and nothing matched.
+    pub fallback_to_all: bool,
+    /// `test_gaps` file scope. Directory scope uses `directory`.
+    scope_file: Option<String>,
     /// Parent storage dir when this engine is a shard view. Result rows live there.
     result_log: Option<PathBuf>,
     /// `(shard name, full shard config)` for overlaying cross edges. `shards` stays empty on a view.
@@ -244,6 +250,9 @@ impl Engine {
             coverage_mode: "line".into(),
             proximity_adjustment: true,
             exclude_new_file_boost: false,
+            exclude_tests: true,
+            fallback_to_all: false,
+            scope_file: None,
             result_log: None,
             shard_view: None,
             overlay_applied: false,
@@ -321,16 +330,33 @@ pub(crate) fn prune_old_results(doc: &mut Value, now: f64) {
 }
 
 pub(crate) fn append_test_result(doc: &mut Value, test_id: &str, passed: bool, now: f64) {
+    append_test_result_full(doc, test_id, passed, now, None);
+}
+
+pub(crate) fn append_test_result_full(doc: &mut Value, test_id: &str, passed: bool, now: f64, duration_ms: Option<f64>) {
     if doc.get("test_results").and_then(|v| v.as_array()).is_none() {
         doc.insert("test_results", Value::Array(Vec::new()));
     }
     if let Some(results) = doc.get_mut("test_results").and_then(|v| v.as_array_mut()) {
-        results.push(Value::object(vec![
+        let mut row = vec![
             ("test_id".into(), Value::String(normalize_test_id(test_id))),
             ("passed".into(), Value::Bool(passed)),
             ("recorded_at".into(), Value::Float(now)),
-        ]));
+        ];
+        if let Some(ms) = duration_ms {
+            row.push(("duration_ms".into(), Value::Float(ms)));
+        }
+        results.push(Value::object(row));
     }
+}
+
+pub(crate) fn path_in_directory(path: &str, dir: &str) -> bool {
+    let dir = dir.trim_matches('/').replace('\\', "/");
+    if dir.is_empty() || dir == "." {
+        return true;
+    }
+    let path = path.replace('\\', "/");
+    path == dir || path.starts_with(&format!("{dir}/"))
 }
 
 /// Newest week fail-rate minus the oldest week fail-rate over 28 days.

@@ -28,7 +28,7 @@ The crate exposes two binaries. `chisel` is `src/main.rs`. `chisel-mcp` is `src/
 | `src/json.rs` | Parser, serializer, Python-compatible rounding for scores. |
 | `src/hash.rs` | SHA-256 for file content. |
 | `src/http.rs` | The small JSON HTTP server. |
-| `src/mcp.rs` | Content-Length framing and the tool bridge. |
+| `src/mcp.rs` | Stdio MCP. Newline-delimited JSON, and Content-Length when the client sends that. |
 | `src/fswatch.rs` | OS change notification. `collect_files` is only compiled for the kqueue path. |
 | `src/lock.rs` | Cross-process shared and exclusive locks. |
 | `src/schemas.rs` | Tool list. Missing required arguments are `status: "error"`. |
@@ -38,7 +38,7 @@ Shards are one snapshot each under `.chisel/shards/<shard>/`. Writes use the lon
 
 ## Storage and git
 
-`.chisel/store` is the snapshot. Chisel does not open `chisel.db`. `:memory:` and `file:` storage paths are rejected. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` apply when the CLI flags are absent.
+`.chisel/store` is the snapshot. `chisel migrate` reads a legacy `chisel.db` once and copies `test_results`. Other commands do not open it. `:memory:` and `file:` storage paths are rejected. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` apply when the CLI flags are absent.
 
 Git is a subprocess. Locks are advisory records. They do not lock source files.
 

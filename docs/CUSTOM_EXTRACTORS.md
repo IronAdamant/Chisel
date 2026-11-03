@@ -14,6 +14,8 @@ A relative path is from the project root and must stay inside the project after 
 
 Unset, with no file, uses the built-in scanner.
 
-Storage is still `.chisel/store`. Do not open `chisel.db`. Do not use SQLite.
+`CHISEL_DEP_EXTRACTOR`, or `dep_extractor` in the same toml file, is a second executable. It reads `{"path","language","content"}` on stdin and writes a JSON list of dependencies: `name`, `dep_type` (`import` or `call`), optional `module_path`, optional `confidence`. A bad run falls back to the built-in dependency scan. The same `--allow-repo-extractor` gate applies to the toml path. `CHISEL_DEP_EXTRACTOR` overrides the file. This is the replacement for Python `register_dep_extractor` and for `CHISEL_BOOTSTRAP`. Chisel does not import a Python module. If `CHISEL_BOOTSTRAP` is a path to an executable, that program is the dependency extractor.
+
+Storage is still `.chisel/store`. `chisel migrate` is the one-shot copy from an old `chisel.db`. Do not use SQLite as the live store.
 
 Status values: `no_data`, `no_changes`, `no_edges`, `git_error`, `stale_db`, `error`, `unsupported`, `auto_queued`.

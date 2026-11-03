@@ -153,7 +153,13 @@ fn route(method: &str, path: &str, body: &[u8], engine: &Arc<Mutex<Engine>>) -> 
         return match eng.dispatch(tool, args) {
             Ok(result) => {
                 let missing = missing_required_result(tool, &result);
-                let steps = compute_next_steps(tool, &result);
+                let mut steps = compute_next_steps(tool, &result);
+                if tool == "suggest_tests" {
+                    let file = args.get("file_path").and_then(|v| v.as_str());
+                    if let Some(warning) = crate::next_steps::eval_warning(eng.project_dir.as_path(), file) {
+                        steps.push(warning);
+                    }
+                }
                 let mut payload = vec![("result".into(), result)];
                 if !steps.is_empty() {
                     payload.push(("next_steps".into(), Value::Array(steps)));

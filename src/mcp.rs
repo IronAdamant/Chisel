@@ -1,4 +1,5 @@
-//! Stdio MCP framing: Content-Length header, then one JSON-RPC body.
+//! Stdio MCP framing. Standard clients send one JSON-RPC object per line.
+//! Content-Length framing still works for clients that send it.
 //! Implements initialize, tools/list, and tools/call.
 
 use crate::engine::Engine;
@@ -15,7 +16,7 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
     let stdout = io::stdout();
     let mut output = stdout.lock();
     loop {
-        let body = match read_message(&mut input) {
+        let (body, newline) = match read_incoming(&mut input) {
             Ok(Some(body)) => body,
             Ok(None) => break,
             Err(err) => {
@@ -27,7 +28,7 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
                         ("message".into(), Value::String(err.to_string())),
                     ])),
                 ]);
-                write_message(&mut output, &json::to_string(&err_body).unwrap_or_default()).map_err(|e| e.to_string())?;
+                write_message(&mut output, &json::to_string(&err_body).unwrap_or_default(), true).map_err(|e| e.to_string())?;
                 if err.kind() == io::ErrorKind::InvalidData {
                     continue;
                 }
@@ -43,7 +44,7 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
                     ("message".into(), Value::String("parse error".into())),
                 ])),
             ]);
-            write_message(&mut output, &json::to_string(&err).unwrap_or_default()).map_err(|e| e.to_string())?;
+            write_message(&mut output, &json::to_string(&err).unwrap_or_default(), newline).map_err(|e| e.to_string())?;
             continue;
         };
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
@@ -75,7 +76,13 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
                 let args = params.and_then(|p| p.get("arguments")).unwrap_or(&empty);
                 match engine.dispatch(name, args) {
                     Ok(result) => {
-                        let steps = compute_next_steps(name, &result);
+                        let mut steps = compute_next_steps(name, &result);
+                        if name == "suggest_tests" {
+                            let file = args.get("file_path").and_then(|v| v.as_str());
+                            if let Some(warning) = crate::next_steps::eval_warning(engine.project_dir.as_path(), file) {
+                                steps.push(warning);
+                            }
+                        }
                         let mut payload = vec![("result".into(), result)];
                         if !steps.is_empty() {
                             payload.push(("next_steps".into(), Value::Array(steps)));
@@ -111,7 +118,7 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
                             ("message".into(), Value::String("method not found".into())),
                         ])),
                     ]);
-                    write_message(&mut output, &json::to_string(&err).unwrap_or_default()).map_err(|e| e.to_string())?;
+                    write_message(&mut output, &json::to_string(&err).unwrap_or_default(), newline).map_err(|e| e.to_string())?;
                 }
                 continue;
             }
@@ -122,31 +129,55 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
                 ("id".into(), id),
                 ("result".into(), result),
             ]);
-            write_message(&mut output, &json::to_string(&resp).map_err(|e| e.message)?).map_err(|e| e.to_string())?;
+            write_message(&mut output, &json::to_string(&resp).map_err(|e| e.message)?, newline).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
 }
 
 pub fn read_message(input: &mut impl Read) -> io::Result<Option<String>> {
-    let mut header = Vec::new();
+    Ok(read_incoming(input)?.map(|(body, _)| body))
+}
+
+fn read_incoming(input: &mut impl Read) -> io::Result<Option<(String, bool)>> {
+    let mut buf = Vec::new();
     let mut byte = [0u8; 1];
     loop {
         let n = input.read(&mut byte)?;
         if n == 0 {
-            return Ok(None);
-        }
-        header.push(byte[0]);
-        if header.ends_with(b"\r\n\r\n") {
+            if buf.is_empty() {
+                return Ok(None);
+            }
             break;
         }
-        if header.len() > 64 * 1024 {
+        if buf.is_empty() && byte[0].is_ascii_whitespace() {
+            continue;
+        }
+        buf.push(byte[0]);
+        if buf[0] == b'{' || buf[0] == b'[' {
+            if byte[0] == b'\n' {
+                if buf.last() == Some(&b'\n') { buf.pop(); }
+                if buf.last() == Some(&b'\r') { buf.pop(); }
+                return Ok(Some((String::from_utf8_lossy(&buf).into_owned(), true)));
+            }
+            if buf.len() > 8 * 1024 * 1024 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "body too large"));
+            }
+            continue;
+        }
+        if buf.ends_with(b"\r\n\r\n") || buf.ends_with(b"\n\n") {
+            break;
+        }
+        if buf.len() > 64 * 1024 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "header too large"));
         }
     }
-    let text = String::from_utf8_lossy(&header);
+    if buf.is_empty() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&buf);
     let mut len = 0usize;
-    for line in text.split("\r\n") {
+    for line in text.split(['\r', '\n']) {
         if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
             len = v.trim().parse().unwrap_or(0);
         }
@@ -156,8 +187,10 @@ pub fn read_message(input: &mut impl Read) -> io::Result<Option<String>> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "body too large"));
     }
     let mut body = vec![0u8; len];
-    input.read_exact(&mut body)?;
-    Ok(Some(String::from_utf8_lossy(&body).into_owned()))
+    if len > 0 {
+        input.read_exact(&mut body)?;
+    }
+    Ok(Some((String::from_utf8_lossy(&body).into_owned(), false)))
 }
 
 fn discard_bytes(input: &mut impl Read, mut left: usize) -> io::Result<()> {
@@ -173,7 +206,11 @@ fn discard_bytes(input: &mut impl Read, mut left: usize) -> io::Result<()> {
     Ok(())
 }
 
-pub fn write_message(output: &mut impl Write, body: &str) -> io::Result<()> {
-    write!(output, "Content-Length: {}\r\n\r\n{}", body.len(), body)?;
+pub fn write_message(output: &mut impl Write, body: &str, newline: bool) -> io::Result<()> {
+    if newline {
+        writeln!(output, "{body}")?;
+    } else {
+        write!(output, "Content-Length: {}\r\n\r\n{}", body.len(), body)?;
+    }
     output.flush()
 }

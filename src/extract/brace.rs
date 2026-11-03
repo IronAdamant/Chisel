@@ -117,6 +117,11 @@ fn decl_on_line(t: &str, lang: &str) -> Option<(String, String)> {
             return Some(found);
         }
     }
+    if matches!(lang, "c" | "cpp") {
+        if let Some(name) = super::framework::cpp_macro_name(t) {
+            return Some((name, "test_case".into()));
+        }
+    }
     if matches!(lang, "javascript" | "typescript" | "php" | "kotlin" | "dart" | "swift" | "java" | "csharp" | "c" | "cpp") {
         if let Some(name) = after_keyword_fn(t, &["function ", "func ", "fun "]) {
             return Some((name, "function".into()));
@@ -337,10 +342,14 @@ fn method_name(t: &str) -> Option<String> {
     }
     let name = parts.last()?.trim_end_matches(')');
     let name = name.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_');
-    if name.is_empty() || is_modifier(name) || matches!(name, "if" | "for" | "while" | "switch" | "return" | "new") {
+    if name.is_empty() || is_modifier(name) || matches!(name, "if" | "for" | "while" | "switch" | "return" | "new" | "require" | "include") {
         return None;
     }
-    // The token before the name should look like a type, not an operator.
+    // `const x = require(...)` is a call, not a declaration.
+    let before = parts[parts.len() - 2];
+    if before == "=" || before.ends_with('=') {
+        return None;
+    }
     Some(name.to_string())
 }
 

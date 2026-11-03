@@ -6,7 +6,7 @@ There is no Python package in this tree. Result checks use the JSON under `tests
 
 ## Storage
 
-`.chisel/store` is the snapshot. Chisel does not open `chisel.db`. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` are honored when CLI flags are absent. `:memory:` and `file:` storage paths are rejected.
+`.chisel/store` is the snapshot. `chisel migrate` is the only command that reads a legacy SQLite `chisel.db`, and it only copies `test_results` into the snapshot. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` are honoured when CLI flags are absent. `:memory:` and `file:` storage paths are rejected.
 
 ## How to call it
 
@@ -25,7 +25,7 @@ CLI agents pass `--json` and branch on `status`. Exit code is not enough.
 
 `no_data` and `stale_db` exit 0. `error` and `git_error` exit 1.
 
-MCP is `chisel serve-mcp` or the `chisel-mcp` binary, stdio Content-Length JSON-RPC. HTTP `chisel serve` answers `GET /health`, `GET /tools`, and `POST /call` only. There is no `/mcp` path.
+MCP is `chisel serve-mcp` or the `chisel-mcp` binary. Stdio messages are newline-delimited JSON. Content-Length framing is still accepted and answered in the same framing. HTTP `chisel serve` answers `GET /health`, `GET /tools`, and `POST /call` only. There is no `/mcp` path. `suggest_tests` on a JS or TS file that calls `eval` or `new Function` adds a `warn_eval_used` next step.
 
 First call `analyze` when you see `no_data`. After edits, call `diff_impact`. Use `suggest_tests` with `file_path`. Use `triage` for a bounded risk pass. `impact` requires `files`. A missing required argument returns `status: "error"`, not an empty list.
 
@@ -45,4 +45,4 @@ Scores are heuristics. Read `_meta.uniform_components` before trusting a composi
 
 Test filenames that produce edges include `test_*.py`, `*_test.py`, `*.test.ts`, `*.spec.ts`, `*_test.go`, `*_test.rs`, and any `.rs` file under the top-level `tests/` directory. Rust functions marked `#[test]`, `#[tokio::test]`, `#[rstest]`, or `#[test_case]` are test units even when the file is not named like a test.
 
-`CHISEL_EXTRACTOR` or `extractor` in `.chisel/extensions.toml` names an executable. That program may use its own libraries. Chisel does not link them. The toml file is ignored unless the process was started with `--allow-repo-extractor` or `CHISEL_ALLOW_REPO_EXTRACTOR=1`. A tool argument cannot turn it on. The path must stay inside the project. `CHISEL_EXTRACTOR` overrides the file. A bad run falls back to the built-in scanner. A git ref that starts with `-` is rejected.
+`CHISEL_EXTRACTOR` or `extractor` in `.chisel/extensions.toml` names an executable for code units. `CHISEL_DEP_EXTRACTOR` or `dep_extractor` in that file names an executable for test dependencies. It reads `{"path","language","content"}` and writes a JSON list of `{name,dep_type,module_path,confidence}`. That program may use its own libraries. Chisel does not link them. The toml file is ignored unless the process was started with `--allow-repo-extractor` or `CHISEL_ALLOW_REPO_EXTRACTOR=1`. A tool argument cannot turn it on. The path must stay inside the project. The environment variables override the file and do not need the flag. A bad run falls back to the built-in scanner. `CHISEL_BOOTSTRAP` is not imported as Python. If it is a path to an executable it is the dependency extractor. A git ref that starts with `-` is rejected.

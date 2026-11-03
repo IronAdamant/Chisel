@@ -44,7 +44,21 @@ impl Engine {
         if !self.has_data() {
             return Ok(Self::no_data());
         }
-        let mut files: Vec<String> = self.store.array("churn").into_iter().filter_map(|c| c.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).filter(|p| !looks_like_test(p)).collect();
+        let gtest_files: BTreeSet<String> = self.store.array("test_units").into_iter().filter_map(|u| {
+            let framework = u.get("framework").and_then(|v| v.as_str())?;
+            if framework == "gtest" { u.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string()) } else { None }
+        }).collect();
+        let mut files: Vec<String> = self.store.array("churn").into_iter().filter_map(|c| c.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).filter(|p| {
+            if let Some(dir) = &self.directory {
+                if !path_in_directory(p, dir) {
+                    return false;
+                }
+            }
+            if self.exclude_tests && (looks_like_test(p) || gtest_files.contains(p)) {
+                return false;
+            }
+            true
+        }).collect();
         files.sort();
         files.dedup();
         let query_min: i64 = store::meta_get(&self.store.doc, "co_change_query_min").and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -242,7 +256,37 @@ impl Engine {
         }
         let gap_mode = if self.proximity_adjustment { "proximity_adjusted" } else { self.coverage_mode.as_str() };
         meta.insert("coverage_gap_mode", Value::String(gap_mode.into()));
-        meta.insert("cycles", Value::Array(vec![]));
+        let scored_paths: Vec<String> = scored.iter().filter_map(|row| row.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
+        let scored_set: BTreeSet<String> = scored_paths.iter().cloned().collect();
+        let mut directed: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for edge in &imports {
+            let conf = edge.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
+            if conf < 1.0 {
+                continue;
+            }
+            let from = edge.get("importer_file").and_then(|v| v.as_str()).unwrap_or("");
+            let to = edge.get("imported_file").and_then(|v| v.as_str()).unwrap_or("");
+            if scored_set.contains(from) && scored_set.contains(to) && from != to {
+                directed.entry(from.to_string()).or_default().insert(to.to_string());
+            }
+        }
+        meta.insert("cycles", Value::Array(impact::import_cycles(&scored_paths, &directed)));
+        let locks = self.active_locks();
+        if !locks.is_empty() {
+            let lock_map: BTreeMap<String, String> = locks.iter().filter_map(|lock| {
+                Some((lock.get("file_path")?.as_str()?.to_string(), lock.get("agent_id")?.as_str()?.to_string()))
+            }).collect();
+            let mut claims = 0i64;
+            for row in &mut scored {
+                let path = row.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+                if let Some(agent) = lock_map.get(path) {
+                    row.insert("locked_by", Value::String(agent.clone()));
+                    claims += 1;
+                }
+            }
+            meta.insert("active_locks", Value::Int(locks.len() as i64));
+            meta.insert("lock_claims", Value::Int(claims));
+        }
         if let Some(bc) = store::meta_get(&self.store.doc, "branch_coupling_commits") {
             if let Ok(n) = bc.parse::<i64>() {
                 meta.insert("branch_coupling_commits", Value::Int(n));
@@ -341,6 +385,14 @@ impl Engine {
         if !self.has_data() {
             return Ok(Self::no_data());
         }
+        if self.store.hash_for_file(file).is_empty() && !self.working_tree {
+            return Ok(Value::object(vec![
+                ("status".into(), Value::String("stale_db".into())),
+                ("file_path".into(), Value::String(file.into())),
+                ("message".into(), Value::String("File not found in analysis database.".into())),
+                ("hint".into(), Value::String("Run 'chisel update' first to include new or changed files.".into())),
+            ]));
+        }
         let impacted = self.impacted(&[file.to_string()], &BTreeMap::new(), &BTreeSet::new());
         let static_hits = self.static_hits(file);
         let mut by_id: BTreeMap<String, Value> = BTreeMap::new();
@@ -394,7 +446,8 @@ impl Engine {
             }
             result.push(row);
         }
-        if result.is_empty() {
+        let skip_stem = result.is_empty() && self.fallback_to_all && self.working_tree && self.store.hash_for_file(file).is_empty();
+        if result.is_empty() && !skip_stem {
             for (tid, file_path, name, relevance) in self.stem_matches(file) {
                 let (relevance, rate_v, boost_v) = apply_failure(relevance, failure_rates.get(&tid).copied().unwrap_or(0.0));
                 let mut row = Value::object(vec![
@@ -708,9 +761,7 @@ impl Engine {
             ]));
         }
         self.append_working_tree_stale(&mut stale);
-        Ok(Value::object(vec![
-            ("stale_tests".into(), Value::Array(stale)),
-        ]))
+        Ok(Value::Array(stale))
     }
 
     fn append_working_tree_stale(&self, stale: &mut Vec<Value>) {
@@ -816,9 +867,38 @@ impl Engine {
             ("test_results".into(), Value::Int(results.len() as i64)),
             ("passed".into(), Value::Int(passed)),
             ("failed".into(), Value::Int(failed)),
+            ("commit_files".into(), Value::Int(self.store.array("commit_files").len() as i64)),
+            ("blame_cache".into(), Value::Int(self.store.array("blame").len() as i64)),
+            ("branch_co_changes".into(), Value::Int(self.store.array("branch_co_changes").len() as i64)),
+            ("churn_stats".into(), Value::Int(self.store.array("churn").len() as i64)),
+            ("file_hashes".into(), Value::Int(self.store.array("file_hashes").len() as i64)),
             ("coupling_threshold".into(), Value::Int(impact::coupling_threshold(self.store.array("commits").len() as i64))),
-            ("co_change_query_min".into(), Value::String(store::meta_get(&self.store.doc, "co_change_query_min").unwrap_or_else(|| "0".into()))),
+            ("co_change_query_min".into(), Value::Int(store::meta_get(&self.store.doc, "co_change_query_min").and_then(|s| s.parse().ok()).unwrap_or(3).max(1))),
         ];
+        let edge_rows = self.store.array("test_edges");
+        if !edge_rows.is_empty() {
+            let mut counts: BTreeMap<&str, i64> = BTreeMap::new();
+            for edge in &edge_rows {
+                let kind = edge.get("edge_type").and_then(|v| v.as_str()).unwrap_or("");
+                *counts.entry(kind).or_default() += 1;
+            }
+            let total = edge_rows.len() as f64;
+            let dynamic = counts.get("dynamic_import").copied().unwrap_or(0) + counts.get("eval_import").copied().unwrap_or(0);
+            pairs.push(("shadow_graph".into(), Value::object(vec![
+                ("total_edges".into(), Value::Int(edge_rows.len() as i64)),
+                ("call_edges".into(), Value::Int(counts.get("call").copied().unwrap_or(0))),
+                ("import_edges".into(), Value::Int(counts.get("import").copied().unwrap_or(0))),
+                ("dynamic_import_edges".into(), Value::Int(dynamic)),
+                ("eval_import_edges".into(), Value::Int(counts.get("eval_import").copied().unwrap_or(0))),
+                ("tainted_import_edges".into(), Value::Int(counts.get("tainted_import").copied().unwrap_or(0))),
+                ("unknown_shadow_ratio".into(), Value::Float(crate::json::py_round(dynamic as f64 / total.max(1.0), 4))),
+            ])));
+        }
+        if let Some(bc) = store::meta_get(&self.store.doc, "branch_coupling_commits") {
+            if let Ok(n) = bc.parse::<i64>() {
+                pairs.push(("branch_coupling_commits".into(), Value::Int(n)));
+            }
+        }
         if include_results {
             pairs.push(("recorded_results".into(), Value::Array(results)));
         }
@@ -972,6 +1052,10 @@ impl Engine {
         sub.coverage_mode = self.coverage_mode.clone();
         sub.proximity_adjustment = self.proximity_adjustment;
         sub.exclude_new_file_boost = self.exclude_new_file_boost;
+        sub.exclude_tests = self.exclude_tests;
+        sub.fallback_to_all = self.fallback_to_all;
+        sub.scope_file = self.scope_file.clone();
+        sub.allow_repo_extractor = self.allow_repo_extractor;
         sub.diff_ref_override = self.diff_ref_override.clone();
         sub.directory = self.directory.clone();
         sub.git = self.git.fork();
@@ -1036,10 +1120,10 @@ impl Engine {
                 ("message".into(), Value::String("No test edges in the analysis database.".into())),
             ]));
         }
-        Ok(Value::object(vec![("stale_tests".into(), Value::Array(stale))]))
+        Ok(Value::Array(stale))
     }
 
-    pub(super) fn aggregate_impact(&self, files: &[String]) -> Result<Value, String> {
+    pub(super) fn aggregate_impact(&self, files: &[String], functions: &BTreeMap<String, Vec<String>>) -> Result<Value, String> {
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for file in files {
             groups.entry(shard_owner(file, &self.shards).to_string()).or_default().push(file.clone());
@@ -1052,7 +1136,7 @@ impl Engine {
                 continue;
             }
             any = true;
-            rows.extend(sub.impacted(&group, &BTreeMap::new(), &BTreeSet::new()));
+            rows.extend(sub.impacted(&group, functions, &BTreeSet::new()));
         }
         if !any {
             return Ok(Self::no_data());
@@ -1293,7 +1377,24 @@ impl Engine {
     }
 
     pub(super) fn dispatch_inner(&mut self, name: &str, args: &Value) -> Result<Value, String> {
-        if let Some(field) = first_missing_required(name, args) {
+        if name == "suggest_tests" {
+            let has_file = !argument_missing(args, "file_path", "string");
+            let has_dir = args.get("directory").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty());
+            if has_file && has_dir {
+                return Ok(Value::object(vec![
+                    ("status".into(), Value::String("error".into())),
+                    ("message".into(), Value::String("Provide only one of file_path or directory, not both.".into())),
+                ]));
+            }
+            if !has_file && !has_dir {
+                return Ok(missing_arg("suggest_tests", "file_path"));
+            }
+            if has_file {
+                if let Some(field) = first_missing_required(name, args) {
+                    return Ok(missing_arg(name, &field));
+                }
+            }
+        } else if let Some(field) = first_missing_required(name, args) {
             return Ok(missing_arg(name, &field));
         }
         if let Some(err) = self.unknown_shard(args) {
@@ -1323,6 +1424,13 @@ impl Engine {
         }
         self.diff_ref_override = args.get("ref").and_then(|v| v.as_str()).map(|s| s.to_string());
         self.directory = args.get("directory").and_then(|v| v.as_str()).filter(|s| !s.is_empty() && *s != ".").map(|s| s.trim_end_matches('/').to_string());
+        self.exclude_tests = args.get("exclude_tests").and_then(|v| v.as_bool()).unwrap_or(true);
+        self.fallback_to_all = args.get("fallback_to_all").and_then(|v| v.as_bool()).unwrap_or(false);
+        self.scope_file = if name == "test_gaps" {
+            args.get("file_path").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string())
+        } else {
+            None
+        };
         let auto = self.auto_plan(name, args);
         if matches!(auto, AutoPlan::Run) {
             let _ = self.update();
@@ -1342,23 +1450,36 @@ impl Engine {
             "diff_impact" => self.diff_impact(),
             "suggest_tests" => {
                 let file = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-                self.suggest_tests(file)
+                if file.is_empty() {
+                    let dir = self.directory.clone().unwrap_or_default();
+                    self.suggest_directory(&dir)
+                } else {
+                    self.suggest_tests(file)
+                }
             }
             "stale_tests" => self.stale_tests(),
             "stats" => self.stats_with(args.get("include_results").and_then(|v| v.as_bool()).unwrap_or(false)),
             "record_result" => {
                 let id = args.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
                 let passed = args.get("passed").and_then(|v| v.as_bool()).unwrap_or(false);
-                self.record_result(id, passed)
+                let duration = args.get("duration_ms").and_then(|v| v.as_f64());
+                self.record_result_with(id, passed, duration)
             }
             "impact" => {
                 let files: Vec<String> = args.get("files").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+                let names: Vec<String> = args.get("functions").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
+                let mut functions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                if !names.is_empty() {
+                    for file in &files {
+                        functions.insert(file.clone(), names.clone());
+                    }
+                }
                 if !self.shards.is_empty() {
-                    self.aggregate_impact(&files)
+                    self.aggregate_impact(&files, &functions)
                 } else {
                     self.store.reload()?;
                     if !self.has_data() { return Ok(Self::no_data()); }
-                    Ok(Value::Array(self.impacted(&files, &BTreeMap::new(), &BTreeSet::new())))
+                    Ok(Value::Array(self.impacted(&files, &functions, &BTreeSet::new())))
                 }
             }
             "test_gaps" => self.test_gaps(),
@@ -1425,10 +1546,23 @@ impl Engine {
     pub(super) fn gap_rows(&self) -> Vec<Value> {
         let edges = self.store.array("test_edges");
         let churn = self.store.array("churn");
+        let gtest_files: BTreeSet<String> = self.store.array("test_units").into_iter().filter_map(|u| {
+            if u.get("framework").and_then(|v| v.as_str()) == Some("gtest") {
+                u.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())
+            } else {
+                None
+            }
+        }).collect();
         let mut gaps = Vec::new();
         for u in self.store.array("code_units") {
             let path = u.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            if looks_like_test(path) || is_test_unit_row(&u) { continue; }
+            if let Some(file) = &self.scope_file {
+                if path != file.as_str() { continue; }
+            } else if let Some(dir) = &self.directory {
+                if !path_in_directory(path, dir) { continue; }
+            }
+            if is_test_unit_row(&u) && self.exclude_tests { continue; }
+            if self.exclude_tests && (looks_like_test(path) || gtest_files.contains(path)) { continue; }
             let id = u.get("id").and_then(|v| v.as_str()).unwrap_or("");
             if edges.iter().any(|e| e.get("code_id").and_then(|v| v.as_str()) == Some(id)) {
                 continue;
@@ -1596,7 +1730,16 @@ impl Engine {
         if !self.has_data() { return Ok(Self::no_data()); }
         match name {
             "churn" => {
-                let rows: Vec<Value> = self.store.array("churn").into_iter().filter(|c| c.get("file_path").and_then(|v| v.as_str()) == Some(file)).collect();
+                let unit = args.get("unit_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+                let mut rows: Vec<Value> = self.store.array("churn").into_iter().filter(|c| c.get("file_path").and_then(|v| v.as_str()) == Some(file)).collect();
+                if let Some(unit) = unit {
+                    rows.retain(|c| c.get("unit_name").and_then(|v| v.as_str()).unwrap_or("") == unit);
+                } else {
+                    let file_rows: Vec<Value> = rows.iter().filter(|c| c.get("unit_name").and_then(|v| v.as_str()).unwrap_or("").is_empty()).cloned().collect();
+                    if !file_rows.is_empty() {
+                        rows = file_rows;
+                    }
+                }
                 Ok(Value::Array(rows))
             }
             "history" => Ok(Value::Array(self.history_rows(file))),
@@ -1764,12 +1907,26 @@ impl Engine {
             if a == file && b != file && self.project_dir.join(b).exists() { neighbors.insert(b.to_string()); }
             if b == file && a != file && self.project_dir.join(a).exists() { neighbors.insert(a.to_string()); }
         }
+        let untracked = self.working_tree && self.store.hash_for_file(file).is_empty();
+        if untracked && neighbors.is_empty() {
+            if let Ok(text) = fs::read_to_string(self.project_dir.join(file)) {
+                for dep in extract::extract_deps_in(file, &text, Some(&self.project_dir), self.allow_repo_extractor) {
+                    if dep.dep_type == "import" {
+                        if let Some(module) = dep.module_path {
+                            if neighbors.len() < 20 {
+                                neighbors.insert(module);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let co_len = partners.len() as f64;
         let imp_len = neighbors.len() as f64;
         let co_norm = (co_len / impact::COCHANGE_CAP).min(1.0);
         let import_norm = (imp_len / impact::IMPORT_CAP).min(1.0);
         let effective_coupling = co_norm.max(import_norm).max(0.5 * co_norm + 0.5 * import_norm);
-        Value::object(vec![
+        let mut body = vec![
             ("co_change_partners".into(), Value::Array(partners)),
             ("import_partners".into(), Value::Array(neighbors.into_iter().map(|f| Value::object(vec![("file".into(), Value::String(f))])).collect())),
             ("co_change_breadth".into(), Value::Int(co_len as i64)),
@@ -1777,7 +1934,44 @@ impl Engine {
             ("cochange_coupling".into(), Value::Float(crate::json::py_round(co_norm, 4))),
             ("import_coupling".into(), Value::Float(crate::json::py_round(import_norm, 4))),
             ("effective_coupling".into(), Value::Float(crate::json::py_round(effective_coupling, 4))),
-        ])
+        ];
+        if untracked {
+            body.push(("note".into(), Value::String("working_tree: import_partners from on-disk scan (not yet in DB import graph)".into())));
+        }
+        Value::object(body)
+    }
+
+    pub(super) fn suggest_directory(&mut self, dir: &str) -> Result<Value, String> {
+        if !self.shards.is_empty() {
+            let mut merged: BTreeMap<String, Value> = BTreeMap::new();
+            for name in self.snapshot_names() {
+                let mut sub = self.open_shard(&name)?;
+                let part = sub.suggest_directory(dir)?;
+                if let Some(pairs) = part.as_object() {
+                    for (k, v) in pairs {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            return Ok(Value::object(merged.into_iter().collect()));
+        }
+        self.store.reload()?;
+        if !self.has_data() {
+            return Ok(Self::no_data());
+        }
+        let mut files: Vec<String> = self.store.array("file_hashes").into_iter().filter_map(|h| h.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).filter(|p| path_in_directory(p, dir) && !looks_like_test(p)).collect();
+        files.sort();
+        files.dedup();
+        let mut pairs = Vec::new();
+        for file in files {
+            let suggested = self.suggest_tests(&file)?;
+            if let Some(rows) = suggested.as_array() {
+                if !rows.is_empty() {
+                    pairs.push((file, Value::Array(rows.to_vec())));
+                }
+            }
+        }
+        Ok(Value::object(pairs))
     }
 
 }

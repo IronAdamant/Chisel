@@ -201,3 +201,57 @@ fn hints_job_status(result: &Value) -> Vec<Value> {
         _ => Vec::new(),
     }
 }
+
+/// Warn when a JS/TS file builds code with eval or `new Function`, which static edges cannot see.
+pub fn eval_warning(project: &std::path::Path, file_path: Option<&str>) -> Option<Value> {
+    let file_path = file_path?;
+    let lower = file_path.to_ascii_lowercase();
+    if !lower.ends_with(".js") && !lower.ends_with(".jsx") && !lower.ends_with(".ts") && !lower.ends_with(".tsx") && !lower.ends_with(".mjs") && !lower.ends_with(".cjs") {
+        return None;
+    }
+    let text = std::fs::read_to_string(project.join(file_path)).ok()?;
+    if !has_eval_or_function(&text) {
+        return None;
+    }
+    Some(Value::object(vec![
+        ("action".into(), Value::String("warn_eval_used".into())),
+        ("reason".into(), Value::String(format!(
+            "{file_path} uses eval(...) or new Function(...). Modules loaded that way are invisible to static analysis, so tests of runtime-generated targets are not in this list. Cross-check risk_map → unknown_require_count for affected files."
+        ))),
+    ]))
+}
+
+fn has_eval_or_function(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"eval") && (i == 0 || !is_ident(bytes[i - 1])) {
+            let mut j = i + 4;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() { j += 1; }
+            if j < bytes.len() && bytes[j] == b'(' {
+                return true;
+            }
+        }
+        if bytes[i..].starts_with(b"new") && (i == 0 || !is_ident(bytes[i - 1])) {
+            let mut j = i + 3;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() { j += 1; }
+            if bytes.get(j..).is_some_and(|rest| rest.starts_with(b"Function")) {
+                let after = j + "Function".len();
+                let boundary_ok = after == bytes.len() || !is_ident(bytes[after]);
+                if boundary_ok {
+                    let mut k = after;
+                    while k < bytes.len() && bytes[k].is_ascii_whitespace() { k += 1; }
+                    if k < bytes.len() && bytes[k] == b'(' {
+                        return true;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+fn is_ident(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+}
