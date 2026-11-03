@@ -40,7 +40,9 @@ cargo build --release
 
 The binary is `target/release/chisel`. `chisel serve-mcp` starts the stdio MCP server. A local build also writes `chisel-mcp`, which is the same program.
 
-Storage is a snapshot file at `.chisel/store`. Chisel does not open `chisel.db`. Pass `--json` and branch on the `status` field. `no_data` means run `analyze`. `stale_db` means run `update` or pass `auto_update`.
+Storage is a snapshot file at `.chisel/store`. Pass `--json` and branch on the `status` field. `no_data` means run `analyze`. `stale_db` means run `update` or pass `auto_update`.
+
+If you still have a SQLite `chisel.db` from the Python release, `chisel migrate path/to/chisel.db` copies the recorded test results into the snapshot. Other commands leave that file alone. The live store is not SQLite.
 
 ## Use with Claude Code (MCP)
 
@@ -61,7 +63,7 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.j
 }
 ```
 
-`chisel serve-mcp` speaks stdio MCP (Content-Length JSON-RPC). The release binary is `chisel`. A copy named `chisel-mcp` or `chisel-mcp.exe` starts the same server. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` are honored when the CLI flags are absent.
+`chisel serve-mcp` speaks newline-delimited JSON-RPC on stdio, the same framing standard MCP clients send. A client that sends `Content-Length` headers still receives a `Content-Length` reply. `initialize` reports the crate version in `serverInfo.version`. The release binary is `chisel`. A copy named `chisel-mcp` or `chisel-mcp.exe` starts the same server. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` are honoured when the CLI flags are absent.
 
 Run `analyze` first to build the project graph, then `diff_impact` after edits to see which tests to run. `analyze` with `force` on more than 300 code files returns `auto_queued` and a `job_id`. Poll `job_status`. `--working-tree` reads the worktree. Leave it off to answer from the snapshot.
 
@@ -109,6 +111,12 @@ chisel run -- pytest tests/
 
 # Incremental update (near-instant when nothing changed)
 chisel update
+
+# Copy recorded results out of a Python-era chisel.db
+chisel migrate path/to/chisel.db
+
+# One command's flags
+chisel churn --help
 ```
 
 ## Try it on this repo
@@ -134,8 +142,8 @@ The same binary has been run on flask, requests, cJSON, quixbugs, and the Probat
 | `analyze` | Full project scan — builds the code/test/git graph. Optional `shard` param for sharded monorepos |
 | `update` | Incremental re-analysis of changed files only. Optional `shard` param for sharded monorepos |
 | `diff_impact` | Detects your changes from `git diff` and returns impacted tests. `working_tree=true` reads untracked files. `auto_update=true` refreshes a stale snapshot inline |
-| `suggest_tests` | Ranks tests by relevance for a given file. Requires `file_path`. `auto_update=true` refreshes a stale snapshot inline |
-| `impact` | Which tests cover these files or functions? |
+| `suggest_tests` | Ranks tests for one file (`file_path`) or every code file under `directory`. `fallback_to_all` ranks every known test when nothing else matches. A file that is not in the snapshot returns `stale_db` unless `working_tree` is set |
+| `impact` | Which tests cover these files? Pass `functions` to limit the direct edges to those names |
 | `risk_map` | Risk scores for all files (churn + coupling + coverage gaps). Defaults: line-weighted coverage + proximity. `working_tree=true` includes untracked files. `exclude_new_file_boost=true` suppresses the new-file boost. `auto_update=true` refreshes a stale snapshot inline |
 | `test_gaps` | Code with zero test coverage, sorted by risk. `working_tree=true` includes uncommitted files. `auto_update=true` refreshes a stale snapshot inline |
 | `triage` | Top risks + gaps + stale tests in one call. Supports `exclude_new_file_boost` and `auto_update` |
@@ -145,8 +153,8 @@ The same binary has been run on flask, requests, cJSON, quixbugs, and the Probat
 | `who_reviews` | Commit-activity-based — who maintains this code? |
 | `stale_tests` | Tests whose edges name code ids that are no longer in the snapshot |
 | `history` | Commit history for a file |
-| `record_result` | Log test pass/fail outcomes for future prioritization |
-| `run` | CLI-only: run tests and auto-record results (pytest, Jest) |
+| `record_result` | Log a pass or fail. `duration_ms` is stored and feeds the duration-variance part of test instability |
+| `run` | CLI-only: stream a test command and record pytest or Jest results. Jest is invoked with `--json` and a relative test id. `npx` is treated as Jest. `go test` gets `-json` and `cargo test` gets `--message-format=json` |
 | `stats` | Snapshot counts. It does not return the full result history |
 | `start_job` | Run analyze/update in background (avoids MCP timeouts). Optional `shard` param |
 | `job_status` | Poll a background job until complete |
@@ -162,10 +170,10 @@ The same binary has been run on flask, requests, cJSON, quixbugs, and the Probat
 - **gitignore-aware** — ignored trees (vendored deps, build output, fixtures) are never scanned; untracked files still are (`CHISEL_INCLUDE_IGNORED=1` to override)
 - **Branch-aware** — `diff_impact` auto-detects feature branch vs main. Feature-branch co-change comes from `merge-base..HEAD`. `main` and `master` keep that list empty.
 - **Multi-agent safe** — cross-process locks so parallel agents don't corrupt the snapshot
-- **MCP + CLI** — stdio MCP (`chisel serve-mcp`) and a JSON HTTP API (`GET /health`, `GET /tools`, `POST /call`), plus a CLI with 28 subcommands
+- **MCP + CLI** — stdio MCP (`chisel serve-mcp`, newline JSON or Content-Length) and a JSON HTTP API (`GET /health`, `GET /tools`, `POST /call`). `chisel <command> --help` prints that command. HTTP `suggest_tests` adds a warning when the file uses `eval` or `new Function`
 - **CI-friendly** — `error` and `git_error` exit 1. Other statuses, including `no_data` and `stale_db`, exit 0. `examples/github-actions/chisel.yml` builds this binary with Cargo. Do not pip-install Chisel.
 - **Monorepo sharding** — one snapshot per shard under `.chisel/shards/<shard>/` (`CHISEL_SHARDS` or `.chisel/shards.toml`). Cross-shard test edges are overlaid from the parent snapshot. `flakiness_trend` appears when dated test results span two weeks.
-- **Custom extractors** — set `CHISEL_EXTRACTOR` to an executable. It receives the path and language on stdin and returns a JSON list of units. A non-zero exit or bad JSON falls back to the built-in scanner and records a warning. Unset uses the built-in scanner. The binary does not load tree-sitter or plugins.
+- **Custom extractors** — `CHISEL_EXTRACTOR` names an executable that returns code units. `CHISEL_DEP_EXTRACTOR`, or `dep_extractor` in `.chisel/extensions.toml`, names an executable that returns import and call dependencies. That replaces the old Python `register_dep_extractor` hook. `CHISEL_BOOTSTRAP` is not a Python import: if it points at an executable it is used as the dependency extractor, otherwise it is ignored with a warning. The binary does not load tree-sitter or plugins.
 
 ## Ecosystem
 
@@ -174,6 +182,27 @@ Chisel sits in the agent loop: impact -> tests -> record results -> refresh anal
 **Docs for this binary:** [AGENTS.md](AGENTS.md) | [Claude Code skill](skills/SKILL.md)
 
 Checked-in oracle JSON lives in `tests/fixtures/oracle`. There is no Python package to install.
+
+## Benchmarks
+
+Timed on this machine: Linux 6.12.94+, 4 vCPUs, Intel Xeon, 15.6 GiB RAM, Rust 1.97.0, Python 3.12.3. Five runs per command. The figure is the median in milliseconds, with the minimum and maximum in parentheses. The small repo is a two-file Python sample. The large repo is the `django` package from django/django (about 1000 code files) plus 80 of its test modules, with history split into commits of at most 100 paths so a shallow-clone boundary commit does not pair every file with every other file. Peak RSS and the raw log are in [`scripts/benchmark_results.md`](scripts/benchmark_results.md). Reproduce with `scripts/benchmark_parity.py`.
+
+| Command | Python small | Rust small | Python large | Rust large |
+|---|---:|---:|---:|---:|
+| startup (`--help`) | 64.6 (63.4–73.4) | 0.3 (0.3–0.5) | 71.6 (64.7–76.1) | 0.4 (0.2–0.5) |
+| cold analyse | 88.5 (86.7–93.9) | 8.0 (7.7–10.8) | 13692.5 (13542.5–14014.5) | 8034.2 (7627.3–8398.0) |
+| warm analyse | 82.8 (80.7–89.8) | 2.3 (2.2–2.5) | 8646.5 (8604.2–8754.3) | 63.0 (61.3–77.9) |
+| warm update | 71.0 (67.9–74.6) | 2.6 (2.2–2.6) | 146.4 (139.1–163.6) | 68.8 (65.3–71.2) |
+| impact | 63.6 (63.0–66.2) | 0.6 (0.6–0.7) | 111.9 (106.5–113.3) | 45.4 (44.6–48.2) |
+| suggest-tests | 64.3 (63.7–68.1) | 0.6 (0.6–0.7) | 125.9 (121.5–131.0) | 46.0 (44.6–51.9) |
+| risk-map | 67.8 (65.9–75.4) | 0.7 (0.6–0.9) | 253.6 (233.9–261.0) | 57.5 (55.8–64.0) |
+| test-gaps | 64.9 (63.2–69.7) | 0.6 (0.5–0.6) | 163.4 (161.9–180.5) | 73.1 (65.0–76.5) |
+| triage | 65.8 (64.0–67.1) | 0.7 (0.6–0.8) | 254.4 (239.9–262.7) | 94.9 (93.3–97.5) |
+| churn | 64.2 (62.9–66.6) | 0.6 (0.6–0.7) | 65.2 (64.4–69.0) | 48.8 (46.0–51.4) |
+| coupling | 64.3 (63.3–65.5) | 0.6 (0.6–0.7) | 64.1 (63.3–66.1) | 47.7 (41.8–53.4) |
+| stats | 64.8 (63.8–66.3) | 0.6 (0.5–0.6) | 67.4 (66.5–68.6) | 46.0 (45.0–51.0) |
+
+On that large tree both snapshots have 829 test units, and the small sample has 1 on both sides. Rust is faster on every command in both trees.
 
 ## License
 

@@ -9,12 +9,108 @@ pub struct Dep {
 }
 
 pub fn extract_deps(path: &str, content: &str) -> Vec<Dep> {
+    extract_deps_in(path, content, None, false)
+}
+
+/// `project` lets `.chisel/extensions.toml` name a dependency extractor.
+/// `CHISEL_DEP_EXTRACTOR` still wins, and does not need `allow_repo`.
+pub fn extract_deps_in(path: &str, content: &str, project: Option<&std::path::Path>, allow_repo: bool) -> Vec<Dep> {
+    if let Some(custom) = super::custom_deps(path, content, project, allow_repo) {
+        return custom;
+    }
     match detect_language(path) {
         Some("python") => python_deps(content),
         Some("javascript" | "typescript") => js_deps(content),
         Some("go") => go_deps(content),
+        Some("java" | "kotlin") => import_lines(content, &["import "], &["."], false),
+        Some("csharp") => import_lines(content, &["using "], &["."], false),
+        Some("c" | "cpp") => include_lines(content),
+        Some("ruby") => ruby_requires(content),
+        Some("php") => import_lines(content, &["use "], &["\\"], false),
+        Some("swift") => import_lines(content, &["import "], &["."], false),
+        Some("dart") => import_lines(content, &["import "], &["/"], false),
         _ => name_calls(content),
     }
+}
+
+fn import_lines(content: &str, prefixes: &[&str], seps: &[&str], with_calls: bool) -> Vec<Dep> {
+    let mut deps = Vec::new();
+    for line in content.lines() {
+        let t = line.trim().trim_end_matches(';');
+        let mut rest = None;
+        for prefix in prefixes {
+            if let Some(r) = t.strip_prefix(prefix) {
+                rest = Some(r.trim());
+                break;
+            }
+        }
+        let Some(rest) = rest else { continue };
+        let rest = rest.trim_start_matches("static ");
+        let path = rest.split_whitespace().next().unwrap_or("").trim_matches(|c| c == '"' || c == '\'' || c == ';');
+        if path.is_empty() || path == "*" {
+            continue;
+        }
+        let mut name = path;
+        for sep in seps {
+            if let Some(tail) = path.rsplit_once(sep) {
+                name = tail.1;
+                break;
+            }
+        }
+        if name.is_empty() || name == "*" {
+            continue;
+        }
+        deps.push(Dep {
+            name: name.to_string(),
+            dep_type: "import".into(),
+            module_path: Some(path.to_string()),
+            confidence: 1.0,
+        });
+    }
+    if with_calls {
+        deps.extend(name_calls(content));
+    }
+    dedupe(deps)
+}
+
+fn include_lines(content: &str) -> Vec<Dep> {
+    let mut deps = Vec::new();
+    for line in content.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("#include") else { continue };
+        let rest = rest.trim();
+        let path = rest.trim_matches(|c| c == '<' || c == '>' || c == '"' || c == ' ');
+        if path.is_empty() {
+            continue;
+        }
+        let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        let name = base.split('.').next().unwrap_or(base);
+        deps.push(Dep {
+            name: name.to_string(),
+            dep_type: "import".into(),
+            module_path: Some(path.to_string()),
+            confidence: 1.0,
+        });
+    }
+    dedupe(deps)
+}
+
+fn ruby_requires(content: &str) -> Vec<Dep> {
+    let mut deps = Vec::new();
+    for line in content.lines() {
+        let t = line.trim();
+        let rest = t.strip_prefix("require_relative ").or_else(|| t.strip_prefix("require "));
+        let Some(rest) = rest else { continue };
+        let Some(path) = quoted_token(rest) else { continue };
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(&path);
+        deps.push(Dep {
+            name: name.to_string(),
+            dep_type: "import".into(),
+            module_path: Some(path),
+            confidence: 1.0,
+        });
+    }
+    dedupe(deps)
 }
 
 fn python_deps(content: &str) -> Vec<Dep> {
@@ -533,8 +629,14 @@ pub fn proximity_weight(test_path: &str, code_path: &str) -> f64 {
 pub fn is_test_name(name: &str, framework: &str) -> bool {
     let bare = name.rsplit('.').next().unwrap_or(name);
     match framework {
-        "pytest" => bare.starts_with("test_"),
+        "pytest" => bare.starts_with("test_") || bare.starts_with("Test"),
+        "jest" | "playwright" => matches!(bare, "describe" | "it" | "test") || bare.starts_with("test"),
         "go" => bare.starts_with("Test") || bare.starts_with("Benchmark"),
+        "rust" => bare.starts_with("test_"),
+        "csharp_test" => bare.starts_with("Test") || bare.ends_with("Test") || bare.ends_with("Tests"),
+        "gtest" => true,
+        "junit" | "xctest" | "minitest" | "phpunit" | "dart_test" => bare.starts_with("test") || bare.starts_with("Test"),
+        "rspec" => matches!(bare, "describe" | "it" | "context") || bare.starts_with("test"),
         _ => bare.to_ascii_lowercase().starts_with("test"),
     }
 }

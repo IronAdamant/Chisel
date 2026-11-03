@@ -10,7 +10,7 @@ use crate::git::{self, GitAnalyzer};
 use crate::impact;
 use crate::json::Value;
 use crate::store::{self, Store};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -169,6 +169,7 @@ pub(crate) fn argument_missing(args: &Value, field: &str, ty: &str) -> bool {
     match value {
         Value::Null => true,
         Value::String(text) if text.is_empty() => true,
+        Value::Shared(text) if text.as_str().is_empty() => true,
         Value::Array(items) if items.is_empty() => true,
         _ if ty == "boolean" => !matches!(value, Value::Bool(_)),
         _ => false,
@@ -210,6 +211,12 @@ pub struct Engine {
     coverage_mode: String,
     proximity_adjustment: bool,
     exclude_new_file_boost: bool,
+    /// Drop test files from risk, gaps, and triage unless the caller opts out.
+    pub exclude_tests: bool,
+    /// `suggest_tests` fallback_to_all. Stem fallback still runs when this is false and nothing matched.
+    pub fallback_to_all: bool,
+    /// `test_gaps` file scope. Directory scope uses `directory`.
+    scope_file: Option<String>,
     /// Parent storage dir when this engine is a shard view. Result rows live there.
     result_log: Option<PathBuf>,
     /// `(shard name, full shard config)` for overlaying cross edges. `shards` stays empty on a view.
@@ -244,6 +251,9 @@ impl Engine {
             coverage_mode: "line".into(),
             proximity_adjustment: true,
             exclude_new_file_boost: false,
+            exclude_tests: true,
+            fallback_to_all: false,
+            scope_file: None,
             result_log: None,
             shard_view: None,
             overlay_applied: false,
@@ -285,7 +295,7 @@ pub(crate) fn stale_status() -> Value {
     ])
 }
 
-pub(crate) fn push_extractor_warnings(summary: &mut Vec<(String, Value)>) {
+pub(crate) fn push_extractor_warnings(summary: &mut Vec<(crate::json::SharedStr, Value)>) {
     let warnings = extract::take_extractor_warnings();
     if warnings.is_empty() {
         return;
@@ -321,16 +331,33 @@ pub(crate) fn prune_old_results(doc: &mut Value, now: f64) {
 }
 
 pub(crate) fn append_test_result(doc: &mut Value, test_id: &str, passed: bool, now: f64) {
+    append_test_result_full(doc, test_id, passed, now, None);
+}
+
+pub(crate) fn append_test_result_full(doc: &mut Value, test_id: &str, passed: bool, now: f64, duration_ms: Option<f64>) {
     if doc.get("test_results").and_then(|v| v.as_array()).is_none() {
         doc.insert("test_results", Value::Array(Vec::new()));
     }
     if let Some(results) = doc.get_mut("test_results").and_then(|v| v.as_array_mut()) {
-        results.push(Value::object(vec![
+        let mut row = vec![
             ("test_id".into(), Value::String(normalize_test_id(test_id))),
             ("passed".into(), Value::Bool(passed)),
             ("recorded_at".into(), Value::Float(now)),
-        ]));
+        ];
+        if let Some(ms) = duration_ms {
+            row.push(("duration_ms".into(), Value::Float(ms)));
+        }
+        results.push(Value::object(row));
     }
+}
+
+pub(crate) fn path_in_directory(path: &str, dir: &str) -> bool {
+    let dir = dir.trim_matches('/').replace('\\', "/");
+    if dir.is_empty() || dir == "." {
+        return true;
+    }
+    let path = path.replace('\\', "/");
+    path == dir || path.starts_with(&format!("{dir}/"))
 }
 
 /// Newest week fail-rate minus the oldest week fail-rate over 28 days.
@@ -528,15 +555,65 @@ fn rust_integration_test(path: &str, name: &str) -> bool {
     normalized.split('/').next() == Some("tests")
 }
 
+/// Suffix map of code paths so an import resolves without scanning every unit.
+pub(crate) struct ImportPathIndex {
+    by_suffix: HashMap<String, Vec<String>>,
+}
+
+impl ImportPathIndex {
+    pub(crate) fn from_units(units: &[Value]) -> Self {
+        let mut seen = BTreeSet::new();
+        let mut paths = Vec::new();
+        for unit in units {
+            if let Some(path) = unit.get("file_path").and_then(|v| v.as_str()) {
+                if seen.insert(path) {
+                    paths.push(path.to_string());
+                }
+            }
+        }
+        let mut by_suffix: HashMap<String, Vec<String>> = HashMap::new();
+        for path in &paths {
+            let normalized = path.replace('\\', "/");
+            let mut rest = normalized.as_str();
+            loop {
+                by_suffix.entry(rest.to_string()).or_default().push(path.clone());
+                if let Some((_, tail)) = rest.split_once('/') {
+                    rest = tail;
+                } else {
+                    break;
+                }
+            }
+        }
+        Self { by_suffix }
+    }
+
+    pub(crate) fn files_for_module(&self, module_path: &str) -> &[String] {
+        if module_path.is_empty() {
+            return &[];
+        }
+        let mut key = String::with_capacity(module_path.len() + 3);
+        for c in module_path.chars() {
+            if c == '.' {
+                key.push('/');
+            } else {
+                key.push(c);
+            }
+        }
+        key.push_str(".py");
+        self.by_suffix.get(&key).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+}
+
 pub(crate) fn resolved_import_files(deps: &[Dep], units: &[Value]) -> BTreeSet<String> {
+    resolve_deps(deps, &ImportPathIndex::from_units(units))
+}
+
+pub(crate) fn resolve_deps(deps: &[Dep], index: &ImportPathIndex) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for dep in deps {
         let Some(module) = dep.module_path.as_deref() else { continue };
-        for u in units {
-            let path = u.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            if extract::matches_import_path(path, module) {
-                out.insert(path.to_string());
-            }
+        for path in index.files_for_module(module) {
+            out.insert(path.clone());
         }
     }
     out

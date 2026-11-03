@@ -5,10 +5,90 @@ use crate::hash::sha256_hex;
 use crate::impact::{self};
 use crate::json::Value;
 use crate::store::{self};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+struct HashedFile {
+    hash: String,
+    mtime: f64,
+    mtime_ns: i64,
+    size: i64,
+}
+
+impl HashedFile {
+    fn from_path(path: &std::path::Path, content: &[u8]) -> Self {
+        let meta = fs::metadata(path).ok();
+        let mtime_ns = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos() as i64).unwrap_or(0);
+        let mtime = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+        let size = meta.map(|m| m.len() as i64).unwrap_or(content.len() as i64);
+        Self { hash: sha256_hex(content), mtime, mtime_ns, size }
+    }
+
+    fn row(&self, rel: &str) -> Value {
+        Value::object(vec![
+            ("file_path".into(), Value::String(rel.to_string())),
+            ("hash".into(), Value::String(self.hash.clone())),
+            ("mtime".into(), Value::Float(self.mtime)),
+            ("mtime_ns".into(), Value::Int(self.mtime_ns)),
+            ("size".into(), Value::Int(self.size)),
+        ])
+    }
+}
+
+#[derive(Default)]
+struct FileChurnAcc {
+    dates: Vec<String>,
+    ins: i64,
+    del: i64,
+    authors: BTreeSet<String>,
+    last: String,
+    count: i64,
+}
+
+fn disk_mtime(path: &std::path::Path) -> (i64, i64, f64) {
+    let meta = fs::metadata(path).ok();
+    let mtime_ns = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos() as i64).unwrap_or(0);
+    let mtime = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    let size = meta.map(|m| m.len() as i64).unwrap_or(-1);
+    (mtime_ns, size, mtime)
+}
+
+fn disk_unchanged(path: &std::path::Path, mtime_ns: i64, size: i64, mtime: f64) -> bool {
+    let (cur_ns, cur_size, cur_mtime) = disk_mtime(path);
+    if cur_size != size {
+        return false;
+    }
+    if mtime_ns > 0 && cur_ns == mtime_ns {
+        return true;
+    }
+    mtime >= 0.0 && (cur_mtime - mtime).abs() <= 1e-3
+}
+
+fn hashes_match_disk(project: &std::path::Path, files: &[String], rows: &[Value]) -> bool {
+    if rows.len() != files.len() {
+        return false;
+    }
+    let mut have: HashMap<&str, (i64, i64, f64)> = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let Some(path) = row.get("file_path").and_then(|v| v.as_str()) else { return false };
+        let mtime_ns = row.get("mtime_ns").and_then(|v| v.as_i64()).unwrap_or(0);
+        let size = row.get("size").and_then(|v| v.as_i64()).unwrap_or(-1);
+        let mtime = row.get("mtime").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+        have.insert(path, (mtime_ns, size, mtime));
+    }
+    if have.len() != files.len() {
+        return false;
+    }
+    for rel in files {
+        let Some((mtime_ns, size, mtime)) = have.get(rel.as_str()) else { return false };
+        if !disk_unchanged(&project.join(rel), *mtime_ns, *size, *mtime) {
+            return false;
+        }
+    }
+    true
+}
 
 impl Engine {
     pub fn analyze(&mut self) -> Result<Value, String> {
@@ -29,9 +109,13 @@ impl Engine {
         }
         let git = self.git.fork();
         let files = self.scan_code_files(&git);
+        if let Some(summary) = self.cached_analyze(&git, &files) {
+            return Ok(summary);
+        }
         let commits = git.parse_log().unwrap_or_default();
         let mut units_by_file: BTreeMap<String, Vec<CodeUnit>> = BTreeMap::new();
         let mut all_units = Vec::new();
+        let mut hashed: Vec<HashedFile> = Vec::with_capacity(files.len());
         for (index, rel) in files.iter().enumerate() {
             if let Some(id) = self.active_job.clone() {
                 let pct = ((index as i64) * 100 / (files.len() as i64).max(1)).min(99);
@@ -53,16 +137,12 @@ impl Engine {
             let content = fs::read(&abs).unwrap_or_default();
             let text = String::from_utf8_lossy(&content);
             let units = extract::extract_code_units_in(rel, &text, Some(&self.project_dir), self.allow_repo_extractor);
-            let hash = sha256_hex(&content);
+            let hashed_file = HashedFile::from_path(&abs, &content);
             for u in &units {
-                all_units.push(unit_obj(rel, u, &hash));
+                all_units.push(unit_obj(rel, u, &hashed_file.hash));
             }
             units_by_file.insert(rel.clone(), units);
-            let meta = fs::metadata(&abs).ok();
-            let mtime = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-            let size = meta.map(|m| m.len() as i64).unwrap_or(0);
-            // stored below
-            let _ = (mtime, size, hash);
+            hashed.push(hashed_file);
         }
         self.store.doc.insert("code_units", Value::Array(all_units));
 
@@ -92,28 +172,33 @@ impl Engine {
 
         let now = impact::now_unix();
         let mut churn_rows = Vec::new();
-        for rel in &files {
-            let dates: Vec<String> = commits.iter().filter(|c| c.files.iter().any(|f| &f.path == rel)).map(|c| c.date.clone()).collect();
-            let mut ins = 0i64;
-            let mut del = 0i64;
-            let mut authors = BTreeSet::new();
-            let mut last = String::new();
-            let mut count = 0i64;
-            for c in &commits {
-                if let Some(f) = c.files.iter().find(|f| &f.path == rel) {
-                    if impact::parse_iso_unix(&c.date).is_some() {
-                        count += 1;
-                        authors.insert(c.author.clone());
-                        ins += f.insertions;
-                        del += f.deletions;
-                        if last.is_empty() || c.date > last {
-                            last = c.date.clone();
-                        }
+        let mut file_churn: HashMap<&str, FileChurnAcc> = HashMap::new();
+        for c in &commits {
+            let parsed = impact::parse_iso_unix(&c.date).is_some();
+            let mut seen = HashSet::new();
+            for f in &c.files {
+                if !seen.insert(f.path.as_str()) {
+                    continue;
+                }
+                let acc = file_churn.entry(f.path.as_str()).or_default();
+                acc.dates.push(c.date.clone());
+                if parsed {
+                    acc.count += 1;
+                    acc.authors.insert(c.author.clone());
+                    acc.ins += f.insertions;
+                    acc.del += f.deletions;
+                    if acc.last.is_empty() || c.date > acc.last {
+                        acc.last = c.date.clone();
                     }
                 }
             }
+        }
+        for rel in &files {
+            let acc = file_churn.get(rel.as_str());
+            let dates = acc.map(|a| a.dates.clone()).unwrap_or_default();
             let score = impact::churn_score(&dates, now);
-            churn_rows.push(churn_row(rel, "", ChurnCounts { commits: count, authors: authors.len() as i64, insertions: ins, deletions: del }, &last, score));
+            let (count, authors, ins, del, last) = acc.map(|a| (a.count, a.authors.len() as i64, a.ins, a.del, a.last.clone())).unwrap_or((0, 0, 0, 0, String::new()));
+            churn_rows.push(churn_row(rel, "", ChurnCounts { commits: count, authors, insertions: ins, deletions: del }, &last, score));
         }
         if files.len() <= 2000 {
             let tasks = unit_log_tasks(&files, &units_by_file);
@@ -123,10 +208,8 @@ impl Engine {
                 if func_commits.is_empty() {
                     continue;
                 }
-                let func_dates: Vec<String> = func_commits.iter().map(|c| c.date.clone()).collect();
-                let func_score = impact::churn_score(&func_dates, now);
-                let func_count = func_dates.iter().filter(|d| impact::parse_iso_unix(d).is_some()).count() as i64;
-                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: 1, insertions: 0, deletions: 0 }, "", func_score));
+                let (func_count, author_n, ins, del, last, func_score) = unit_churn_from(&func_commits, &task.0);
+                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: author_n, insertions: ins, deletions: del }, &last, func_score));
             }
         }
         self.store.doc.insert("churn", Value::Array(churn_rows));
@@ -143,27 +226,15 @@ impl Engine {
 
         let mut blame_rows = Vec::new();
         let mut hash_rows = Vec::new();
-        for rel in &files {
-            let abs = self.project_dir.join(rel);
-            let content = fs::read(&abs).unwrap_or_default();
-            let hash = sha256_hex(&content);
-            let meta = fs::metadata(&abs).ok();
-            let mtime = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-            let size = meta.map(|m| m.len() as i64).unwrap_or(0);
-            hash_rows.push(Value::object(vec![
-                ("file_path".into(), Value::String(rel.clone())),
-                ("hash".into(), Value::String(hash.clone())),
-                ("mtime".into(), Value::Float(mtime)),
-                ("size".into(), Value::Int(size)),
-            ]));
+        for (rel, hashed_file) in files.iter().zip(&hashed) {
+            hash_rows.push(hashed_file.row(rel));
         }
         let blame_blocks = pool_map(&files, |rel| git.blame(rel).unwrap_or_default());
-        for (rel, blocks) in files.iter().zip(blame_blocks) {
-            let hash = hash_rows.iter().find(|h| h.get("file_path").and_then(|v| v.as_str()) == Some(rel.as_str())).and_then(|h| h.get("hash").and_then(|v| v.as_str())).unwrap_or("");
+        for ((rel, blocks), hashed_file) in files.iter().zip(blame_blocks).zip(&hashed) {
             for b in blocks {
                 blame_rows.push(Value::object(vec![
                     ("file_path".into(), Value::String(rel.clone())),
-                    ("content_hash".into(), Value::String(hash.into())),
+                    ("content_hash".into(), Value::String(hashed_file.hash.clone())),
                     ("line_start".into(), Value::Int(b.line_start as i64)),
                     ("line_end".into(), Value::Int(b.line_end as i64)),
                     ("author".into(), Value::String(b.author)),
@@ -182,31 +253,52 @@ impl Engine {
         let imports = self.build_import_edges(&files);
         self.store.doc.insert("import_edges", Value::Array(imports));
         store::meta_set(&mut self.store.doc, "project_fingerprint", &self.project_dir.to_string_lossy());
-
-        let test_files = self.test_file_set().len() as i64;
-        let test_units_n = self.store.array("test_units").len() as i64;
-        let edge_n = self.store.array("test_edges").len() as i64;
-        let unit_n = self.store.array("code_units").len() as i64;
         if let Some(latest) = commits.iter().map(|c| c.date.as_str()).max() {
             store::meta_set(&mut self.store.doc, "last_commit_date", latest);
         }
+        if let Ok(head) = git.head_sha() {
+            store::meta_set(&mut self.store.doc, "analyzed_head", &head);
+        }
         self.store.save()?;
+        Ok(self.analyze_summary(files.len()))
+    }
+
+    /// Second `analyze` with the same tree and HEAD returns the stored summary.
+    fn cached_analyze(&self, git: &GitAnalyzer, files: &[String]) -> Option<Value> {
+        if self.active_job.is_some() || self.only_files.is_some() {
+            return None;
+        }
+        if self.store.array_len("code_units") == 0 || self.store.array_len("file_hashes") == 0 {
+            return None;
+        }
+        if !hashes_match_disk(&self.project_dir, files, self.store.rows("file_hashes")) {
+            return None;
+        }
+        let Ok(head) = git.head_sha() else { return None };
+        if store::meta_get(&self.store.doc, "analyzed_head").as_deref() != Some(head.as_str()) {
+            return None;
+        }
+        Some(self.analyze_summary(files.len()))
+    }
+
+    fn analyze_summary(&self, files_scanned: usize) -> Value {
+        let test_files = self.test_file_set().len() as i64;
         let mut summary = vec![
-            ("code_files_scanned".into(), Value::Int(files.len() as i64)),
-            ("code_units_found".into(), Value::Int(unit_n)),
+            ("code_files_scanned".into(), Value::Int(files_scanned as i64)),
+            ("code_units_found".into(), Value::Int(self.store.array_len("code_units") as i64)),
             ("test_files_found".into(), Value::Int(test_files)),
-            ("test_units_found".into(), Value::Int(test_units_n)),
-            ("test_edges_built".into(), Value::Int(edge_n)),
-            ("commits_parsed".into(), Value::Int(commits.len() as i64)),
+            ("test_units_found".into(), Value::Int(self.store.array_len("test_units") as i64)),
+            ("test_edges_built".into(), Value::Int(self.store.array_len("test_edges") as i64)),
+            ("commits_parsed".into(), Value::Int(self.store.array_len("commits") as i64)),
             ("orphaned_results_cleaned".into(), Value::Int(0)),
-            ("active_file_locks".into(), Value::Int(self.store.array("file_locks").len() as i64)),
+            ("active_file_locks".into(), Value::Int(self.store.array_len("file_locks") as i64)),
             ("hint".into(), Value::String(analyze_hint(test_files))),
         ];
-        if files.len() > 2000 {
+        if files_scanned > 2000 {
             summary.push(("unit_churn_skipped".into(), Value::Bool(true)));
         }
         push_extractor_warnings(&mut summary);
-        Ok(Value::object(summary))
+        Value::object(summary)
     }
 
     pub fn update(&mut self) -> Result<Value, String> {
@@ -216,29 +308,48 @@ impl Engine {
         extract::clear_extractor_warnings();
         let git = self.git.fork();
         let files = self.scan_code_files(&git);
-        let before: BTreeMap<String, String> = self.store.array("file_hashes").into_iter().filter_map(|row| {
-            Some((row.get("file_path")?.as_str()?.to_string(), row.get("hash")?.as_str()?.to_string()))
-        }).collect();
+        let mut before: HashMap<String, (String, i64, i64, f64)> = HashMap::new();
+        for row in self.store.rows("file_hashes") {
+            let Some(path) = row.get("file_path").and_then(|v| v.as_str()) else { continue };
+            let Some(hash) = row.get("hash").and_then(|v| v.as_str()) else { continue };
+            let mtime_ns = row.get("mtime_ns").and_then(|v| v.as_i64()).unwrap_or(0);
+            let size = row.get("size").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let mtime = row.get("mtime").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+            before.insert(path.to_string(), (hash.to_string(), mtime_ns, size, mtime));
+        }
         let mut changed: Vec<String> = Vec::new();
         for rel in &files {
             let abs = self.project_dir.join(rel);
+            if let Some((hash, mtime_ns, size, mtime)) = before.get(rel) {
+                if disk_unchanged(&abs, *mtime_ns, *size, *mtime) {
+                    let _ = hash;
+                    continue;
+                }
+            }
             let content = fs::read(&abs).unwrap_or_default();
             let hash = sha256_hex(&content);
-            if before.get(rel).map(|h| h.as_str()) != Some(hash.as_str()) {
+            if before.get(rel).map(|(h, _, _, _)| h.as_str()) != Some(hash.as_str()) {
                 changed.push(rel.clone());
             }
         }
-        let removed: Vec<String> = before.keys().filter(|path| !files.iter().any(|f| f == *path)).cloned().collect();
+        let file_set: HashSet<&str> = files.iter().map(|s| s.as_str()).collect();
+        let removed: Vec<String> = before.keys().filter(|path| !file_set.contains(path.as_str())).cloned().collect();
         let since = store::meta_get(&self.store.doc, "last_commit_date");
-        let known: BTreeSet<String> = self.store.array("commits").iter().filter_map(|c| c.get("hash").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
+        let known: BTreeSet<String> = self.store.rows("commits").iter().filter_map(|c| c.get("hash").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
         let new_commits: Vec<git::Commit> = git.parse_log_since(since.as_deref()).unwrap_or_default().into_iter().filter(|c| !known.contains(&c.hash)).collect();
         let commit_touch: BTreeSet<String> = new_commits.iter().flat_map(|c| c.files.iter().map(|f| f.path.clone())).collect();
         if changed.is_empty() && new_commits.is_empty() && removed.is_empty() {
+            let cleaned = self.cleanup_orphaned_results();
+            if cleaned > 0 {
+                self.store.save()?;
+            }
             return Ok(Value::object(vec![
                 ("files_updated".into(), Value::Int(0)),
-                ("code_units_found".into(), Value::Int(self.store.array("code_units").len() as i64)),
+                ("code_units_found".into(), Value::Int(0)),
                 ("new_commits".into(), Value::Int(0)),
                 ("edge_rebuild_skipped".into(), Value::Bool(true)),
+                ("orphaned_results_cleaned".into(), Value::Int(cleaned)),
+                ("active_file_locks".into(), Value::Int(self.active_locks().len() as i64)),
                 ("hint".into(), Value::String("For large repos, use start_job with kind='update' to avoid MCP timeouts.".into())),
             ]));
         }
@@ -372,10 +483,8 @@ impl Engine {
                 if func_commits.is_empty() {
                     continue;
                 }
-                let func_dates: Vec<String> = func_commits.iter().map(|c| c.date.clone()).collect();
-                let func_score = impact::churn_score(&func_dates, now);
-                let func_count = func_dates.iter().filter(|d| impact::parse_iso_unix(d).is_some()).count() as i64;
-                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: 1, insertions: 0, deletions: 0 }, "", func_score));
+                let (func_count, author_n, ins, del, last, func_score) = unit_churn_from(&func_commits, &task.0);
+                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: author_n, insertions: ins, deletions: del }, &last, func_score));
             }
         }
         self.store.doc.insert("churn", Value::Array(churn_rows));
@@ -390,13 +499,7 @@ impl Engine {
         for rel in &scope {
             let abs = self.project_dir.join(rel);
             let content = fs::read(&abs).unwrap_or_default();
-            let hash = sha256_hex(&content);
-            hash_rows.push(Value::object(vec![
-                ("file_path".into(), Value::String(rel.clone())),
-                ("hash".into(), Value::String(hash.clone())),
-                ("mtime".into(), Value::Float(0.0)),
-                ("size".into(), Value::Int(content.len() as i64)),
-            ]));
+            hash_rows.push(HashedFile::from_path(&abs, &content).row(rel));
         }
         let blame_blocks = pool_map(&scope, |rel| git.blame(rel).unwrap_or_default());
         for (rel, blocks) in scope.iter().zip(blame_blocks) {
@@ -489,11 +592,15 @@ impl Engine {
         self.store.doc.insert("import_edges", Value::Array(imports));
         self.drop_removed_paths(removed);
         self.store.save()?;
+        let cleaned = self.cleanup_orphaned_results();
+        let found = changed.iter().map(|rel| units_by_file.get(rel).map(|u| u.len() as i64).unwrap_or(0)).sum::<i64>();
         let mut summary = vec![
             ("files_updated".into(), Value::Int((changed.len() + removed.len()) as i64)),
-            ("code_units_found".into(), Value::Int(self.store.array("code_units").len() as i64)),
+            ("code_units_found".into(), Value::Int(found)),
             ("new_commits".into(), Value::Int(new_commits.len() as i64)),
             ("edge_rebuild_skipped".into(), Value::Bool(edge_rebuild_skipped)),
+            ("orphaned_results_cleaned".into(), Value::Int(cleaned)),
+            ("active_file_locks".into(), Value::Int(self.active_locks().len() as i64)),
             ("hint".into(), Value::String("For large repos, use start_job with kind='update' to avoid MCP timeouts.".into())),
         ];
         if skip_unit {
@@ -563,29 +670,30 @@ impl Engine {
         let mut test_units = Vec::new();
         for rel in files {
             let units = units_by_file.get(rel).cloned().unwrap_or_default();
-            let as_file = looks_like_test(rel);
-            let framework = if rel.ends_with(".py") {
-                "pytest"
-            } else if rel.ends_with(".go") {
-                "go"
-            } else {
-                "test"
-            };
-            let selected: Vec<CodeUnit> = if as_file {
-                units.into_iter().filter(|u| {
-                    extract::is_test_name(&u.name, framework) || is_test_unit_type(&u.unit_type)
-                }).collect()
-            } else {
-                units.into_iter().filter(|u| is_test_unit_type(&u.unit_type)).collect()
-            };
-            if !as_file && selected.is_empty() {
-                continue;
-            }
             let abs = self.project_dir.join(rel);
             let content = fs::read_to_string(&abs).unwrap_or_default();
             self.source_reads += 1;
+            let framework = extract::framework_for(rel, &content).unwrap_or(if looks_like_test(rel) { "test" } else { "" });
+            let annotated = extract::annotated_names(&content, framework);
+            let as_file = looks_like_test(rel) || framework == "gtest";
+            let selected: Vec<CodeUnit> = units.into_iter().filter(|u| {
+                if is_test_unit_type(&u.unit_type) {
+                    return as_file || framework == "rust" || framework == "gtest" || framework == "jest" || framework == "playwright";
+                }
+                if !as_file {
+                    return false;
+                }
+                let bare = u.name.rsplit('.').next().unwrap_or(&u.name);
+                annotated.contains(bare) || annotated.contains(&u.name) || extract::is_test_name(&u.name, framework)
+            }).collect();
+            if !as_file && selected.is_empty() {
+                continue;
+            }
             let hash = sha256_hex(content.as_bytes());
             if selected.is_empty() {
+                if matches!(framework, "junit" | "csharp_test" | "xctest" | "gtest" | "pytest" | "go" | "jest" | "playwright") {
+                    continue;
+                }
                 let stem = rel.rsplit(['/', '\\']).next().unwrap_or(rel);
                 test_units.push(Value::object(vec![
                     ("id".into(), Value::String(format!("{rel}:{stem}"))),
@@ -615,22 +723,30 @@ impl Engine {
         let mut static_rows = Vec::new();
         let mut static_seen = BTreeSet::new();
         let mut seen = BTreeSet::new();
-        let mut content_cache: BTreeMap<String, String> = BTreeMap::new();
-        let mut bare_indexes: BTreeMap<String, BTreeMap<String, Vec<(String, String)>>> = BTreeMap::new();
+        let shared_index = bare_name_index(&code_units);
+        if !test_units.is_empty() {
+            self.bare_index_builds += 1;
+        }
+        let import_index = ImportPathIndex::from_units(&code_units);
+        let mut id_file: HashMap<&str, &str> = HashMap::new();
+        for unit in &code_units {
+            if let (Some(id), Some(path)) = (unit.get("id").and_then(|v| v.as_str()), unit.get("file_path").and_then(|v| v.as_str())) {
+                id_file.insert(id, path);
+            }
+        }
+        let mut dep_cache: BTreeMap<String, (Vec<extract::Dep>, BTreeSet<String>)> = BTreeMap::new();
         for tu in &test_units {
             let file = tu.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             let tid = tu.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if !bare_indexes.contains_key(file) {
-                self.bare_index_builds += 1;
-                bare_indexes.insert(file.to_string(), bare_name_index(&code_units));
+            let index = &shared_index;
+            if !dep_cache.contains_key(file) {
+                let content = fs::read_to_string(self.project_dir.join(file)).unwrap_or_default();
+                let deps = extract::extract_deps_in(file, &content, Some(&self.project_dir), self.allow_repo_extractor);
+                let resolved = resolve_deps(&deps, &import_index);
+                dep_cache.insert(file.to_string(), (deps, resolved));
             }
-            let index = bare_indexes.get(file).expect("bare-name index");
-            let content = content_cache.entry(file.to_string()).or_insert_with(|| {
-                fs::read_to_string(self.project_dir.join(file)).unwrap_or_default()
-            });
-            let deps = extract::extract_deps(file, content);
-            let resolved = resolved_import_files(&deps, &code_units);
-            for path in &resolved {
+            let (deps, resolved) = dep_cache.get(file).expect("deps");
+            for path in resolved {
                 let key = format!("{file}|{path}");
                 if static_seen.insert(key) {
                     static_rows.push(Value::object(vec![
@@ -640,9 +756,12 @@ impl Engine {
                 }
             }
             for dep in deps {
-                let matched = match_dep(file, &dep, &code_units, &resolved, index);
+                let matched = match_dep(file, dep, &code_units, resolved, index);
                 for cid in matched {
-                    let code_file = code_units.iter().find(|u| u.get("id").and_then(|v| v.as_str()) == Some(cid.as_str())).and_then(|u| u.get("file_path").and_then(|v| v.as_str())).unwrap_or("");
+                    let code_file = id_file.get(cid.as_str()).copied().unwrap_or("");
+                    if code_file.is_empty() || code_file == file {
+                        continue;
+                    }
                     let key = format!("{tid}|{cid}|{}", dep.dep_type);
                     if !seen.insert(key) {
                         continue;
@@ -657,11 +776,19 @@ impl Engine {
                 }
             }
         }
+        backfill_heuristic(&test_units, &mut edges, &code_units);
         (test_units, edges, static_rows)
     }
 
     pub(super) fn build_import_edges(&self, files: &[String]) -> Vec<Value> {
         let code_units = self.store.array("code_units");
+        let mut by_name: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+        for (i, cu) in code_units.iter().enumerate() {
+            let name = cu.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            if !name.is_empty() {
+                by_name.entry(name).or_default().push(i);
+            }
+        }
         let mut edges = Vec::new();
         let mut seen = BTreeSet::new();
         for rel in files {
@@ -669,15 +796,16 @@ impl Engine {
                 continue;
             }
             let content = fs::read_to_string(self.project_dir.join(rel)).unwrap_or_default();
-            for dep in extract::extract_deps(rel, &content) {
+            for dep in extract::extract_deps_in(rel, &content, Some(&self.project_dir), self.allow_repo_extractor) {
                 if dep.dep_type != "import" && dep.dep_type != "tainted_import" {
                     continue;
                 }
                 let Some(module) = dep.module_path.as_deref() else { continue };
-                for cu in &code_units {
+                let Some(hits) = by_name.get(dep.name.as_str()) else { continue };
+                for &i in hits {
+                    let cu = &code_units[i];
                     let path = cu.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-                    let name = cu.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    if name == dep.name && extract::matches_import_path(path, module) && path != rel {
+                    if extract::matches_import_path(path, module) && path != rel {
                         let key = format!("{rel}|{path}");
                         if seen.insert(key) {
                             edges.push(Value::object(vec![
@@ -701,11 +829,15 @@ impl Engine {
     }
 
     pub fn record_result(&mut self, test_id: &str, passed: bool) -> Result<Value, String> {
+        self.record_result_with(test_id, passed, None)
+    }
+
+    pub fn record_result_with(&mut self, test_id: &str, passed: bool, duration_ms: Option<f64>) -> Result<Value, String> {
         let stored = normalize_test_id(test_id);
         let now = now_secs();
         self.store.edit_and_save(|doc| {
             prune_old_results(doc, now);
-            append_test_result(doc, test_id, passed, now);
+            append_test_result_full(doc, test_id, passed, now, duration_ms);
         })?;
         Ok(Value::object(vec![
             ("test_id".into(), Value::String(stored)),
@@ -779,7 +911,7 @@ impl Engine {
             let content = content_cache.entry(file.clone()).or_insert_with(|| {
                 fs::read_to_string(self.project_dir.join(file)).unwrap_or_default()
             });
-            let deps = extract::extract_deps(file, content);
+            let deps = extract::extract_deps_in(file, content, Some(&self.project_dir), self.allow_repo_extractor);
             let resolved = resolved_import_files(&deps, &all_units);
             let test_shard = shard_owner(file, &shards);
             for path in &resolved {
@@ -842,7 +974,7 @@ impl Engine {
                 fs::read_to_string(self.project_dir.join(rel)).unwrap_or_default()
             });
             let from_shard = shard_owner(rel, &shards);
-            for dep in extract::extract_deps(rel, content) {
+            for dep in extract::extract_deps_in(rel, content, Some(&self.project_dir), self.allow_repo_extractor) {
                 if dep.dep_type != "import" && dep.dep_type != "tainted_import" {
                     continue;
                 }
@@ -1162,4 +1294,155 @@ impl Engine {
         }
     }
 
+    pub(super) fn cleanup_orphaned_results(&mut self) -> i64 {
+        let ids: BTreeSet<String> = self.store.array("test_units").into_iter().filter_map(|u| u.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
+        if ids.is_empty() {
+            return 0;
+        }
+        let before = self.store.array("test_results").len();
+        let kept: Vec<Value> = self.store.array("test_results").into_iter().filter(|row| {
+            row.get("test_id").and_then(|v| v.as_str()).is_some_and(|id| ids.contains(id))
+        }).collect();
+        let removed = before.saturating_sub(kept.len()) as i64;
+        if removed > 0 {
+            self.store.doc.insert("test_results", Value::Array(kept));
+        }
+        removed
+    }
+
+    /// Copy recorded results out of a legacy SQLite `chisel.db` into the snapshot.
+    pub fn migrate_legacy(&mut self, db: &std::path::Path) -> Result<Value, String> {
+        let rows = crate::sqlite_import::read_test_results(db)?;
+        let mut added = 0i64;
+        let mut skipped = 0i64;
+        self.store.edit_and_save(|doc| {
+            let existing: Vec<Value> = doc.get("test_results").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+            for row in &rows {
+                let id = normalize_test_id(&row.test_id);
+                let dup = existing.iter().chain(doc.get("test_results").and_then(|v| v.as_array()).into_iter().flatten()).any(|old| {
+                    old.get("test_id").and_then(|v| v.as_str()) == Some(id.as_str())
+                        && (old.get("recorded_at").and_then(|v| v.as_f64()).unwrap_or(-1.0) - row.recorded_at).abs() < 0.5
+                });
+                if dup {
+                    skipped += 1;
+                    continue;
+                }
+                append_test_result_full(doc, &row.test_id, row.passed, row.recorded_at, row.duration_ms);
+                added += 1;
+            }
+        }).map_err(|e| e.to_string())?;
+        Ok(Value::object(vec![
+            ("imported".into(), Value::Int(added)),
+            ("skipped".into(), Value::Int(skipped)),
+            ("source".into(), Value::String(db.display().to_string())),
+            ("status".into(), Value::String("ok".into())),
+        ]))
+    }
+
+}
+
+fn unit_churn_from(commits: &[crate::git::Commit], file: &str) -> (i64, i64, i64, i64, String, f64) {
+    let now = impact::now_unix();
+    let mut dates = Vec::new();
+    let mut authors = BTreeSet::new();
+    let mut ins = 0i64;
+    let mut del = 0i64;
+    let mut last = String::new();
+    for commit in commits {
+        if impact::parse_iso_unix(&commit.date).is_none() {
+            continue;
+        }
+        dates.push(commit.date.clone());
+        authors.insert(commit.author.clone());
+        if last.is_empty() || commit.date > last {
+            last = commit.date.clone();
+        }
+        for item in &commit.files {
+            if item.path.is_empty() || item.path == file {
+                ins += item.insertions;
+                del += item.deletions;
+            }
+        }
+    }
+    let score = impact::churn_score(&dates, now);
+    (dates.len() as i64, authors.len() as i64, ins, del, last, score)
+}
+
+fn backfill_heuristic(test_units: &[Value], edges: &mut Vec<Value>, code_units: &[Value]) {
+    let mut file_of: BTreeMap<String, String> = BTreeMap::new();
+    for unit in test_units {
+        let id = unit.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let file = unit.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+        if !id.is_empty() {
+            file_of.insert(id.to_string(), file.to_string());
+        }
+    }
+    let mut covered: BTreeSet<String> = BTreeSet::new();
+    for edge in edges.iter() {
+        let tid = edge.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(file) = file_of.get(tid) {
+            covered.insert(file.clone());
+        }
+    }
+    let mut by_stem: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    for code in code_units {
+        let path = code.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+        let cid = code.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if path.is_empty() || cid.is_empty() || path.contains(".test.") || path.contains(".spec.") {
+            continue;
+        }
+        let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        let base_stem = base.split('.').next().unwrap_or(base).to_ascii_lowercase();
+        if base_stem.is_empty() {
+            continue;
+        }
+        by_stem.entry(base_stem).or_default().push((path.to_string(), cid.to_string()));
+    }
+    let mut seen = BTreeSet::new();
+    for unit in test_units {
+        let file = unit.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+        let tid = unit.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if file.is_empty() || tid.is_empty() || covered.contains(file) {
+            continue;
+        }
+        let stem = source_stem(file).to_ascii_lowercase();
+        let Some(cands) = by_stem.get(&stem) else { continue };
+        for (path, cid) in cands {
+            if path == file {
+                continue;
+            }
+            let key = format!("{tid}|{cid}|heuristic");
+            if !seen.insert(key) {
+                continue;
+            }
+            edges.push(Value::object(vec![
+                ("test_id".into(), Value::String(tid.into())),
+                ("code_id".into(), Value::String(cid.clone())),
+                ("edge_type".into(), Value::String("heuristic".into())),
+                ("weight".into(), Value::Float(0.2)),
+            ]));
+        }
+    }
+}
+
+fn source_stem(test_file: &str) -> String {
+    let base = test_file.rsplit(['/', '\\']).next().unwrap_or(test_file);
+    let mut stem = base.split('.').next().unwrap_or(base).to_string();
+    for affix in ["_test", "Test", "_spec", "Spec"] {
+        if let Some(rest) = stem.strip_suffix(affix) {
+            if !rest.is_empty() {
+                stem = rest.to_string();
+                break;
+            }
+        }
+    }
+    for affix in ["test_", "Test"] {
+        if let Some(rest) = stem.strip_prefix(affix) {
+            if !rest.is_empty() {
+                stem = rest.to_string();
+                break;
+            }
+        }
+    }
+    stem
 }

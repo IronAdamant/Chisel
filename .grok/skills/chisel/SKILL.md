@@ -7,7 +7,7 @@ description: Run Chisel test-impact analysis on any git project — which tests 
 
 The binary is `chisel`, built from `src/` with `cargo build --release`. `chisel-mcp` is the same binary and starts stdio MCP. Oracle JSON is in `tests/fixtures/oracle`. Do not pip-install a package to get this binary.
 
-Storage is the snapshot `.chisel/store`. Chisel does not open `chisel.db`.
+Storage is the snapshot `.chisel/store`. `chisel migrate` copies test results from an old `chisel.db`. Other commands do not open it.
 
 ## Core loop
 
@@ -20,7 +20,7 @@ chisel --json update
 chisel run -- pytest tests/
 ```
 
-Prefer MCP when `chisel-mcp` is connected (26 tools). HTTP `chisel serve` is `GET /health`, `GET /tools`, and `POST /call` only. It is not an MCP URL and it has no `/mcp` path.
+Prefer MCP when `chisel-mcp` is connected (26 tools). The server speaks newline-delimited JSON and also Content-Length. HTTP `chisel serve` is `GET /health`, `GET /tools`, and `POST /call` only. It is not an MCP URL and it has no `/mcp` path.
 
 Always pass `--json` on the CLI and branch on `status` before treating a payload as a list. `no_data`, `stale_db`, and `no_changes` exit 0. `error` and `git_error` exit 1.
 
@@ -50,7 +50,7 @@ Always pass `--json` on the CLI and branch on `status` before treating a payload
 - A no-op `update` sets `edge_rebuild_skipped` true and does not run `git blame` or `git log -L`.
 - `chisel run` records pytest and Jest and forwards the test process exit code. One snapshot flush for the whole run.
 - `chisel watch` polls `git status` and runs `update` when the worktree changes. `--interval` is seconds. `--once` exits after one check.
-- A custom parser is an executable named by `CHISEL_EXTRACTOR`, or by `.chisel/extensions.toml` when the process starts with `--allow-repo-extractor` or `CHISEL_ALLOW_REPO_EXTRACTOR=1`. A tool argument cannot turn it on. The path must stay inside the project. Its libraries stay outside this binary.
+- A custom parser is an executable named by `CHISEL_EXTRACTOR`, or by `.chisel/extensions.toml` when the process starts with `--allow-repo-extractor` or `CHISEL_ALLOW_REPO_EXTRACTOR=1`. `CHISEL_DEP_EXTRACTOR` or `dep_extractor` in that file supplies test dependencies. A tool argument cannot turn the repo file on. The path must stay inside the project. Its libraries stay outside this binary.
 - `stats` returns counts. It does not embed every historical result.
 - List tools apply a default limit and set `truncated` when the cap cuts the list.
 - Suggestion `source` is one of `direct`, `co_change`, `import_graph`, `static_require`, `hybrid`, `fallback`, `working_tree`.

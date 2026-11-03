@@ -101,6 +101,10 @@ impl GitAnalyzer {
         Ok(self.run(&["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string())
     }
 
+    pub fn head_sha(&self) -> Result<String, GitError> {
+        Ok(self.run(&["rev-parse", "HEAD"])?.trim().to_string())
+    }
+
     pub fn branch_exists(&self, name: &str) -> bool {
         if name.starts_with('-') {
             return false;
@@ -195,6 +199,9 @@ pub fn parse_log_output(raw: &str) -> Vec<Commit> {
             message: parts[4].into(),
             files: Vec::new(),
         };
+        let mut diff_ins = 0i64;
+        let mut diff_del = 0i64;
+        let mut has_numstat = false;
         for line in lines {
             let line = line.trim_end();
             if line.is_empty() {
@@ -206,13 +213,26 @@ pub fn parse_log_output(raw: &str) -> Vec<Commit> {
                 let ins_ok = ins == "-" || ins.chars().all(|c| c.is_ascii_digit());
                 let del_ok = del == "-" || del.chars().all(|c| c.is_ascii_digit());
                 if ins_ok && del_ok {
+                    has_numstat = true;
                     commit.files.push(GitFile {
                         path: path.into(),
                         insertions: if ins == "-" { 0 } else { ins.parse().unwrap_or(0) },
                         deletions: if del == "-" { 0 } else { del.parse().unwrap_or(0) },
                     });
+                    continue;
                 }
             }
+            if !has_numstat {
+                let trimmed = line.trim();
+                if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
+                    diff_ins += 1;
+                } else if trimmed.starts_with('-') && !trimmed.starts_with("---") {
+                    diff_del += 1;
+                }
+            }
+        }
+        if !has_numstat && (diff_ins > 0 || diff_del > 0) {
+            commit.files.push(GitFile { path: String::new(), insertions: diff_ins, deletions: diff_del });
         }
         commits.push(commit);
     }

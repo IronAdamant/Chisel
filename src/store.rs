@@ -34,13 +34,15 @@ pub struct Store {
     loaded_generation: i64,
     /// Test hook: the next N saves fail as a stale generation and do not publish.
     pub fail_stale_remaining: i64,
-    units_by_id: HashMap<String, Value>,
-    units_by_file: HashMap<String, Vec<Value>>,
-    edges_by_code: HashMap<String, Vec<Value>>,
-    churn_by_file: HashMap<String, Vec<Value>>,
+    /// `(len, mtime_nanos)` of the snapshot last parsed. A matching stamp skips a re-parse.
+    snapshot_stamp: Option<(u64, u128)>,
+    units_by_id: HashMap<String, usize>,
+    units_by_file: HashMap<String, Vec<usize>>,
+    edges_by_code: HashMap<String, Vec<usize>>,
+    churn_by_file: HashMap<String, Vec<usize>>,
     hash_by_file: HashMap<String, String>,
-    blame_by_file: HashMap<String, Vec<Value>>,
-    co_by_file: HashMap<String, Vec<Value>>,
+    blame_by_file: HashMap<String, Vec<usize>>,
+    co_by_file: HashMap<String, Vec<usize>>,
 }
 
 impl Store {
@@ -64,6 +66,7 @@ impl Store {
             doc: empty_doc(),
             loaded_generation: 0,
             fail_stale_remaining: 0,
+            snapshot_stamp: None,
             units_by_id: HashMap::new(),
             units_by_file: HashMap::new(),
             edges_by_code: HashMap::new(),
@@ -92,8 +95,14 @@ impl Store {
     pub fn reload(&mut self) -> Result<(), StoreError> {
         {
             let _guard = self.lock.shared().map_err(|e| StoreError(e.to_string()))?;
-            self.doc = read_snapshot(&self.snapshot_path())?;
+            let path = self.snapshot_path();
+            let stamp = file_stamp(&path);
+            if stamp.is_some() && self.snapshot_stamp == stamp {
+                return Ok(());
+            }
+            self.doc = read_snapshot(&path)?;
             self.loaded_generation = self.doc.get("generation").and_then(|v| v.as_i64()).unwrap_or(0);
+            self.snapshot_stamp = file_stamp(&path);
         }
         self.reindex();
         Ok(())
@@ -125,6 +134,7 @@ impl Store {
             write_snapshot_file(&self.temp_path(), &self.doc)?;
             self.publish_temp()?;
             self.loaded_generation = gen;
+            self.snapshot_stamp = file_stamp(&self.snapshot_path());
         }
         self.reindex();
         Ok(())
@@ -167,39 +177,50 @@ impl Store {
     }
 
     pub fn array(&self, key: &str) -> Vec<Value> {
-        self.doc.get(key).and_then(|v| v.as_array()).unwrap_or(&[]).to_vec()
+        self.rows(key).to_vec()
+    }
+
+    pub fn rows(&self, key: &str) -> &[Value] {
+        self.doc.get(key).and_then(|v| v.as_array()).unwrap_or(&[])
     }
 
     pub fn array_len(&self, key: &str) -> usize {
-        self.doc.get(key).and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)
+        self.rows(key).len()
     }
 
-    pub fn units_by_file(&self, file: &str) -> Vec<Value> {
-        self.units_by_file.get(file).cloned().unwrap_or_default()
+    pub fn units_by_file<'a>(&'a self, file: &str) -> Vec<&'a Value> {
+        self.indexed("code_units", self.units_by_file.get(file))
     }
 
-    pub fn unit_by_id(&self, id: &str) -> Option<Value> {
-        self.units_by_id.get(id).cloned()
+    pub fn unit_by_id<'a>(&'a self, id: &str) -> Option<&'a Value> {
+        let idx = *self.units_by_id.get(id)?;
+        self.rows("code_units").get(idx)
     }
 
-    pub fn edges_for_code(&self, code_id: &str) -> Vec<Value> {
-        self.edges_by_code.get(code_id).cloned().unwrap_or_default()
+    pub fn edges_for_code<'a>(&'a self, code_id: &str) -> Vec<&'a Value> {
+        self.indexed("test_edges", self.edges_by_code.get(code_id))
     }
 
-    pub fn churn_for_file(&self, file: &str) -> Vec<Value> {
-        self.churn_by_file.get(file).cloned().unwrap_or_default()
+    pub fn churn_for_file<'a>(&'a self, file: &str) -> Vec<&'a Value> {
+        self.indexed("churn", self.churn_by_file.get(file))
     }
 
     pub fn hash_for_file(&self, file: &str) -> String {
         self.hash_by_file.get(file).cloned().unwrap_or_default()
     }
 
-    pub fn blame_for_file(&self, file: &str) -> Vec<Value> {
-        self.blame_by_file.get(file).cloned().unwrap_or_default()
+    pub fn blame_for_file<'a>(&'a self, file: &str) -> Vec<&'a Value> {
+        self.indexed("blame", self.blame_by_file.get(file))
     }
 
-    pub fn co_for_file(&self, file: &str) -> Vec<Value> {
-        self.co_by_file.get(file).cloned().unwrap_or_default()
+    pub fn co_for_file<'a>(&'a self, file: &str) -> Vec<&'a Value> {
+        self.indexed("co_changes", self.co_by_file.get(file))
+    }
+
+    fn indexed<'a>(&'a self, key: &str, idxs: Option<&Vec<usize>>) -> Vec<&'a Value> {
+        let Some(idxs) = idxs else { return Vec::new() };
+        let rows = self.rows(key);
+        idxs.iter().filter_map(|i| rows.get(*i)).collect()
     }
 
     pub fn reindex_memory(&mut self) {
@@ -207,12 +228,6 @@ impl Store {
     }
 
     fn reindex(&mut self) {
-        let units = self.doc.get("code_units").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
-        let edges = self.doc.get("test_edges").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
-        let churn = self.doc.get("churn").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
-        let hashes = self.doc.get("file_hashes").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
-        let blame = self.doc.get("blame").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
-        let co = self.doc.get("co_changes").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
         self.units_by_id.clear();
         self.units_by_file.clear();
         self.edges_by_code.clear();
@@ -220,45 +235,64 @@ impl Store {
         self.hash_by_file.clear();
         self.blame_by_file.clear();
         self.co_by_file.clear();
-        for row in units {
-            if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
-                self.units_by_id.insert(id.to_string(), row.clone());
-            }
-            if let Some(file) = row.get("file_path").and_then(|v| v.as_str()) {
-                self.units_by_file.entry(file.to_string()).or_default().push(row);
-            }
+        index_by(self.doc.get("code_units"), "id", "file_path", &mut self.units_by_id, &mut self.units_by_file);
+        index_one(self.doc.get("test_edges"), "code_id", &mut self.edges_by_code);
+        index_one(self.doc.get("churn"), "file_path", &mut self.churn_by_file);
+        index_hashes(self.doc.get("file_hashes"), &mut self.hash_by_file);
+        index_one(self.doc.get("blame"), "file_path", &mut self.blame_by_file);
+        index_co(self.doc.get("co_changes"), &mut self.co_by_file);
+    }
+}
+
+fn index_by(value: Option<&Value>, id_key: &str, file_key: &str, by_id: &mut HashMap<String, usize>, by_file: &mut HashMap<String, Vec<usize>>) {
+    let Some(rows) = value.and_then(|v| v.as_array()) else { return };
+    for (i, row) in rows.iter().enumerate() {
+        if let Some(id) = row.get(id_key).and_then(|v| v.as_str()) {
+            by_id.insert(id.to_string(), i);
         }
-        for row in edges {
-            if let Some(id) = row.get("code_id").and_then(|v| v.as_str()) {
-                self.edges_by_code.entry(id.to_string()).or_default().push(row);
-            }
-        }
-        for row in churn {
-            if let Some(file) = row.get("file_path").and_then(|v| v.as_str()) {
-                self.churn_by_file.entry(file.to_string()).or_default().push(row);
-            }
-        }
-        for row in hashes {
-            if let (Some(file), Some(hash)) = (row.get("file_path").and_then(|v| v.as_str()), row.get("hash").and_then(|v| v.as_str())) {
-                self.hash_by_file.insert(file.to_string(), hash.to_string());
-            }
-        }
-        for row in blame {
-            if let Some(file) = row.get("file_path").and_then(|v| v.as_str()) {
-                self.blame_by_file.entry(file.to_string()).or_default().push(row);
-            }
-        }
-        for row in co {
-            let a = row.get("file_a").and_then(|v| v.as_str()).unwrap_or("");
-            let b = row.get("file_b").and_then(|v| v.as_str()).unwrap_or("");
-            if !a.is_empty() {
-                self.co_by_file.entry(a.to_string()).or_default().push(row.clone());
-            }
-            if !b.is_empty() && b != a {
-                self.co_by_file.entry(b.to_string()).or_default().push(row);
-            }
+        if let Some(file) = row.get(file_key).and_then(|v| v.as_str()) {
+            by_file.entry(file.to_string()).or_default().push(i);
         }
     }
+}
+
+fn index_one(value: Option<&Value>, key: &str, into: &mut HashMap<String, Vec<usize>>) {
+    let Some(rows) = value.and_then(|v| v.as_array()) else { return };
+    for (i, row) in rows.iter().enumerate() {
+        if let Some(id) = row.get(key).and_then(|v| v.as_str()) {
+            into.entry(id.to_string()).or_default().push(i);
+        }
+    }
+}
+
+fn index_hashes(value: Option<&Value>, into: &mut HashMap<String, String>) {
+    let Some(rows) = value.and_then(|v| v.as_array()) else { return };
+    for row in rows {
+        if let (Some(file), Some(hash)) = (row.get("file_path").and_then(|v| v.as_str()), row.get("hash").and_then(|v| v.as_str())) {
+            into.insert(file.to_string(), hash.to_string());
+        }
+    }
+}
+
+fn index_co(value: Option<&Value>, into: &mut HashMap<String, Vec<usize>>) {
+    let Some(rows) = value.and_then(|v| v.as_array()) else { return };
+    for (i, row) in rows.iter().enumerate() {
+        let a = row.get("file_a").and_then(|v| v.as_str()).unwrap_or("");
+        let b = row.get("file_b").and_then(|v| v.as_str()).unwrap_or("");
+        if !a.is_empty() {
+            into.entry(a.to_string()).or_default().push(i);
+        }
+        if !b.is_empty() && b != a {
+            into.entry(b.to_string()).or_default().push(i);
+        }
+    }
+}
+
+fn file_stamp(path: &Path) -> Option<(u64, u128)> {
+    let meta = fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    let nanos = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    Some((meta.len(), nanos))
 }
 
 pub fn reject_storage_dir(dir: &Path) -> Result<(), StoreError> {

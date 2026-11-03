@@ -3,9 +3,11 @@
 
 mod brace;
 mod deps;
+mod framework;
 mod python;
 
-pub use deps::{extract_deps, Dep, is_test_name, matches_import_path, matches_relative_import, proximity_weight};
+pub use deps::{extract_deps, extract_deps_in, Dep, is_test_name, matches_import_path, matches_relative_import, proximity_weight};
+pub use framework::{annotated_names, content_has_cpp_test, cpp_macro_name, framework_for};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeUnit {
@@ -162,7 +164,7 @@ fn configured_extractor(project: Option<&std::path::Path>, allow_repo_extractor:
     Some(canon.to_string_lossy().into_owned())
 }
 
-pub(crate) fn extractor_from_toml(text: &str) -> Option<String> {
+pub(crate) fn toml_value(text: &str, want: &str) -> Option<String> {
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
@@ -171,7 +173,7 @@ pub(crate) fn extractor_from_toml(text: &str) -> Option<String> {
         let Some((key, rest)) = line.split_once('=') else {
             continue;
         };
-        if key.trim() != "extractor" {
+        if key.trim() != want {
             continue;
         }
         let value = rest.trim().trim_matches('"').trim_matches('\'');
@@ -181,6 +183,104 @@ pub(crate) fn extractor_from_toml(text: &str) -> Option<String> {
         return Some(value.to_string());
     }
     None
+}
+
+pub(crate) fn extractor_from_toml(text: &str) -> Option<String> {
+    toml_value(text, "extractor")
+}
+
+pub(crate) fn dep_extractor_from_toml(text: &str) -> Option<String> {
+    toml_value(text, "dep_extractor")
+}
+
+/// Custom dependency extractor. Replaces `register_dep_extractor` and `CHISEL_BOOTSTRAP`.
+/// Stdin is `{"path","language","content"}`. Stdout is a JSON list of `{name,dep_type,module_path,confidence}`.
+pub(crate) fn custom_deps(path: &str, content: &str, project: Option<&std::path::Path>, allow_repo: bool) -> Option<Vec<deps::Dep>> {
+    let bin = configured_dep_extractor(project, allow_repo)?;
+    let lang = detect_language(path).unwrap_or("");
+    match run_dep_extractor(&bin, path, lang, content) {
+        Ok(rows) => Some(rows),
+        Err(err) => {
+            note_extractor_warning(format!("CHISEL_DEP_EXTRACTOR failed for {path}: {err}"));
+            None
+        }
+    }
+}
+
+fn configured_dep_extractor(project: Option<&std::path::Path>, allow_repo: bool) -> Option<String> {
+    if let Ok(bin) = std::env::var("CHISEL_DEP_EXTRACTOR") {
+        let bin = bin.trim();
+        if !bin.is_empty() {
+            return Some(bin.to_string());
+        }
+    }
+    if let Ok(boot) = std::env::var("CHISEL_BOOTSTRAP") {
+        let boot = boot.trim();
+        if !boot.is_empty() {
+            let path = std::path::Path::new(boot);
+            if path.exists() {
+                return Some(boot.to_string());
+            }
+            note_once("CHISEL_BOOTSTRAP is a Python import path. Set CHISEL_DEP_EXTRACTOR to an executable instead.");
+        }
+    }
+    if !allow_repo {
+        return None;
+    }
+    let project = project?;
+    let text = std::fs::read_to_string(project.join(".chisel").join("extensions.toml")).ok()?;
+    let raw = dep_extractor_from_toml(&text)?;
+    let path = std::path::PathBuf::from(&raw);
+    if path.is_absolute() || raw.split(['/', '\\']).any(|part| part == "..") {
+        note_once("repo dep extractor path must stay inside the project");
+        return None;
+    }
+    let resolved = project.join(path);
+    let root = std::fs::canonicalize(project).ok()?;
+    let canon = std::fs::canonicalize(&resolved).ok()?;
+    if !canon.starts_with(&root) {
+        note_once("repo dep extractor path must stay inside the project");
+        return None;
+    }
+    Some(canon.to_string_lossy().into_owned())
+}
+
+fn run_dep_extractor(bin: &str, file_path: &str, lang: &str, content: &str) -> Result<Vec<deps::Dep>, String> {
+    let payload = crate::json::Value::object(vec![
+        ("path".into(), crate::json::Value::String(file_path.into())),
+        ("language".into(), crate::json::Value::String(lang.into())),
+        ("content".into(), crate::json::Value::String(content.into())),
+    ]);
+    let body = crate::json::to_string(&payload).map_err(|e| e.to_string())?;
+    let mut child = std::process::Command::new(bin)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin.write_all(body.as_bytes()).map_err(|e| format!("stdin: {e}"))?;
+    }
+    let output = child.wait_with_output().map_err(|e| format!("wait: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("exit {}", output.status.code().unwrap_or(-1)));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let parsed = crate::json::parse(text.trim()).map_err(|e| format!("bad JSON: {e}"))?;
+    let rows = parsed.as_array().ok_or_else(|| "bad JSON: expected a dependency array".to_string())?;
+    let mut deps_out = Vec::new();
+    for row in rows {
+        let name = row.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let dep_type = row.get("dep_type").and_then(|v| v.as_str()).unwrap_or("import").to_string();
+        let module_path = row.get("module_path").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let confidence = row.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
+        deps_out.push(deps::Dep { name, dep_type, module_path, confidence });
+    }
+    Ok(deps_out)
 }
 
 fn run_extractor(bin: &str, file_path: &str, lang: &str) -> Result<Vec<CodeUnit>, String> {

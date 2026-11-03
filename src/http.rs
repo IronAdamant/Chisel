@@ -153,7 +153,13 @@ fn route(method: &str, path: &str, body: &[u8], engine: &Arc<Mutex<Engine>>) -> 
         return match eng.dispatch(tool, args) {
             Ok(result) => {
                 let missing = missing_required_result(tool, &result);
-                let steps = compute_next_steps(tool, &result);
+                let mut steps = compute_next_steps(tool, &result);
+                if tool == "suggest_tests" {
+                    let file = args.get("file_path").and_then(|v| v.as_str());
+                    if let Some(warning) = crate::next_steps::eval_warning(eng.project_dir.as_path(), file) {
+                        steps.push(warning);
+                    }
+                }
                 let mut payload = vec![("result".into(), result)];
                 if !steps.is_empty() {
                     payload.push(("next_steps".into(), Value::Array(steps)));
@@ -173,6 +179,7 @@ fn route(method: &str, path: &str, body: &[u8], engine: &Arc<Mutex<Engine>>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json::SharedStr;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn dummy_arg(tool: &str, field: &str) -> Value {
@@ -189,11 +196,11 @@ mod tests {
         for field in crate::schemas::required_fields(tool) {
             if field == omit {
                 if let Some(value) = bad.clone() {
-                    pairs.push((field, value));
+                    pairs.push((SharedStr::from(field), value));
                 }
                 continue;
             }
-            pairs.push((field.clone(), dummy_arg(tool, &field)));
+            pairs.push((SharedStr::from(field.clone()), dummy_arg(tool, &field)));
         }
         Value::object(pairs)
     }

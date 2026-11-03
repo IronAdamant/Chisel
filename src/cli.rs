@@ -5,7 +5,7 @@ use crate::json::{self, Value};
 use std::env;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 pub struct Args {
     pub command: String,
@@ -36,6 +36,15 @@ pub struct Args {
     pub once: bool,
     /// Seconds between worktree polls. Minimum 1.
     pub interval_secs: u64,
+    pub functions: Vec<String>,
+    pub fallback: bool,
+    pub unit: Option<String>,
+    pub min_count: Option<i64>,
+    pub no_exclude_tests: bool,
+    pub top_n: Option<i64>,
+    pub agent_id: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub help: bool,
 }
 
 pub fn parse(argv: &[String]) -> Result<Args, String> {
@@ -64,6 +73,15 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     let mut allow_repo_extractor = false;
     let mut once = false;
     let mut interval_secs = 2u64;
+    let mut functions = Vec::new();
+    let mut fallback = false;
+    let mut unit = None;
+    let mut min_count = None;
+    let mut no_exclude_tests = false;
+    let mut top_n = None;
+    let mut agent_id = None;
+    let mut duration_ms = None;
+    let mut help = false;
     let mut i = 0;
     let mut after_dd = false;
     while i < argv.len() {
@@ -157,6 +175,36 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
             if interval_secs == 0 {
                 interval_secs = 1;
             }
+        } else if a == "--functions" {
+            i += 1;
+            while i < argv.len() && !argv[i].starts_with('-') {
+                functions.push(argv[i].clone());
+                i += 1;
+            }
+            i = i.saturating_sub(1);
+        } else if a == "--fallback" {
+            fallback = true;
+        } else if a == "--unit" {
+            i += 1;
+            unit = Some(argv.get(i).ok_or("missing --unit")?.clone());
+        } else if a == "--min-count" {
+            i += 1;
+            min_count = Some(argv.get(i).ok_or("missing --min-count")?.parse().map_err(|_| "bad min-count")?);
+        } else if a == "--no-exclude-tests" {
+            no_exclude_tests = true;
+        } else if a == "--proximity" {
+            proximity_adjustment = Some(true);
+        } else if a == "--top-n" {
+            i += 1;
+            top_n = Some(argv.get(i).ok_or("missing --top-n")?.parse().map_err(|_| "bad top-n")?);
+        } else if a == "--agent-id" {
+            i += 1;
+            agent_id = Some(argv.get(i).ok_or("missing --agent-id")?.clone());
+        } else if a == "--duration" {
+            i += 1;
+            duration_ms = Some(argv.get(i).ok_or("missing --duration")?.parse().map_err(|_| "bad duration")?);
+        } else if a == "--help" || a == "-h" {
+            help = true;
         } else if a.starts_with("--") {
             return Err(format!("status=error unknown or unimplemented flag {a}"));
         } else if command.is_empty() {
@@ -166,13 +214,14 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
         }
         i += 1;
     }
-    if command.is_empty() {
+    if command.is_empty() && !help {
         return Err("missing command".into());
     }
     Ok(Args {
         command, project_dir, storage_dir, json, positionals, host, port, ttl, purpose, test_command,
         force, working_tree, auto_update, limit, shard, directory, git_ref, kind, passed,
         coverage_mode, proximity_adjustment, exclude_new_file_boost, allow_repo_extractor, once, interval_secs,
+        functions, fallback, unit, min_count, no_exclude_tests, top_n, agent_id, duration_ms, help,
     })
 }
 
@@ -208,7 +257,8 @@ pub fn run(args: &Args) -> Result<i32, String> {
             crate::mcp::serve(&args.project_dir, args.storage_dir.as_deref())?;
             return Ok(0);
         }
-        "run" => return run_tests(args),
+        "run" => return crate::run_cmd::run_tests(args),
+        "migrate" => return migrate(args),
         "watch" => return watch(args),
         _ => {}
     }
@@ -249,8 +299,16 @@ fn call_args(args: &Args) -> Value {
                     pairs.push(("passed".into(), Value::Bool(passed)));
                 }
             }
-            "analyze" | "risk-map" | "test-gaps" => {
+            "analyze" | "risk-map" | "triage" => {
                 pairs.push(("directory".into(), Value::String(first.clone())));
+            }
+            "test-gaps" => {
+                pairs.push(("file_path".into(), Value::String(first.clone())));
+            }
+            "start-job" => {
+                if args.kind.is_none() && (first == "analyze" || first == "update") {
+                    pairs.push(("kind".into(), Value::String(first.clone())));
+                }
             }
             "acquire-lock" | "release-lock" | "refresh-lock" => {
                 pairs.push(("file_path".into(), Value::String(first.clone())));
@@ -297,6 +355,17 @@ fn call_args(args: &Args) -> Value {
 
     if let Some(kind) = &args.kind {
         pairs.push(("kind".into(), Value::String(kind.clone())));
+    } else if args.command == "start-job" {
+        if let Some(kind) = args.positionals.iter().find(|p| *p == "analyze" || *p == "update") {
+            if !pairs.iter().any(|(k, _)| k == "kind") {
+                pairs.push(("kind".into(), Value::String(kind.clone())));
+            }
+        }
+        if args.command == "start-job" {
+            if let Some(dir) = args.positionals.iter().find(|p| *p != "analyze" && *p != "update") {
+                pairs.push(("directory".into(), Value::String(dir.clone())));
+            }
+        }
     }
     if let Some(mode) = &args.coverage_mode {
         pairs.push(("coverage_mode".into(), Value::String(mode.clone())));
@@ -307,6 +376,30 @@ fn call_args(args: &Args) -> Value {
     if args.exclude_new_file_boost {
         pairs.push(("exclude_new_file_boost".into(), Value::Bool(true)));
     }
+    if !args.functions.is_empty() {
+        pairs.push(("functions".into(), Value::Array(args.functions.iter().cloned().map(Value::String).collect())));
+    }
+    if args.fallback {
+        pairs.push(("fallback_to_all".into(), Value::Bool(true)));
+    }
+    if let Some(unit) = &args.unit {
+        pairs.push(("unit_name".into(), Value::String(unit.clone())));
+    }
+    if let Some(min_count) = args.min_count {
+        pairs.push(("min_count".into(), Value::Int(min_count)));
+    }
+    if args.no_exclude_tests {
+        pairs.push(("exclude_tests".into(), Value::Bool(false)));
+    }
+    if let Some(top_n) = args.top_n {
+        pairs.push(("top_n".into(), Value::Int(top_n)));
+    }
+    if let Some(agent) = &args.agent_id {
+        pairs.push(("agent_id".into(), Value::String(agent.clone())));
+    }
+    if let Some(duration) = args.duration_ms {
+        pairs.push(("duration_ms".into(), Value::Int(duration)));
+    }
     if matches!(args.command.as_str(), "job-status" | "cancel-job") {
         if let Some(id) = args.positionals.first() {
             pairs.push(("job_id".into(), Value::String(id.clone())));
@@ -316,19 +409,7 @@ fn call_args(args: &Args) -> Value {
 }
 
 pub fn parse_jest_json(text: &str) -> Vec<(String, bool)> {
-    let Ok(doc) = json::parse(text) else { return Vec::new() };
-    let Some(suites) = doc.get("testResults").and_then(|v| v.as_array()) else { return Vec::new() };
-    let mut out = Vec::new();
-    for suite in suites {
-        let name = suite.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let Some(assertions) = suite.get("assertionResults").and_then(|v| v.as_array()) else { continue };
-        for assertion in assertions {
-            let title = assertion.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let passed = assertion.get("status").and_then(|v| v.as_str()) == Some("passed");
-            out.push((format!("{name}:{title}"), passed));
-        }
-    }
-    out
+    crate::run_cmd::parse_jest_json(text, None)
 }
 
 fn emit(json_output: bool, command: &str, result: &Value) -> Result<(), String> {
@@ -353,135 +434,9 @@ fn emit(json_output: bool, command: &str, result: &Value) -> Result<(), String> 
             return Ok(());
         }
     }
-    match command {
-        "analyze" | "update" | "stats" => {
-            let header = if command == "analyze" { "Analysis complete:" } else if command == "update" { "Update complete:" } else { "Stats:" };
-            println!("{header}");
-            if let Some(pairs) = result.as_object() {
-                for (k, v) in pairs {
-                    println!("  {}: {}", title_key(k), fmt_scalar(v));
-                }
-            }
-        }
-        "risk-map" => {
-            println!("Risk map:");
-            if let Some(files) = result.get("files").and_then(|v| v.as_array()) {
-                for f in files {
-                    let path = f.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-                    let score = f.get("risk_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    println!("  {path}: {score}");
-                }
-            }
-        }
-        _ => {
-            println!("{}", json::to_string_pretty(result).map_err(|e| e.message)?);
-        }
-    }
-    Ok(())
+    crate::cli_text::render(command, result)
 }
 
-fn title_key(key: &str) -> String {
-    key.split('_').map(|w| {
-        let mut c = w.chars();
-        match c.next() {
-            None => String::new(),
-            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-        }
-    }).collect::<Vec<_>>().join(" ")
-}
-
-fn fmt_scalar(v: &Value) -> String {
-    match v {
-        Value::Int(i) => i.to_string(),
-        Value::Float(f) => f.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::String(s) => s.clone(),
-        Value::Null => "null".into(),
-        other => json::to_string(other).unwrap_or_else(|_| "…".into()),
-    }
-}
-
-fn run_tests(args: &Args) -> Result<i32, String> {
-    if args.test_command.is_empty() {
-        return Err("chisel run requires a command after --".into());
-    }
-    let mut cmd_args = args.test_command.clone();
-    let program = cmd_args.remove(0);
-    let framework = if program == "pytest" || program.ends_with("/pytest") {
-        "pytest"
-    } else if program == "jest" || program.ends_with("/jest") {
-        "jest"
-    } else {
-        ""
-    };
-    if framework == "pytest" && !cmd_args.iter().any(|a| a == "-v" || a == "--verbose") {
-        cmd_args.push("-v".into());
-    }
-    let mut child = Command::new(&program)
-        .args(&cmd_args)
-        .current_dir(&args.project_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
-    let mut out_buf = Vec::new();
-    let mut err_buf = Vec::new();
-    if let Some(ref mut o) = stdout {
-        use std::io::Read;
-        let _ = o.read_to_end(&mut out_buf);
-    }
-    if let Some(ref mut e) = stderr {
-        use std::io::Read;
-        let _ = e.read_to_end(&mut err_buf);
-    }
-    let _ = io::stdout().write_all(&out_buf);
-    let _ = io::stderr().write_all(&err_buf);
-    let status = child.wait().map_err(|e| e.to_string())?;
-    let code = status.code().unwrap_or(1);
-    if framework == "pytest" || framework == "jest" {
-        let text = String::from_utf8_lossy(&out_buf);
-        let rows = if framework == "jest" {
-            parse_jest_json(&text)
-        } else {
-            text.lines().filter_map(parse_pytest_line).collect()
-        };
-        let mut engine = Engine::open(&args.project_dir, args.storage_dir.as_deref())?;
-        let recorded = rows.len();
-        if recorded > 0 {
-            engine.record_results_batch(&rows)?;
-            println!("\n[chisel] Recorded {recorded} test result(s)");
-        } else {
-            println!("\n[chisel] No test results parsed from output");
-        }
-    }
-    Ok(code)
-}
-
-fn parse_pytest_line(line: &str) -> Option<(String, bool)> {
-    let line = line.trim_end();
-    let mut parts = line.rsplitn(2, ' ');
-    let status = parts.next()?.trim();
-    let status = status.split_whitespace().next()?;
-    if !matches!(status, "PASSED" | "FAILED" | "ERROR" | "SKIPPED" | "XFAIL" | "XPASS") {
-        // progress suffix: "PASSED [ 50%]"
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        let idx = tokens.iter().position(|t| matches!(*t, "PASSED" | "FAILED" | "ERROR" | "SKIPPED" | "XFAIL" | "XPASS"))?;
-        if idx == 0 {
-            return None;
-        }
-        let id = tokens[..idx].join(" ");
-        let passed = matches!(tokens[idx], "PASSED" | "XFAIL");
-        return Some((id, passed));
-    }
-    let id = parts.next()?.trim().to_string();
-    if id.is_empty() {
-        return None;
-    }
-    let passed = matches!(status, "PASSED" | "XFAIL");
-    Some((id, passed))
-}
 
 fn worktree_fingerprint(dir: &PathBuf) -> Result<String, String> {
     let status = Command::new("git")
@@ -590,12 +545,47 @@ pub fn entry() -> Result<i32, String> {
     if argv_is_mcp_binary(&argv0) {
         argv.insert(0, "serve-mcp".into());
     }
-    if argv.is_empty() || argv.iter().any(|a| a == "-h" || a == "--help") && argv.len() == 1 {
+    if argv.is_empty() {
         help();
         return Ok(0);
     }
     let args = parse(&argv)?;
+    if args.help {
+        if args.command.is_empty() {
+            help();
+        } else {
+            crate::cli_text::command_help(&args.command);
+        }
+        return Ok(0);
+    }
     run(&args)
+}
+
+fn migrate(args: &Args) -> Result<i32, String> {
+    let db = if let Some(path) = args.positionals.first() {
+        PathBuf::from(path)
+    } else {
+        let candidates = [
+            args.project_dir.join("chisel.db"),
+            args.project_dir.join(".chisel").join("chisel.db"),
+            args.storage_dir.clone().unwrap_or_else(|| args.project_dir.join(".chisel")).join("chisel.db"),
+        ];
+        match candidates.into_iter().find(|p| p.is_file()) {
+            Some(path) => path,
+            None => {
+                let body = Value::object(vec![
+                    ("status".into(), Value::String("error".into())),
+                    ("message".into(), Value::String("No chisel.db found. Pass the path: chisel migrate path/to/chisel.db".into())),
+                ]);
+                emit(args.json, "migrate", &body)?;
+                return Ok(1);
+            }
+        }
+    };
+    let mut engine = Engine::open(&args.project_dir, args.storage_dir.as_deref())?;
+    let result = engine.migrate_legacy(&db)?;
+    emit(args.json, "migrate", &result)?;
+    Ok(0)
 }
 
 pub fn help() {
@@ -604,5 +594,6 @@ pub fn help() {
     println!("commands: analyze, impact, suggest-tests, churn, ownership, coupling, risk-map,");
     println!("  stale-tests, history, who-reviews, diff-impact, update, test-gaps, record-result,");
     println!("  run, watch, stats, start-job, job-status, cancel-job, triage, serve, serve-mcp,");
-    println!("  acquire-lock, release-lock, refresh-lock, check-lock, check-locks, list-locks");
+    println!("  migrate, acquire-lock, release-lock, refresh-lock, check-lock, check-locks, list-locks");
+    println!("Run `chisel <command> --help` for one command.");
 }

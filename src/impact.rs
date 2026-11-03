@@ -1,6 +1,6 @@
 //! Risk, churn, coupling, and impact ranking. Weights match risk_meta.py.
 
-use crate::json::{py_round, quantize_gap, Value};
+use crate::json::{py_round, quantize_gap, SharedStr, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const COCHANGE_CAP: f64 = 10.0;
@@ -308,7 +308,7 @@ pub fn build_risk_meta(files: &[Value], commits: i64, test_edges: i64, test_resu
     let groups: Vec<_> = counts.into_iter().filter(|(_, c)| *c >= 3).collect();
     if !groups.is_empty() {
         let max_group = groups.iter().map(|(_, c)| *c).max().unwrap_or(0);
-        meta.push(("uniform_risk_groups".into(), Value::object(groups.into_iter().map(|(k, c)| (k, Value::Int(c))).collect())));
+        meta.push(("uniform_risk_groups".into(), Value::object(groups.into_iter().map(|(k, c)| (SharedStr::from(k), Value::Int(c))).collect())));
         meta.push(("max_identical_risk_files".into(), Value::Int(max_group)));
         if max_group >= 5 {
             meta.push(("warnings".into(), Value::Array(vec![Value::String(format!(
@@ -448,4 +448,89 @@ pub fn hops_to_tested(files: &BTreeSet<String>, tested: &BTreeSet<String>, neigh
         }
     }
     dist
+}
+
+struct Tarjan<'a> {
+    files: &'a [String],
+    outgoing: &'a BTreeMap<String, BTreeSet<String>>,
+    index_of: &'a BTreeMap<&'a str, usize>,
+    index: Vec<Option<usize>>,
+    low: Vec<usize>,
+    on_stack: Vec<bool>,
+    stack: Vec<usize>,
+    next: usize,
+    sccs: Vec<Vec<usize>>,
+}
+
+impl Tarjan<'_> {
+    fn strong(&mut self, v: usize) {
+        self.index[v] = Some(self.next);
+        self.low[v] = self.next;
+        self.next += 1;
+        self.stack.push(v);
+        self.on_stack[v] = true;
+        if let Some(nei) = self.outgoing.get(&self.files[v]) {
+            let names: Vec<String> = nei.iter().cloned().collect();
+            for wname in names {
+                let Some(&w) = self.index_of.get(wname.as_str()) else { continue };
+                if self.index[w].is_none() {
+                    self.strong(w);
+                    self.low[v] = self.low[v].min(self.low[w]);
+                } else if self.on_stack[w] {
+                    self.low[v] = self.low[v].min(self.index[w].unwrap_or(0));
+                }
+            }
+        }
+        if self.low[v] == self.index[v].unwrap_or(0) {
+            let mut comp = Vec::new();
+            while let Some(w) = self.stack.pop() {
+                self.on_stack[w] = false;
+                comp.push(w);
+                if w == v {
+                    break;
+                }
+            }
+            self.sccs.push(comp);
+        }
+    }
+}
+
+/// Tarjan strongly connected components on a directed import graph.
+/// Returns the three largest cycles, files sorted inside each cycle.
+pub fn import_cycles(files: &[String], outgoing: &BTreeMap<String, BTreeSet<String>>) -> Vec<Value> {
+    let index_of: BTreeMap<&str, usize> = files.iter().enumerate().map(|(i, f)| (f.as_str(), i)).collect();
+    let n = files.len();
+    let mut state = Tarjan {
+        files,
+        outgoing,
+        index_of: &index_of,
+        index: vec![None; n],
+        low: vec![0usize; n],
+        on_stack: vec![false; n],
+        stack: Vec::new(),
+        next: 0,
+        sccs: Vec::new(),
+    };
+    for v in 0..n {
+        if state.index[v].is_none() {
+            state.strong(v);
+        }
+    }
+    let sccs = state.sccs;
+    let mut cycles: Vec<Value> = sccs.into_iter().filter(|c| c.len() > 1).map(|comp| {
+        let mut names: Vec<String> = comp.into_iter().map(|i| files[i].clone()).collect();
+        names.sort();
+        let len = names.len() as i64;
+        Value::object(vec![
+            ("files".into(), Value::Array(names.into_iter().map(Value::String).collect())),
+            ("length".into(), Value::Int(len)),
+        ])
+    }).collect();
+    cycles.sort_by(|a, b| {
+        let la = a.get("length").and_then(|v| v.as_i64()).unwrap_or(0);
+        let lb = b.get("length").and_then(|v| v.as_i64()).unwrap_or(0);
+        lb.cmp(&la)
+    });
+    cycles.truncate(3);
+    cycles
 }

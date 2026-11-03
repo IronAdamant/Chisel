@@ -13,7 +13,7 @@ Point the client at the binary:
 - **command**: `chisel-mcp` (or `chisel serve-mcp`)
 - **env**: `CHISEL_PROJECT_DIR` set to the project root, and optionally `CHISEL_STORAGE_DIR` set to `<project>/.chisel`
 
-`chisel-mcp` speaks Content-Length JSON-RPC on stdin and stdout. The first tool call on an empty snapshot returns `status: "no_data"`. Call `analyze`, then `diff_impact` after edits.
+`chisel-mcp` speaks newline-delimited JSON-RPC on stdin and stdout, and also accepts Content-Length framing. The first tool call on an empty snapshot returns `status: "no_data"`. Call `analyze`, then `diff_impact` after edits.
 
 ## HTTP
 
