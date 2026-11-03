@@ -38,11 +38,9 @@ pub(crate) fn shard_name_for<'a>(file: &str, shards: &'a [(String, String)]) -> 
     let mut best: Option<&str> = None;
     let mut best_len = 0usize;
     for (name, prefix) in shards {
-        if file == prefix.as_str() || file.starts_with(&format!("{prefix}/")) {
-            if prefix.len() >= best_len {
-                best = Some(name.as_str());
-                best_len = prefix.len();
-            }
+        if (file == prefix.as_str() || file.starts_with(&format!("{prefix}/"))) && prefix.len() >= best_len {
+            best = Some(name.as_str());
+            best_len = prefix.len();
         }
     }
     best
@@ -350,7 +348,7 @@ pub(crate) fn flakiness_trend(results: &[Value], test_id: &str, now: f64) -> Opt
             continue;
         };
         let age = now - when;
-        if age < 0.0 || age >= WINDOW {
+        if !(0.0..WINDOW).contains(&age) {
             continue;
         }
         let bucket = (age / WEEK) as usize;
@@ -451,14 +449,21 @@ pub(crate) fn now_secs() -> f64 {
     impact::now_unix()
 }
 
-pub(crate) fn churn_row(rel: &str, unit: &str, count: i64, authors: i64, ins: i64, del: i64, last: &str, score: f64) -> Value {
+pub(crate) struct ChurnCounts {
+    pub commits: i64,
+    pub authors: i64,
+    pub insertions: i64,
+    pub deletions: i64,
+}
+
+pub(crate) fn churn_row(rel: &str, unit: &str, counts: ChurnCounts, last: &str, score: f64) -> Value {
     Value::object(vec![
         ("file_path".into(), Value::String(rel.into())),
         ("unit_name".into(), Value::String(unit.into())),
-        ("commit_count".into(), Value::Int(count)),
-        ("distinct_authors".into(), Value::Int(authors)),
-        ("total_insertions".into(), Value::Int(ins)),
-        ("total_deletions".into(), Value::Int(del)),
+        ("commit_count".into(), Value::Int(counts.commits)),
+        ("distinct_authors".into(), Value::Int(counts.authors)),
+        ("total_insertions".into(), Value::Int(counts.insertions)),
+        ("total_deletions".into(), Value::Int(counts.deletions)),
         ("last_changed".into(), if last.is_empty() { Value::Null } else { Value::String(last.into()) }),
         ("churn_score".into(), Value::Float(score)),
     ])

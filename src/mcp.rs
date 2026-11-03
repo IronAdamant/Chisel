@@ -48,10 +48,10 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
         };
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
         let id = msg.get("id").cloned();
-        if method.starts_with("notifications/") || method == "initialized" || id.is_none() && method != "initialize" {
-            if method == "initialized" || method.starts_with("notifications/") {
-                continue;
-            }
+        if (method.starts_with("notifications/") || method == "initialized" || id.is_none() && method != "initialize")
+            && (method == "initialized" || method.starts_with("notifications/"))
+        {
+            continue;
         }
         let result = match method {
             "initialize" => Value::object(vec![

@@ -14,7 +14,7 @@ impl ProcessLock {
     pub fn open(dir: &Path) -> io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         let path = dir.join("chisel.lock");
-        let file = OpenOptions::new().read(true).write(true).create(true).open(&path)?;
+        let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path)?;
         Ok(ProcessLock { _file: file, path })
     }
 

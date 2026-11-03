@@ -551,7 +551,7 @@ pub fn py_round(x: f64, digits: i32) -> f64 {
 }
 
 pub fn quantize_gap(value: f64) -> f64 {
-    (py_round(value * 20.0, 0) / 20.0).min(1.0).max(0.0)
+    (py_round(value * 20.0, 0) / 20.0).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]

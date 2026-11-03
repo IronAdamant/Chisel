@@ -172,10 +172,10 @@ fn keyword_name(t: &str, keys: &[&str]) -> Option<String> {
         // modifiers before the keyword: "public class Foo"
         if let Some(idx) = t.find(k) {
             let before = t[..idx].trim();
-            if before.split_whitespace().all(is_modifier) && !before.is_empty() || before.is_empty() {
-                if idx == 0 || t.as_bytes().get(idx - 1).is_some_and(|b| b.is_ascii_whitespace()) {
-                    return ident(&t[idx + k.len()..]);
-                }
+            if (before.split_whitespace().all(is_modifier) && !before.is_empty() || before.is_empty())
+                && (idx == 0 || t.as_bytes().get(idx - 1).is_some_and(|b| b.is_ascii_whitespace()))
+            {
+                return ident(&t[idx + k.len()..]);
             }
         }
     }

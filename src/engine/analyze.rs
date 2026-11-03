@@ -113,7 +113,7 @@ impl Engine {
                 }
             }
             let score = impact::churn_score(&dates, now);
-            churn_rows.push(churn_row(rel, "", count, authors.len() as i64, ins, del, &last, score));
+            churn_rows.push(churn_row(rel, "", ChurnCounts { commits: count, authors: authors.len() as i64, insertions: ins, deletions: del }, &last, score));
         }
         if files.len() <= 2000 {
             let tasks = unit_log_tasks(&files, &units_by_file);
@@ -126,7 +126,7 @@ impl Engine {
                 let func_dates: Vec<String> = func_commits.iter().map(|c| c.date.clone()).collect();
                 let func_score = impact::churn_score(&func_dates, now);
                 let func_count = func_dates.iter().filter(|d| impact::parse_iso_unix(d).is_some()).count() as i64;
-                churn_rows.push(churn_row(&task.0, &task.1, func_count, 1, 0, 0, "", func_score));
+                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: 1, insertions: 0, deletions: 0 }, "", func_score));
             }
         }
         self.store.doc.insert("churn", Value::Array(churn_rows));
@@ -354,7 +354,7 @@ impl Engine {
                 }
             }
             let score = impact::churn_score(&dates, now);
-            churn_rows.push(churn_row(rel, "", count, authors.len() as i64, ins, del, &last, score));
+            churn_rows.push(churn_row(rel, "", ChurnCounts { commits: count, authors: authors.len() as i64, insertions: ins, deletions: del }, &last, score));
         }
         if !skip_unit {
             let stored_units = self.store.array("code_units");
@@ -375,7 +375,7 @@ impl Engine {
                 let func_dates: Vec<String> = func_commits.iter().map(|c| c.date.clone()).collect();
                 let func_score = impact::churn_score(&func_dates, now);
                 let func_count = func_dates.iter().filter(|d| impact::parse_iso_unix(d).is_some()).count() as i64;
-                churn_rows.push(churn_row(&task.0, &task.1, func_count, 1, 0, 0, "", func_score));
+                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: 1, insertions: 0, deletions: 0 }, "", func_score));
             }
         }
         self.store.doc.insert("churn", Value::Array(churn_rows));
