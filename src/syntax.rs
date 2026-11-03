@@ -50,32 +50,35 @@ fn parse_python(source: &str) -> Node {
     let lines: Vec<&str> = source.split('\n').map(|l| l.trim_end_matches('\r')).collect();
     let mut module = Node { kind: "module", name: String::new(), line_start: 1, line_end: lines.len().max(1), children: Vec::new() };
     let mut depth = 0i32;
-    let mut stack: Vec<(usize, usize, String)> = Vec::new();
+    let mut quote: Quote = Quote::None;
+    // (indent, is_class, bare class name). Functions are pushed so a nested def
+    // is not qualified; only a def whose enclosing block is a class becomes Class.method.
+    let mut stack: Vec<(usize, bool, String)> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        let (clean, next_depth) = strip_line(lines[i], depth);
+        let (clean, next_depth, next_quote) = scan_py_line(lines[i], depth, quote);
         let trimmed = clean.trim();
-        if depth == 0 {
+        let raw_trim = lines[i].trim();
+        let skip_stack = raw_trim.is_empty() || raw_trim.starts_with('#') || quote != Quote::None;
+        if depth == 0 && quote == Quote::None && !skip_stack {
             let indent = indent_of(lines[i]);
-            stack.retain(|(_, ind, _)| *ind < indent);
+            stack.retain(|(ind, _, _)| *ind < indent);
             if let Some(name) = class_name(trimmed) {
                 let end = block_end(&lines, i, indent);
-                let parent = stack.iter().rev().find(|(_, ind, _)| indent > *ind).map(|(_, _, n)| n.clone());
-                let qname = match parent {
-                    Some(p) => format!("{p}.{name}"),
-                    None => name,
-                };
                 module.children.push(Node {
                     kind: "class",
-                    name: qname.clone(),
+                    name: name.clone(),
                     line_start: i + 1,
                     line_end: end,
                     children: Vec::new(),
                 });
-                stack.push((module.children.len() - 1, indent, qname));
+                stack.push((indent, true, name));
             } else if let Some((name, is_async)) = def_name(trimmed) {
-                let parent = stack.iter().rev().find(|(_, ind, _)| indent > *ind).map(|(_, _, n)| n.clone());
-                let qname = match parent {
+                let parent = match stack.last() {
+                    Some((_, true, class_name)) => Some(class_name.clone()),
+                    _ => None,
+                };
+                let qname = match &parent {
                     Some(p) => format!("{p}.{name}"),
                     None => name,
                 };
@@ -87,9 +90,11 @@ fn parse_python(source: &str) -> Node {
                     line_end: end,
                     children: Vec::new(),
                 });
+                stack.push((indent, false, String::new()));
             }
         }
         depth = next_depth;
+        quote = next_quote;
         i += 1;
     }
     module
@@ -244,34 +249,114 @@ fn bracket_delta(line: &str) -> i32 {
     d
 }
 
-fn strip_line(line: &str, depth_in: i32) -> (String, i32) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Quote {
+    None,
+    Single(char),
+    Triple(char),
+}
+
+/// Track parentheses and quotes, including triple-quoted strings that span lines.
+/// Parentheses inside strings do not hide the next `def`.
+fn scan_py_line(line: &str, depth_in: i32, mut quote: Quote) -> (String, i32, Quote) {
     let mut out = String::new();
     let mut depth = depth_in;
-    let mut chars = line.chars().peekable();
-    let mut in_str: Option<char> = None;
-    while let Some(c) = chars.next() {
-        if let Some(q) = in_str {
-            if c == '\\' { chars.next(); continue; }
-            if c == q { in_str = None; }
-            continue;
-        }
-        if depth > 0 {
-            match c {
-                '"' | '\'' => in_str = Some(c),
-                '(' | '[' | '{' => depth += 1,
-                ')' | ']' | '}' => depth -= 1,
-                _ => {}
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if let Quote::Triple(q) = quote {
+            if bytes[i..].starts_with(&[q as u8, q as u8, q as u8]) {
+                quote = Quote::None;
+                i += 3;
+                continue;
             }
+            i += 1;
             continue;
         }
-        if c == '#' { break; }
-        if c == '"' || c == '\'' { in_str = Some(c); continue; }
-        match c {
-            '(' | '[' | '{' => { depth += 1; out.push(c); }
-            ')' | ']' | '}' => { depth -= 1; out.push(c); }
-            _ => out.push(c),
+        if let Quote::Single(q) = quote {
+            if c == '\\' {
+                i += 1;
+                if i < bytes.len() { i += 1; }
+                continue;
+            }
+            if c == q {
+                quote = Quote::None;
+            }
+            i += 1;
+            continue;
         }
+        if c == '#' && depth == 0 {
+            break;
+        }
+        if c == '"' || c == '\'' {
+            if i + 2 < bytes.len() && bytes[i + 1] == bytes[i] && bytes[i + 2] == bytes[i] {
+                quote = Quote::Triple(c);
+                i += 3;
+                continue;
+            }
+            quote = Quote::Single(c);
+            i += 1;
+            continue;
+        }
+        match c {
+            '(' | '[' | '{' => {
+                depth += 1;
+                if depth_in == 0 || depth == 1 {
+                    out.push(c);
+                }
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                out.push(c);
+            }
+            _ => {
+                if depth <= 0 {
+                    out.push(c);
+                }
+            }
+        }
+        i += 1;
     }
-    let _ = depth_in;
-    (out, depth.max(0))
+    (out, depth.max(0), quote)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn triple_quoted_parens_do_not_hide_later_defs() {
+        let src = r#"
+class MigrationTests:
+    def test_create_model(self):
+        sql = """
+        CREATE TABLE x (id int)
+        """
+        return 1
+
+    def test_create_model2(self):
+        return 2
+
+    def test_outer(self):
+        def test_inner():
+            return 3
+
+def test_after():
+    pass
+"#;
+        let units = python_units("t.py", src);
+        let names: Vec<&str> = units.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "MigrationTests",
+                "MigrationTests.test_create_model",
+                "MigrationTests.test_create_model2",
+                "MigrationTests.test_outer",
+                "test_inner",
+                "test_after",
+            ]
+        );
+    }
 }

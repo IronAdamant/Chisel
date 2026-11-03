@@ -18,39 +18,39 @@ Rust binary: `/agent/repos/Chisel/target/release/chisel`
 Python binary: `/tmp/chisel-py`
 Runs per command: 5
 
-Times are median milliseconds, with the minimum and maximum in parentheses. Peak RSS is the highest `VmHWM` sampled from `/proc/<pid>/status` during each run, in KiB.
+Times are median milliseconds, with the minimum and maximum in parentheses. Peak RSS is the highest VmHWM sampled from /proc during each run, in KiB.
 
 | Command | Python small | Rust small | Python large | Rust large |
 |---|---:|---:|---:|---:|
-| startup | 66.4 (64.9–74.1) | 0.3 (0.1–0.4) | 63.5 (62.6–72.3) | 0.4 (0.2–0.6) |
-| cold_analyze | 99.7 (96.7–118.2) | 7.5 (6.5–9.1) | 15088.1 (14562.3–15841.0) | 22393.5 (22178.9–22697.7) |
-| warm_analyze | 87.3 (86.6–96.7) | 7.8 (7.1–8.3) | 10358.8 (9935.4–10529.8) | 22332.3 (21923.2–22425.7) |
-| warm_update | 76.1 (71.1–83.1) | 2.7 (2.6–3.3) | 177.5 (163.3–215.0) | 190.9 (185.5–198.2) |
-| impact | 67.3 (66.1–103.7) | 1.0 (0.8–1.1) | 125.3 (122.1–131.5) | 274.4 (255.0–281.6) |
-| suggest_tests | 68.0 (65.5–98.9) | 1.0 (0.9–1.0) | 152.9 (146.3–155.2) | 263.7 (256.5–274.1) |
-| risk_map | 69.2 (67.5–73.2) | 0.9 (0.8–0.9) | 283.7 (262.6–396.6) | 322.2 (313.5–416.8) |
-| test_gaps | 69.6 (68.3–77.0) | 0.8 (0.7–1.0) | 210.6 (200.2–219.2) | 2815.4 (2720.7–3056.8) |
-| triage | 66.9 (65.7–68.0) | 0.9 (0.9–1.0) | 293.4 (277.1–323.2) | 3091.5 (2908.0–3208.2) |
-| churn | 65.5 (64.5–66.1) | 0.9 (0.8–1.0) | 80.4 (74.9–81.6) | 286.9 (268.0–294.8) |
-| coupling | 67.5 (65.6–72.6) | 0.9 (0.8–1.0) | 85.8 (80.2–88.6) | 286.6 (260.3–334.0) |
-| stats | 69.1 (65.1–71.6) | 0.8 (0.7–0.9) | 91.1 (78.9–97.2) | 264.3 (235.2–306.4) |
+| startup | 64.6 (63.4–73.4) | 0.3 (0.3–0.5) | 71.6 (64.7–76.1) | 0.4 (0.2–0.5) |
+| cold_analyze | 88.5 (86.7–93.9) | 8.0 (7.7–10.8) | 13692.5 (13542.5–14014.5) | 8034.2 (7627.3–8398.0) |
+| warm_analyze | 82.8 (80.7–89.8) | 2.3 (2.2–2.5) | 8646.5 (8604.2–8754.3) | 63.0 (61.3–77.9) |
+| warm_update | 71.0 (67.9–74.6) | 2.6 (2.2–2.6) | 146.4 (139.1–163.6) | 68.8 (65.3–71.2) |
+| impact | 63.6 (63.0–66.2) | 0.6 (0.6–0.7) | 111.9 (106.5–113.3) | 45.4 (44.6–48.2) |
+| suggest_tests | 64.3 (63.7–68.1) | 0.6 (0.6–0.7) | 125.9 (121.5–131.0) | 46.0 (44.6–51.9) |
+| risk_map | 67.8 (65.9–75.4) | 0.7 (0.6–0.9) | 253.6 (233.9–261.0) | 57.5 (55.8–64.0) |
+| test_gaps | 64.9 (63.2–69.7) | 0.6 (0.5–0.6) | 163.4 (161.9–180.5) | 73.1 (65.0–76.5) |
+| triage | 65.8 (64.0–67.1) | 0.7 (0.6–0.8) | 254.4 (239.9–262.7) | 94.9 (93.3–97.5) |
+| churn | 64.2 (62.9–66.6) | 0.6 (0.6–0.7) | 65.2 (64.4–69.0) | 48.8 (46.0–51.4) |
+| coupling | 64.3 (63.3–65.5) | 0.6 (0.6–0.7) | 64.1 (63.3–66.1) | 47.7 (41.8–53.4) |
+| stats | 64.8 (63.8–66.3) | 0.6 (0.5–0.6) | 67.4 (66.5–68.6) | 46.0 (45.0–51.0) |
 
 ## Peak RSS (KiB)
 
 | Command | Python small | Rust small | Python large | Rust large |
 |---|---:|---:|---:|---:|
-| startup | 23028 | 1084 | 22980 | 2228 |
-| cold_analyze | 24508 | 2492 | 60740 | 84112 |
-| warm_analyze | 24268 | 608 | 54708 | 130340 |
-| warm_update | 23932 | 2048 | 27244 | 71280 |
-| impact | 23700 | 2044 | 28124 | 107248 |
-| suggest_tests | 23720 | 1624 | 34844 | 107328 |
-| risk_map | 23772 | 476 | 52652 | 107284 |
-| test_gaps | 23764 | 476 | 59708 | 107244 |
-| triage | 23796 | 484 | 52564 | 108756 |
-| churn | 23740 | 2252 | 23656 | 107324 |
-| coupling | 23672 | 1792 | 23724 | 107308 |
-| stats | 23692 | 1628 | 25800 | 107244 |
+| startup | 23056 | 2196 | 23040 | 2860 |
+| cold_analyze | 24504 | 4592 | 60808 | 96600 |
+| warm_analyze | 24284 | 672 | 54716 | 40604 |
+| warm_update | 24024 | 2184 | 27200 | 40628 |
+| impact | 23672 | 476 | 28264 | 40656 |
+| suggest_tests | 23748 | 388 | 34932 | 40636 |
+| risk_map | 23808 | 600 | 52540 | 40592 |
+| test_gaps | 23796 | 1120 | 59680 | 46208 |
+| triage | 23884 | 420 | 52552 | 49488 |
+| churn | 23728 | 672 | 23752 | 40648 |
+| coupling | 23684 | 588 | 23656 | 40664 |
+| stats | 23732 | 912 | 25844 | 40644 |
 
 ## Failures
 
@@ -58,9 +58,11 @@ None.
 
 ## Snapshot counts after the timed runs
 
-- small rust: rust snapshot bytes 3923, test_units mentions 1
+- small rust: rust snapshot bytes 4044, test_units mentions 1
 - small python: python test_units 1, test_edges 2
-- large rust: rust snapshot bytes 8129361, test_units mentions 822
+- large rust: rust snapshot bytes 10463225, test_units mentions 829
 - large python: python test_units 829, test_edges 10267
 
 The small repo is a two-file Python sample created by this script. The large repo is the django package from django/django (about 1000 code files) plus 80 of its test modules. History is 38 commits of at most 100 paths each: a shallow clone's boundary commit lists every file, and pairing those files dominates co-change time, so the benchmark uses this bounded history of the same tree. Counts are taken from the snapshot left by the last timed command.
+
+Both large snapshots have 829 test units, and the `(file, name)` pairs match. The earlier Rust count of 822 missed eight methods in `tests/migrations/test_multidb.py` (a triple-quoted SQL string containing parentheses hid every later `def`) and added one placeholder for `tests/bash_completion/management/commands/test_command.py`, which is a Django management command with no test functions. Python's extra seven were real tests, not false positives.

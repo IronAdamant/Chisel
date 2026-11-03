@@ -5,8 +5,17 @@ use crate::hash::sha256_hex;
 use crate::impact::{self, RiskInputs};
 use crate::json::Value;
 use crate::store::{self, Store};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
+
+fn cached_exists(cache: &mut HashMap<String, bool>, project: &std::path::Path, path: &str) -> bool {
+    if let Some(hit) = cache.get(path) {
+        return *hit;
+    }
+    let ok = project.join(path).exists();
+    cache.insert(path.to_string(), ok);
+    ok
+}
 
 fn cross_edge_key(edge: &Value) -> String {
     format!(
@@ -19,7 +28,7 @@ fn cross_edge_key(edge: &Value) -> String {
 
 impl Engine {
     pub fn has_data(&self) -> bool {
-        !self.store.array("code_units").is_empty()
+        self.store.array_len("code_units") > 0
     }
 
     pub(super) fn no_data() -> Value {
@@ -44,11 +53,11 @@ impl Engine {
         if !self.has_data() {
             return Ok(Self::no_data());
         }
-        let gtest_files: BTreeSet<String> = self.store.array("test_units").into_iter().filter_map(|u| {
+        let gtest_files: BTreeSet<String> = self.store.rows("test_units").iter().filter_map(|u| {
             let framework = u.get("framework").and_then(|v| v.as_str())?;
             if framework == "gtest" { u.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string()) } else { None }
         }).collect();
-        let mut files: Vec<String> = self.store.array("churn").into_iter().filter_map(|c| c.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).filter(|p| {
+        let mut files: Vec<String> = self.store.rows("churn").iter().filter_map(|c| c.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).filter(|p| {
             if let Some(dir) = &self.directory {
                 if !path_in_directory(p, dir) {
                     return false;
@@ -62,10 +71,10 @@ impl Engine {
         files.sort();
         files.dedup();
         let query_min: i64 = store::meta_get(&self.store.doc, "co_change_query_min").and_then(|s| s.parse().ok()).unwrap_or(1);
-        let imports = self.store.array("import_edges");
+        let imports = self.store.rows("import_edges");
 
         let mut neighbor_map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for e in &imports {
+        for e in imports {
             let a = e.get("importer_file").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let b = e.get("imported_file").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let conf = e.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
@@ -87,7 +96,7 @@ impl Engine {
         let file_set: BTreeSet<String> = files.iter().cloned().collect();
         let hops = impact::hops_to_tested(&file_set, &tested_files, &neighbor_map);
         let mut branch_counts: BTreeMap<String, usize> = BTreeMap::new();
-        for row in self.store.array("branch_co_changes") {
+        for row in self.store.rows("branch_co_changes") {
             let n = row.get("co_commit_count").and_then(|v| v.as_i64()).unwrap_or(0);
             if n < 1 {
                 continue;
@@ -106,6 +115,7 @@ impl Engine {
         let failure_rates = failure_rate_map(&recorded);
         let duration_cvs = duration_cv_map(&recorded);
         let trend_now = now_secs();
+        let mut exists_cache: HashMap<String, bool> = HashMap::new();
         let mut scored = Vec::new();
         for f in &files {
             let churn_raw = self.store.churn_for_file(f).into_iter().find(|c| c.get("unit_name").and_then(|v| v.as_str()).unwrap_or("").is_empty()).and_then(|c| c.get("churn_score").and_then(|v| v.as_f64())).unwrap_or(0.0);
@@ -123,7 +133,7 @@ impl Engine {
                     continue;
                 }
                 let other = if a == f { b } else { a };
-                if !self.project_dir.join(other).exists() {
+                if !cached_exists(&mut exists_cache, &self.project_dir, other) {
                     continue;
                 }
                 co_count += 1;
@@ -134,9 +144,9 @@ impl Engine {
                 }
             }
             partners.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
-            let mut import_neighbors: Vec<String> = neighbor_map.get(f).map(|s| s.iter().filter(|n| self.project_dir.join(n.as_str()).exists()).cloned().collect()).unwrap_or_default();
+            let mut import_neighbors: Vec<String> = neighbor_map.get(f).map(|s| s.iter().filter(|n| cached_exists(&mut exists_cache, &self.project_dir, n)).cloned().collect()).unwrap_or_default();
             import_neighbors.sort();
-            let file_units: Vec<Value> = self.store.units_by_file(f).into_iter().filter(|u| !is_test_unit_row(u)).collect();
+            let file_units: Vec<&Value> = self.store.units_by_file(f).into_iter().filter(|u| !is_test_unit_row(u)).collect();
             let mut tested_lines = 0i64;
             let mut total_lines = 0i64;
             let mut tested_units = 0i64;
@@ -236,11 +246,11 @@ impl Engine {
         } else {
             Value::object(vec![("reweighted".into(), Value::Bool(false))])
         };
-        let commits_n = self.store.array("commits").len() as i64;
+        let commits_n = self.store.array_len("commits") as i64;
         let test_edges_n = self.store.array_len("test_edges") as i64;
         let test_results_n = recorded.len() as i64;
         let import_n = imports.len() as i64;
-        let co_n = self.store.array("co_changes").iter().filter(|c| c.get("co_commit_count").and_then(|v| v.as_i64()).unwrap_or(0) >= query_min).count() as i64;
+        let co_n = self.store.rows("co_changes").iter().filter(|c| c.get("co_commit_count").and_then(|v| v.as_i64()).unwrap_or(0) >= query_min).count() as i64;
         let mut meta = impact::build_risk_meta(&scored, commits_n, test_edges_n, test_results_n, import_n, co_n);
         if let Some(obj) = meta.as_object_mut() {
             // merge reweighting keys
@@ -259,7 +269,7 @@ impl Engine {
         let scored_paths: Vec<String> = scored.iter().filter_map(|row| row.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
         let scored_set: BTreeSet<String> = scored_paths.iter().cloned().collect();
         let mut directed: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for edge in &imports {
+        for edge in imports {
             let conf = edge.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
             if conf < 1.0 {
                 continue;
@@ -477,9 +487,9 @@ impl Engine {
     }
 
     pub(super) fn static_hits(&mut self, file: &str) -> Vec<Value> {
-        let tests = self.store.array("test_units");
+        let tests = self.store.rows("test_units");
         let mut by_file: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for t in &tests {
+        for t in tests {
             let fp = t.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
             by_file.entry(fp.to_string()).or_default().push(name.to_string());
@@ -494,7 +504,7 @@ impl Engine {
                 targets_by_test.insert(fp.clone(), targets);
             }
         } else {
-            for row in self.store.array("static_test_imports") {
+            for row in self.store.rows("static_test_imports") {
                 let test_file = row.get("test_file").and_then(|v| v.as_str()).unwrap_or("");
                 let code_file = row.get("code_file").and_then(|v| v.as_str()).unwrap_or("");
                 if test_file.is_empty() || code_file.is_empty() { continue; }
@@ -643,9 +653,8 @@ impl Engine {
             }
         }
         let query_min: i64 = store::meta_get(&self.store.doc, "co_change_query_min").and_then(|s| s.parse().ok()).unwrap_or(1);
-        let co = self.store.array("co_changes");
         for file in files {
-            for cc in &co {
+            for cc in self.store.co_for_file(file) {
                 let a = cc.get("file_a").and_then(|v| v.as_str()).unwrap_or("");
                 let b = cc.get("file_b").and_then(|v| v.as_str()).unwrap_or("");
                 let n = cc.get("co_commit_count").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -666,9 +675,9 @@ impl Engine {
                 }
             }
         }
-        let imports = self.store.array("import_edges");
+        let imports = self.store.rows("import_edges");
         let mut reverse: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
-        for e in &imports {
+        for e in imports {
             let importer = e.get("importer_file").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let imported = e.get("imported_file").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let conf = e.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
@@ -854,31 +863,31 @@ impl Engine {
     }
 
     pub(super) fn stats_doc(&self, include_results: bool) -> Value {
-        let results = self.store.array("test_results");
+        let results = self.store.rows("test_results");
         let passed = results.iter().filter(|r| r.get("passed").and_then(|v| v.as_bool()) == Some(true)).count() as i64;
         let failed = results.iter().filter(|r| r.get("passed").and_then(|v| v.as_bool()) == Some(false)).count() as i64;
         let mut pairs = vec![
-            ("code_units".into(), Value::Int(self.store.array("code_units").len() as i64)),
-            ("test_units".into(), Value::Int(self.store.array("test_units").len() as i64)),
-            ("test_edges".into(), Value::Int(self.store.array("test_edges").len() as i64)),
-            ("commits".into(), Value::Int(self.store.array("commits").len() as i64)),
-            ("co_changes".into(), Value::Int(self.store.array("co_changes").len() as i64)),
-            ("import_edges".into(), Value::Int(self.store.array("import_edges").len() as i64)),
+            ("code_units".into(), Value::Int(self.store.array_len("code_units") as i64)),
+            ("test_units".into(), Value::Int(self.store.array_len("test_units") as i64)),
+            ("test_edges".into(), Value::Int(self.store.array_len("test_edges") as i64)),
+            ("commits".into(), Value::Int(self.store.array_len("commits") as i64)),
+            ("co_changes".into(), Value::Int(self.store.array_len("co_changes") as i64)),
+            ("import_edges".into(), Value::Int(self.store.array_len("import_edges") as i64)),
             ("test_results".into(), Value::Int(results.len() as i64)),
             ("passed".into(), Value::Int(passed)),
             ("failed".into(), Value::Int(failed)),
-            ("commit_files".into(), Value::Int(self.store.array("commit_files").len() as i64)),
-            ("blame_cache".into(), Value::Int(self.store.array("blame").len() as i64)),
-            ("branch_co_changes".into(), Value::Int(self.store.array("branch_co_changes").len() as i64)),
-            ("churn_stats".into(), Value::Int(self.store.array("churn").len() as i64)),
-            ("file_hashes".into(), Value::Int(self.store.array("file_hashes").len() as i64)),
-            ("coupling_threshold".into(), Value::Int(impact::coupling_threshold(self.store.array("commits").len() as i64))),
+            ("commit_files".into(), Value::Int(self.store.array_len("commit_files") as i64)),
+            ("blame_cache".into(), Value::Int(self.store.array_len("blame") as i64)),
+            ("branch_co_changes".into(), Value::Int(self.store.array_len("branch_co_changes") as i64)),
+            ("churn_stats".into(), Value::Int(self.store.array_len("churn") as i64)),
+            ("file_hashes".into(), Value::Int(self.store.array_len("file_hashes") as i64)),
+            ("coupling_threshold".into(), Value::Int(impact::coupling_threshold(self.store.array_len("commits") as i64))),
             ("co_change_query_min".into(), Value::Int(store::meta_get(&self.store.doc, "co_change_query_min").and_then(|s| s.parse().ok()).unwrap_or(3).max(1))),
         ];
-        let edge_rows = self.store.array("test_edges");
+        let edge_rows = self.store.rows("test_edges");
         if !edge_rows.is_empty() {
             let mut counts: BTreeMap<&str, i64> = BTreeMap::new();
-            for edge in &edge_rows {
+            for edge in edge_rows {
                 let kind = edge.get("edge_type").and_then(|v| v.as_str()).unwrap_or("");
                 *counts.entry(kind).or_default() += 1;
             }
@@ -900,7 +909,7 @@ impl Engine {
             }
         }
         if include_results {
-            pairs.push(("recorded_results".into(), Value::Array(results)));
+            pairs.push(("recorded_results".into(), Value::Array(results.to_vec())));
         }
         Value::object(pairs)
     }
@@ -1544,36 +1553,46 @@ impl Engine {
     }
 
     pub(super) fn gap_rows(&self) -> Vec<Value> {
-        let edges = self.store.array("test_edges");
-        let churn = self.store.array("churn");
-        let gtest_files: BTreeSet<String> = self.store.array("test_units").into_iter().filter_map(|u| {
+        let edges = self.store.rows("test_edges");
+        let mut covered: BTreeSet<&str> = BTreeSet::new();
+        for edge in edges {
+            if let Some(id) = edge.get("code_id").and_then(|v| v.as_str()) {
+                covered.insert(id);
+            }
+        }
+        let mut churn_by: BTreeMap<(&str, &str), (f64, i64)> = BTreeMap::new();
+        for row in self.store.rows("churn") {
+            let path = row.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+            let unit = row.get("unit_name").and_then(|v| v.as_str()).unwrap_or("");
+            let score = row.get("churn_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let commits = row.get("commit_count").and_then(|v| v.as_i64()).unwrap_or(0);
+            churn_by.insert((path, unit), (score, commits));
+        }
+        let gtest_files: BTreeSet<&str> = self.store.rows("test_units").iter().filter_map(|u| {
             if u.get("framework").and_then(|v| v.as_str()) == Some("gtest") {
-                u.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())
+                u.get("file_path").and_then(|v| v.as_str())
             } else {
                 None
             }
         }).collect();
         let mut gaps = Vec::new();
-        for u in self.store.array("code_units") {
+        for u in self.store.rows("code_units") {
             let path = u.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             if let Some(file) = &self.scope_file {
                 if path != file.as_str() { continue; }
             } else if let Some(dir) = &self.directory {
                 if !path_in_directory(path, dir) { continue; }
             }
-            if is_test_unit_row(&u) && self.exclude_tests { continue; }
+            if is_test_unit_row(u) && self.exclude_tests { continue; }
             if self.exclude_tests && (looks_like_test(path) || gtest_files.contains(path)) { continue; }
             let id = u.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if edges.iter().any(|e| e.get("code_id").and_then(|v| v.as_str()) == Some(id)) {
+            if covered.contains(id) {
                 continue;
             }
             let name = u.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let stat = churn.iter().find(|c| {
-                c.get("file_path").and_then(|v| v.as_str()) == Some(path)
-                    && c.get("unit_name").and_then(|v| v.as_str()).unwrap_or("") == name
-            });
-            let churn_score = stat.and_then(|c| c.get("churn_score")).and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let commit_count = stat.and_then(|c| c.get("commit_count")).and_then(|v| v.as_i64()).unwrap_or(0);
+            let stat = churn_by.get(&(path, name));
+            let churn_score = stat.map(|(score, _)| *score).unwrap_or(0.0);
+            let commit_count = stat.map(|(_, commits)| *commits).unwrap_or(0);
             gaps.push(Value::object(vec![
                 ("id".into(), Value::String(id.into())),
                 ("file_path".into(), Value::String(path.into())),
@@ -1699,7 +1718,7 @@ impl Engine {
             stale.truncate(cap);
             truncated = true;
         }
-        let commits_n = self.store.array("commits").len() as i64;
+        let commits_n = self.store.array_len("commits") as i64;
         let mut body = vec![
             ("top_risk_files".into(), Value::Array(top.clone())),
             ("test_gaps".into(), Value::Array(gaps.clone())),
@@ -1708,8 +1727,8 @@ impl Engine {
                 ("files_triaged".into(), Value::Int(top.len() as i64)),
                 ("total_test_gaps".into(), Value::Int(gaps.len() as i64)),
                 ("total_stale_tests".into(), Value::Int(stale.len() as i64)),
-                ("test_edge_count".into(), Value::Int(self.store.array("test_edges").len() as i64)),
-                ("test_result_count".into(), Value::Int(self.store.array("test_results").len() as i64)),
+                ("test_edge_count".into(), Value::Int(self.store.array_len("test_edges") as i64)),
+                ("test_result_count".into(), Value::Int(self.store.array_len("test_results") as i64)),
                 ("coupling_threshold".into(), Value::Int(impact::coupling_threshold(commits_n))),
                 ("active_locks".into(), Value::Int(self.active_locks().len() as i64)),
             ])),
@@ -1731,7 +1750,7 @@ impl Engine {
         match name {
             "churn" => {
                 let unit = args.get("unit_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
-                let mut rows: Vec<Value> = self.store.array("churn").into_iter().filter(|c| c.get("file_path").and_then(|v| v.as_str()) == Some(file)).collect();
+                let mut rows: Vec<Value> = self.store.churn_for_file(file).into_iter().cloned().collect();
                 if let Some(unit) = unit {
                     rows.retain(|c| c.get("unit_name").and_then(|v| v.as_str()).unwrap_or("") == unit);
                 } else {
@@ -1884,16 +1903,17 @@ impl Engine {
         let query_min: i64 = store::meta_get(&self.store.doc, "co_change_query_min").and_then(|s| s.parse().ok()).unwrap_or(3);
         let effective = min_count.max(query_min);
         let mut partners = Vec::new();
-        for c in self.store.array("co_changes") {
+        let mut exists_cache: HashMap<String, bool> = HashMap::new();
+        for c in self.store.co_for_file(file) {
             let n = c.get("co_commit_count").and_then(|v| v.as_i64()).unwrap_or(0);
             if n < effective { continue; }
             let a = c.get("file_a").and_then(|v| v.as_str()).unwrap_or("");
             let b = c.get("file_b").and_then(|v| v.as_str()).unwrap_or("");
             let other = if a == file { b } else if b == file { a } else { continue };
-            if !self.project_dir.join(other).exists() {
+            if !cached_exists(&mut exists_cache, &self.project_dir, other) {
                 continue;
             }
-            partners.push(c);
+            partners.push(c.clone());
         }
         partners.sort_by(|a, b| {
             let na = a.get("co_commit_count").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1901,11 +1921,11 @@ impl Engine {
             nb.cmp(&na)
         });
         let mut neighbors = BTreeSet::new();
-        for e in self.store.array("import_edges") {
+        for e in self.store.rows("import_edges") {
             let a = e.get("importer_file").and_then(|v| v.as_str()).unwrap_or("");
             let b = e.get("imported_file").and_then(|v| v.as_str()).unwrap_or("");
-            if a == file && b != file && self.project_dir.join(b).exists() { neighbors.insert(b.to_string()); }
-            if b == file && a != file && self.project_dir.join(a).exists() { neighbors.insert(a.to_string()); }
+            if a == file && b != file && cached_exists(&mut exists_cache, &self.project_dir, b) { neighbors.insert(b.to_string()); }
+            if b == file && a != file && cached_exists(&mut exists_cache, &self.project_dir, a) { neighbors.insert(a.to_string()); }
         }
         let untracked = self.working_tree && self.store.hash_for_file(file).is_empty();
         if untracked && neighbors.is_empty() {
@@ -1949,11 +1969,11 @@ impl Engine {
                 let part = sub.suggest_directory(dir)?;
                 if let Some(pairs) = part.as_object() {
                     for (k, v) in pairs {
-                        merged.insert(k.clone(), v.clone());
+                        merged.insert(k.to_string(), v.clone());
                     }
                 }
             }
-            return Ok(Value::object(merged.into_iter().collect()));
+            return Ok(Value::object(merged.into_iter().map(|(k, v)| (crate::json::SharedStr::from(k), v)).collect()));
         }
         self.store.reload()?;
         if !self.has_data() {
@@ -1967,7 +1987,7 @@ impl Engine {
             let suggested = self.suggest_tests(&file)?;
             if let Some(rows) = suggested.as_array() {
                 if !rows.is_empty() {
-                    pairs.push((file, Value::Array(rows.to_vec())));
+                    pairs.push((crate::json::SharedStr::from(file), Value::Array(rows.to_vec())));
                 }
             }
         }

@@ -101,6 +101,10 @@ impl GitAnalyzer {
         Ok(self.run(&["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string())
     }
 
+    pub fn head_sha(&self) -> Result<String, GitError> {
+        Ok(self.run(&["rev-parse", "HEAD"])?.trim().to_string())
+    }
+
     pub fn branch_exists(&self, name: &str) -> bool {
         if name.starts_with('-') {
             return false;

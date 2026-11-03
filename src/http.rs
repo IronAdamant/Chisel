@@ -179,6 +179,7 @@ fn route(method: &str, path: &str, body: &[u8], engine: &Arc<Mutex<Engine>>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json::SharedStr;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn dummy_arg(tool: &str, field: &str) -> Value {
@@ -195,11 +196,11 @@ mod tests {
         for field in crate::schemas::required_fields(tool) {
             if field == omit {
                 if let Some(value) = bad.clone() {
-                    pairs.push((field, value));
+                    pairs.push((SharedStr::from(field), value));
                 }
                 continue;
             }
-            pairs.push((field.clone(), dummy_arg(tool, &field)));
+            pairs.push((SharedStr::from(field.clone()), dummy_arg(tool, &field)));
         }
         Value::object(pairs)
     }

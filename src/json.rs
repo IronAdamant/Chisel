@@ -3,6 +3,82 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::ops::Deref;
+use std::sync::Arc;
+
+/// A string that either owns its bytes or points into the parsed document.
+/// Repeated object keys share the document buffer instead of allocating.
+#[derive(Clone)]
+pub struct SharedStr {
+    buf: Arc<str>,
+    start: u32,
+    end: u32,
+}
+
+impl SharedStr {
+    fn owned(s: &str) -> Self {
+        let buf: Arc<str> = Arc::from(s);
+        let end = s.len() as u32;
+        Self { buf, start: 0, end }
+    }
+
+    fn slice(buf: &Arc<str>, start: usize, end: usize) -> Self {
+        Self { buf: Arc::clone(buf), start: start as u32, end: end as u32 }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.buf[self.start as usize..self.end as usize]
+    }
+}
+
+impl Deref for SharedStr {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq for SharedStr {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+impl Eq for SharedStr {}
+impl PartialOrd for SharedStr {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for SharedStr {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+impl PartialEq<str> for SharedStr {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+impl fmt::Debug for SharedStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+impl fmt::Display for SharedStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl From<&str> for SharedStr {
+    fn from(s: &str) -> Self {
+        Self::owned(s)
+    }
+}
+impl From<String> for SharedStr {
+    fn from(s: String) -> Self {
+        Self::owned(&s)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -11,8 +87,10 @@ pub enum Value {
     Int(i64),
     Float(f64),
     String(String),
+    /// Parsed text that shares the document allocation.
+    Shared(SharedStr),
     Array(Vec<Value>),
-    Object(Vec<(String, Value)>),
+    Object(Vec<(SharedStr, Value)>),
 }
 
 impl PartialEq for Value {
@@ -21,10 +99,12 @@ impl PartialEq for Value {
             (Value::Null, Value::Null) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
+            (Value::Shared(a), Value::Shared(b)) => a == b,
+            (Value::String(a), Value::Shared(b)) | (Value::Shared(b), Value::String(a)) => a == b.as_str(),
             (Value::Array(a), Value::Array(b)) => a == b,
             (Value::Object(a), Value::Object(b)) => {
-                let ma = BTreeMap::from_iter(a.iter().map(|(k, v)| (k, v)));
-                let mb = BTreeMap::from_iter(b.iter().map(|(k, v)| (k, v)));
+                let ma = BTreeMap::from_iter(a.iter().map(|(k, v)| (k.as_str(), v)));
+                let mb = BTreeMap::from_iter(b.iter().map(|(k, v)| (k.as_str(), v)));
                 ma == mb
             }
             (Value::Int(a), Value::Int(b)) => a == b,
@@ -49,18 +129,18 @@ impl fmt::Display for Error {
 }
 
 impl Value {
-    pub fn object(pairs: Vec<(String, Value)>) -> Self {
+    pub fn object(pairs: Vec<(SharedStr, Value)>) -> Self {
         Value::Object(pairs)
     }
 
-    pub fn as_object(&self) -> Option<&[(String, Value)]> {
+    pub fn as_object(&self) -> Option<&[(SharedStr, Value)]> {
         match self {
             Value::Object(p) => Some(p),
             _ => None,
         }
     }
 
-    pub fn as_object_mut(&mut self) -> Option<&mut Vec<(String, Value)>> {
+    pub fn as_object_mut(&mut self) -> Option<&mut Vec<(SharedStr, Value)>> {
         match self {
             Value::Object(p) => Some(p),
             _ => None,
@@ -80,7 +160,7 @@ impl Value {
         if let Some(slot) = self.get_mut(key) {
             *slot = value;
         } else if let Some(pairs) = self.as_object_mut() {
-            pairs.push((key.to_string(), value));
+            pairs.push((SharedStr::owned(key), value));
         }
     }
 
@@ -101,6 +181,7 @@ impl Value {
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::String(s) => Some(s),
+            Value::Shared(s) => Some(s.as_str()),
             _ => None,
         }
     }
@@ -136,7 +217,7 @@ pub fn parse(input: &str) -> Result<Value, Error> {
         return Err(Error { message: "json exceeds 32MiB".into() });
     }
     let mut p = Parser {
-        bytes: input.as_bytes(),
+        buf: Arc::from(input),
         i: 0,
         depth: 0,
     };
@@ -152,19 +233,19 @@ pub fn parse(input: &str) -> Result<Value, Error> {
     Ok(v)
 }
 
-struct Parser<'a> {
-    bytes: &'a [u8],
+struct Parser {
+    buf: Arc<str>,
     i: usize,
     depth: u32,
 }
 
-impl<'a> Parser<'a> {
+impl Parser {
     fn eof(&self) -> bool {
-        self.i >= self.bytes.len()
+        self.i >= self.buf.len()
     }
 
     fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.i).copied()
+        self.buf.as_bytes().get(self.i).copied()
     }
 
     fn bump(&mut self) -> Option<u8> {
@@ -201,7 +282,7 @@ impl<'a> Parser<'a> {
             Some(b'n') => self.consume_ident(b"null").map(|_| Value::Null),
             Some(b't') => self.consume_ident(b"true").map(|_| Value::Bool(true)),
             Some(b'f') => self.consume_ident(b"false").map(|_| Value::Bool(false)),
-            Some(b'"') => self.parse_string().map(Value::String),
+            Some(b'"') => self.parse_string().map(Value::Shared),
             Some(b'[') => self.parse_array(),
             Some(b'{') => self.parse_object(),
             Some(b'-') | Some(b'0'..=b'9') => self.parse_number(),
@@ -254,7 +335,7 @@ impl<'a> Parser<'a> {
     fn parse_object(&mut self) -> Result<Value, Error> {
         self.enter()?;
         self.bump();
-        let mut pairs: Vec<(String, Value)> = Vec::new();
+        let mut pairs: Vec<(SharedStr, Value)> = Vec::new();
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.bump();
@@ -274,7 +355,7 @@ impl<'a> Parser<'a> {
                 return Err(self.err("expected colon"));
             }
             let value = self.parse_value()?;
-            if let Some(slot) = pairs.iter_mut().rev().find(|(k, _)| k == &key) {
+            if let Some(slot) = pairs.iter_mut().rev().find(|(k, _)| k.as_str() == key.as_str()) {
                 slot.1 = value;
             } else {
                 pairs.push((key, value));
@@ -299,11 +380,36 @@ impl<'a> Parser<'a> {
         Ok(Value::Object(pairs))
     }
 
-    fn parse_string(&mut self) -> Result<String, Error> {
+    fn parse_string(&mut self) -> Result<SharedStr, Error> {
         if self.bump() != Some(b'"') {
             return Err(self.err("expected string"));
         }
+        // Unescaped strings are a slice of the document. No per-string allocation.
+        let start = self.i;
+        let len = self.buf.len();
+        let mut i = start;
+        while i < len {
+            let b = self.buf.as_bytes()[i];
+            if b == b'"' {
+                let shared = SharedStr::slice(&self.buf, start, i);
+                self.i = i + 1;
+                return Ok(shared);
+            }
+            if b == b'\\' || b < 0x20 {
+                break;
+            }
+            i += 1;
+        }
+        self.i = i;
         let mut out = String::new();
+        if i > start {
+            out.push_str(&self.buf[start..i]);
+        }
+        let owned = self.parse_string_tail(out)?;
+        Ok(SharedStr::owned(&owned))
+    }
+
+    fn parse_string_tail(&mut self, mut out: String) -> Result<String, Error> {
         loop {
             match self.bump() {
                 None => return Err(self.err("unterminated string")),
@@ -334,15 +440,12 @@ impl<'a> Parser<'a> {
                 }
                 Some(b) if b < 0x20 => return Err(self.err("raw control character in string")),
                 Some(b) => {
-                    // Decode one UTF-8 scalar starting at the byte we already consumed.
                     let start = self.i - 1;
                     let width = utf8_width(b).ok_or_else(|| self.err("bad utf-8"))?;
-                    if start + width > self.bytes.len() {
+                    if start + width > self.buf.len() {
                         return Err(self.err("bad utf-8"));
                     }
-                    let slice = &self.bytes[start..start + width];
-                    let s = std::str::from_utf8(slice).map_err(|_| self.err("bad utf-8"))?;
-                    out.push_str(s);
+                    out.push_str(&self.buf[start..start + width]);
                     self.i = start + width;
                 }
             }
@@ -389,7 +492,7 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
         }
-        let text = std::str::from_utf8(&self.bytes[start..self.i]).unwrap();
+        let text = self.buf[start..self.i].to_string();
         if !is_float {
             if let Ok(i) = text.parse::<i64>() {
                 return Ok(Value::Int(i));
@@ -442,6 +545,7 @@ fn write_value(out: &mut String, value: &Value, indent: usize, pretty: bool) -> 
             out.push_str(&format_float(*f));
         }
         Value::String(s) => write_string(out, s),
+        Value::Shared(s) => write_string(out, s.as_str()),
         Value::Array(items) => {
             out.push('[');
             if items.is_empty() {
@@ -475,7 +579,7 @@ fn write_value(out: &mut String, value: &Value, indent: usize, pretty: bool) -> 
                     out.push('\n');
                     push_indent(out, indent + 1);
                 }
-                write_string(out, k);
+                write_string(out, k.as_str());
                 out.push(':');
                 if pretty {
                     out.push(' ');
@@ -503,18 +607,33 @@ fn push_indent(out: &mut String, n: usize) {
 
 fn write_string(out: &mut String, s: &str) {
     out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let esc: &str = match b {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            b'\n' => "\\n",
+            b'\r' => "\\r",
+            b'\t' => "\\t",
+            c if c < 0x20 => {
+                if start < i {
+                    out.push_str(&s[start..i]);
+                }
+                out.push_str(&format!("\\u{c:04x}"));
+                start = i + 1;
+                continue;
             }
-            c => out.push(c),
+            _ => continue,
+        };
+        if start < i {
+            out.push_str(&s[start..i]);
         }
+        out.push_str(esc);
+        start = i + 1;
+    }
+    if start < s.len() {
+        out.push_str(&s[start..]);
     }
     out.push('"');
 }
@@ -560,8 +679,10 @@ mod tests {
 
     #[test]
     fn roundtrip_and_duplicate_keys() {
-        let v = parse(r#"{"a":1,"b":[true,null,"x"],"a":2}"#).unwrap();
+        let v = parse(r#"{"a":1,"b":[true,null,"x\"y"],"a":2,"u":"héllo\n"}"#).unwrap();
         assert_eq!(v.get("a").and_then(|x| x.as_i64()), Some(2));
+        assert_eq!(v.get("b").and_then(|x| x.as_array()).and_then(|a| a.get(2)).and_then(|x| x.as_str()), Some("x\"y"));
+        assert_eq!(v.get("u").and_then(|x| x.as_str()), Some("héllo\n"));
         let s = to_string(&v).unwrap();
         let again = parse(&s).unwrap();
         assert_eq!(v, again);

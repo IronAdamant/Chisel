@@ -10,7 +10,7 @@ use crate::git::{self, GitAnalyzer};
 use crate::impact;
 use crate::json::Value;
 use crate::store::{self, Store};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -169,6 +169,7 @@ pub(crate) fn argument_missing(args: &Value, field: &str, ty: &str) -> bool {
     match value {
         Value::Null => true,
         Value::String(text) if text.is_empty() => true,
+        Value::Shared(text) if text.as_str().is_empty() => true,
         Value::Array(items) if items.is_empty() => true,
         _ if ty == "boolean" => !matches!(value, Value::Bool(_)),
         _ => false,
@@ -294,7 +295,7 @@ pub(crate) fn stale_status() -> Value {
     ])
 }
 
-pub(crate) fn push_extractor_warnings(summary: &mut Vec<(String, Value)>) {
+pub(crate) fn push_extractor_warnings(summary: &mut Vec<(crate::json::SharedStr, Value)>) {
     let warnings = extract::take_extractor_warnings();
     if warnings.is_empty() {
         return;
@@ -554,15 +555,65 @@ fn rust_integration_test(path: &str, name: &str) -> bool {
     normalized.split('/').next() == Some("tests")
 }
 
+/// Suffix map of code paths so an import resolves without scanning every unit.
+pub(crate) struct ImportPathIndex {
+    by_suffix: HashMap<String, Vec<String>>,
+}
+
+impl ImportPathIndex {
+    pub(crate) fn from_units(units: &[Value]) -> Self {
+        let mut seen = BTreeSet::new();
+        let mut paths = Vec::new();
+        for unit in units {
+            if let Some(path) = unit.get("file_path").and_then(|v| v.as_str()) {
+                if seen.insert(path) {
+                    paths.push(path.to_string());
+                }
+            }
+        }
+        let mut by_suffix: HashMap<String, Vec<String>> = HashMap::new();
+        for path in &paths {
+            let normalized = path.replace('\\', "/");
+            let mut rest = normalized.as_str();
+            loop {
+                by_suffix.entry(rest.to_string()).or_default().push(path.clone());
+                if let Some((_, tail)) = rest.split_once('/') {
+                    rest = tail;
+                } else {
+                    break;
+                }
+            }
+        }
+        Self { by_suffix }
+    }
+
+    pub(crate) fn files_for_module(&self, module_path: &str) -> &[String] {
+        if module_path.is_empty() {
+            return &[];
+        }
+        let mut key = String::with_capacity(module_path.len() + 3);
+        for c in module_path.chars() {
+            if c == '.' {
+                key.push('/');
+            } else {
+                key.push(c);
+            }
+        }
+        key.push_str(".py");
+        self.by_suffix.get(&key).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+}
+
 pub(crate) fn resolved_import_files(deps: &[Dep], units: &[Value]) -> BTreeSet<String> {
+    resolve_deps(deps, &ImportPathIndex::from_units(units))
+}
+
+pub(crate) fn resolve_deps(deps: &[Dep], index: &ImportPathIndex) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for dep in deps {
         let Some(module) = dep.module_path.as_deref() else { continue };
-        for u in units {
-            let path = u.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            if extract::matches_import_path(path, module) {
-                out.insert(path.to_string());
-            }
+        for path in index.files_for_module(module) {
+            out.insert(path.clone());
         }
     }
     out

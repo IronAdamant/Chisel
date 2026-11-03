@@ -1,6 +1,6 @@
 //! Risk, churn, coupling, and impact ranking. Weights match risk_meta.py.
 
-use crate::json::{py_round, quantize_gap, Value};
+use crate::json::{py_round, quantize_gap, SharedStr, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const COCHANGE_CAP: f64 = 10.0;
@@ -308,7 +308,7 @@ pub fn build_risk_meta(files: &[Value], commits: i64, test_edges: i64, test_resu
     let groups: Vec<_> = counts.into_iter().filter(|(_, c)| *c >= 3).collect();
     if !groups.is_empty() {
         let max_group = groups.iter().map(|(_, c)| *c).max().unwrap_or(0);
-        meta.push(("uniform_risk_groups".into(), Value::object(groups.into_iter().map(|(k, c)| (k, Value::Int(c))).collect())));
+        meta.push(("uniform_risk_groups".into(), Value::object(groups.into_iter().map(|(k, c)| (SharedStr::from(k), Value::Int(c))).collect())));
         meta.push(("max_identical_risk_files".into(), Value::Int(max_group)));
         if max_group >= 5 {
             meta.push(("warnings".into(), Value::Array(vec![Value::String(format!(
