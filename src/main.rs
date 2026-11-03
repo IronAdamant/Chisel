@@ -1,4 +1,5 @@
 use chisel::cli;
+#[cfg(debug_assertions)]
 use std::env;
 #[cfg(debug_assertions)]
 use chisel::json::Value;
@@ -25,25 +26,17 @@ fn main() {
 }
 
 fn real_main() -> Result<i32, String> {
-    let mut argv: Vec<String> = env::args().skip(1).collect();
     #[cfg(debug_assertions)]
-    if argv.first().map(|s| s.as_str()) == Some("internal-pause-before-rename") {
-        return pause_before_rename(&argv);
+    {
+        let argv: Vec<String> = env::args().skip(1).collect();
+        if argv.first().map(|s| s.as_str()) == Some("internal-pause-before-rename") {
+            return pause_before_rename(&argv);
+        }
+        if argv.first().map(|s| s.as_str()) == Some("internal-read-loop") {
+            return read_loop(&argv);
+        }
     }
-    #[cfg(debug_assertions)]
-    if argv.first().map(|s| s.as_str()) == Some("internal-read-loop") {
-        return read_loop(&argv);
-    }
-    let argv0 = env::args().next().unwrap_or_default();
-    if cli::argv_is_mcp_binary(&argv0) {
-        argv.insert(0, "serve-mcp".into());
-    }
-    if argv.is_empty() || argv.iter().any(|a| a == "-h" || a == "--help") && argv.len() == 1 {
-        cli::help();
-        return Ok(0);
-    }
-    let args = cli::parse(&argv)?;
-    cli::run(&args)
+    cli::entry()
 }
 
 #[cfg(debug_assertions)]

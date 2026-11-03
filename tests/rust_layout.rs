@@ -24,6 +24,7 @@ fn init_repo(dir: &Path) {
     git(dir, &["init", "-b", "main"]);
     git(dir, &["config", "user.email", "a@example.com"]);
     git(dir, &["config", "user.name", "Solo"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
     git(dir, &["config", "core.autocrlf", "false"]);
 }
 
@@ -132,6 +133,31 @@ fn empty_project_hint_names_the_rust_tests_directory() {
     assert!(summary.contains("tests/*.rs"), "{summary}");
     assert!(summary.contains("#[test]"), "{summary}");
     assert!(summary.contains("test_*.py") && summary.contains("*.spec.ts"), "{summary}");
+}
+
+fn mcp_binary() -> PathBuf {
+    let chisel = PathBuf::from(env!("CARGO_BIN_EXE_chisel"));
+    let name = match chisel.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("exe") => "chisel-mcp.exe",
+        _ => "chisel-mcp",
+    };
+    chisel.with_file_name(name)
+}
+
+#[test]
+fn version_flag_prints_the_package_version() {
+    let version = env!("CARGO_PKG_VERSION");
+    let bins = [PathBuf::from(env!("CARGO_BIN_EXE_chisel")), mcp_binary()];
+    for bin in &bins {
+        let out = Command::new(bin).arg("--version").output().unwrap();
+        assert!(out.status.success(), "{} {}", bin.display(), String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains(version), "{}: {text}", bin.display());
+    }
+    let unknown = Command::new(env!("CARGO_BIN_EXE_chisel")).arg("--not-a-real-flag").output().unwrap();
+    assert!(!unknown.status.success());
+    let err = String::from_utf8_lossy(&unknown.stderr);
+    assert!(err.contains("unknown or unimplemented flag"), "{err}");
 }
 
 #[test]

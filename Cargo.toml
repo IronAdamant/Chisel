@@ -5,6 +5,7 @@ edition = "2021"
 description = "Test impact analysis and code intelligence for LLM agents"
 license = "MIT"
 publish = false
+autobins = false
 
 [[bin]]
 name = "chisel"
@@ -12,7 +13,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "chisel-mcp"
-path = "src/main.rs"
+path = "src/bin/chisel-mcp.rs"
 
 [dependencies]
 

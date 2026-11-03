@@ -2,6 +2,7 @@
 //! Linux uses inotify, macOS uses kqueue, Windows uses a change notification.
 //! A timeout with no event returns false. The caller still checks git.
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -29,10 +30,12 @@ pub fn wait_for_change(root: &Path, timeout: Duration) -> io::Result<bool> {
     { let _ = (root, timeout); Ok(false) }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn skip_dir(name: &str) -> bool {
     matches!(name, ".git" | ".chisel" | "node_modules" | "target" | ".next")
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn collect_dirs(root: &Path, out: &mut Vec<std::path::PathBuf>) {
     out.push(root.to_path_buf());
     let Ok(read) = fs::read_dir(root) else { return };
@@ -49,6 +52,7 @@ fn collect_dirs(root: &Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 fn collect_files(root: &Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(read) = fs::read_dir(root) else { return };
     for entry in read.flatten() {
@@ -88,7 +92,7 @@ fn wait_inotify(root: &Path, timeout: Duration) -> io::Result<bool> {
     let mut dirs = Vec::new();
     collect_dirs(root, &mut dirs);
     if dirs.len() > 4000 {
-        return Err(io::Error::new(io::ErrorKind::Other, "too many directories to watch"));
+        return Err(io::Error::other("too many directories to watch"));
     }
     let fd = unsafe { inotify_init1(IN_CLOEXEC) };
     if fd < 0 {
@@ -146,7 +150,7 @@ fn wait_kqueue(root: &Path, timeout: Duration) -> io::Result<bool> {
     collect_dirs(root, &mut paths);
     collect_files(root, &mut paths);
     if paths.len() > 4000 {
-        return Err(io::Error::new(io::ErrorKind::Other, "too many paths to watch"));
+        return Err(io::Error::other("too many paths to watch"));
     }
     let mut files = Vec::new();
     for path in &paths {
