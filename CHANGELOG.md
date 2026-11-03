@@ -7,6 +7,60 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-11-03
+
+The Rust binary picks up the Python 0.15.1 behaviour that 0.16.1 still missed: stdio MCP framing, the flags and directory scopes that did not reach the engine, test detection for Java, Kotlin, C#, Swift, and C++, `chisel migrate`, and `CHISEL_DEP_EXTRACTOR`. The crate still links only the standard library. Figures below are copied from `scripts/benchmark_results.md`. None are estimated.
+
+### Added
+
+- **Stdio MCP.** `chisel serve-mcp` answers newline-delimited JSON-RPC, the framing standard MCP clients send. A client that sends `Content-Length` headers still gets a `Content-Length` reply. `initialize` reports the crate version in `serverInfo.version`.
+- **`chisel migrate`.** Copies recorded test results, including duration and timestamp, from a legacy SQLite `chisel.db` into `.chisel/store`. A sibling `-wal` file is read when one is present. Other commands leave `chisel.db` alone.
+- **`CHISEL_DEP_EXTRACTOR`.** Names an executable that reads one source file and returns import and call dependencies. `dep_extractor` in `.chisel/extensions.toml` is the same hook, and that file is ignored unless the process was started with `--allow-repo-extractor`. If `CHISEL_BOOTSTRAP` points at an executable, that program is used. A Python import path is not loaded.
+
+### Changed
+
+- **Flags and scopes.** Commands now take the flags and directory scopes the engine already understood. `impact --functions` limits the direct edges to those names. `suggest-tests` accepts a directory, and it ranks Java, C#, and Swift methods. A file that is not in the snapshot returns `stale_db` unless `working_tree` is set. `churn --unit` returns one function row. `coupling` accepts `--min-count` and `--working-tree`. `risk-map` accepts a directory and `--proximity` (proximity stays on unless `--no-proximity` is passed). `triage` accepts `--top-n`. `risk-map`, `test-gaps`, and `triage` accept `--no-exclude-tests`.
+- **Test detection.** Java and Kotlin methods marked `@Test`, `@ParameterizedTest`, or `@RepeatedTest` are test units even when the method name does not start with `test`. C# sees `[Fact]`, `[Theory]`, `[Test]`, and `[TestMethod]`, including attributes stacked above the method. Swift sees `@Test`. C and C++ macros `TEST`, `TEST_F`, `TEST_P`, `TEST_CASE`, `SCENARIO`, `BOOST_AUTO_TEST_CASE`, and `BOOST_FIXTURE_TEST_CASE` become test units.
+- **Large-tree speed.** Test edges resolve through a path-suffix index instead of scanning every code unit for every import. Test-gap checks use a set of covered ids. An unchanged snapshot file is not read again. Warm analyse and warm update skip files that have not changed. Python methods that follow a triple-quoted string are detected. On the large tree both snapshots have 829 test units, and the `(file, name)` pairs match. The earlier Rust count of 822 missed eight methods in `tests/migrations/test_multidb.py` and added one placeholder for `tests/bash_completion/management/commands/test_command.py`, which defines no test functions.
+
+### Benchmarks
+
+Median milliseconds from five runs, minimum and maximum in parentheses. Machine: Linux 6.12.94+, 4 vCPUs, Intel Xeon, 15.6 GiB RAM, rustc 1.97.0, Python 3.12.3. The large repo is the django package from django/django (about 1000 code files) plus 80 of its test modules. History is 38 commits of at most 100 paths each. Rust's median is lower on every command in this table.
+
+| Command | Python large | Rust large |
+|---|---:|---:|
+| startup | 71.6 (64.7–76.1) | 0.4 (0.2–0.5) |
+| cold_analyze | 13692.5 (13542.5–14014.5) | 8034.2 (7627.3–8398.0) |
+| warm_analyze | 8646.5 (8604.2–8754.3) | 63.0 (61.3–77.9) |
+| warm_update | 146.4 (139.1–163.6) | 68.8 (65.3–71.2) |
+| impact | 111.9 (106.5–113.3) | 45.4 (44.6–48.2) |
+| suggest_tests | 125.9 (121.5–131.0) | 46.0 (44.6–51.9) |
+| risk_map | 253.6 (233.9–261.0) | 57.5 (55.8–64.0) |
+| test_gaps | 163.4 (161.9–180.5) | 73.1 (65.0–76.5) |
+| triage | 254.4 (239.9–262.7) | 94.9 (93.3–97.5) |
+| churn | 65.2 (64.4–69.0) | 48.8 (46.0–51.4) |
+| coupling | 64.1 (63.3–66.1) | 47.7 (41.8–53.4) |
+| stats | 67.4 (66.5–68.6) | 46.0 (45.0–51.0) |
+
+Peak RSS for those same runs, in KiB. This is the highest VmHWM sampled from `/proc` during each run.
+
+| Command | Python large | Rust large |
+|---|---:|---:|
+| startup | 23040 | 2860 |
+| cold_analyze | 60808 | 96600 |
+| warm_analyze | 54716 | 40604 |
+| warm_update | 27200 | 40628 |
+| impact | 28264 | 40656 |
+| suggest_tests | 34932 | 40636 |
+| risk_map | 52540 | 40592 |
+| test_gaps | 59680 | 46208 |
+| triage | 52552 | 49488 |
+| churn | 23752 | 40648 |
+| coupling | 23656 | 40664 |
+| stats | 25844 | 40644 |
+
+After the timed runs the large Rust snapshot was 10463225 bytes and mentioned 829 test units. The large Python snapshot had 829 test units and 10267 test edges. The small sample, a two-file Python repo, had 1 test unit on both sides. Reproduce with `scripts/benchmark_parity.py`.
+
 ## [0.15.1] — 2026-07-09
 
 ### Fixed
