@@ -19,8 +19,11 @@ The crate exposes two binaries. `chisel` is `src/main.rs`. `chisel-mcp` is `src/
 | `src/cli.rs` | Flags, subcommands, `chisel run`, `chisel watch`. |
 | `src/engine/analyze.rs` | Full and incremental scans, test units, edges. |
 | `src/engine/query.rs` | Read tools: impact, suggestions, risk, gaps, triage. |
+| `src/engine/callers.rs` | Callers of changed functions, a few calls up, read from source at query time, for `diff_impact` `depth`. |
+| `src/engine/issues.rs` | Issue capture, suspects, hunk-to-unit mapping, fix summaries. |
+| `src/cargo.rs` | Cargo manifests: which crates a Rust test can reach (dependencies, dev-dependencies, workspace deps). |
 | `src/engine/locks.rs` | Advisory lock rows in the snapshot. |
-| `src/extract` | Python syntax units, brace-language units, import and call deps. |
+| `src/extract` | Python syntax units, brace-language units, import and call deps. `calls.rs` reads how a name is called (`Type::f`, `x.f()`, `f()`, outside strings and comments) and `use` imports. |
 | `src/syntax.rs` | Built-in Python and JavaScript syntax tree used by the scanners. |
 | `src/store.rs` | One snapshot file. Write to a temp file, fsync, rename. |
 | `src/git.rs` | Porcelain via `std::process`. A ref that starts with `-` is rejected. |
