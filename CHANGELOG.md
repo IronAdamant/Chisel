@@ -7,6 +7,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-11-05
+
+Fixes from a live test on Specula (587 code files, 2,384 tests, about 317k lines).
+
+### Fixed
+
+- **The snapshot no longer outgrows what Chisel can read (B1).** On Specula `analyze` wrote 98.9 MB with 461,698 test edges, the JSON reader refused anything over 32 MiB, and every later process failed, including `serve-mcp` at startup. Three changes:
+  - Rust tests take their calls from their own body plus the same-file helpers they call, not from every test in the file.
+  - A called name defined in several files (`new`, `parse`, `len`) is narrowed by how it is called: `Type::f` keeps files declaring `Type`, `module::f` files named after the module, a free call its own file, crate or `use` path; an ambiguous `.method()` with more than three definitions is dropped. Applies to Rust, C and C++.
+  - `test_edges` and `blame` are stored as compact tables (column names, one string list, rows of indexes) and expanded on load, so readers are unchanged.
+  On Specula: 461,698 -> 73,273 edges, 98.9 MB -> 10.3 MB, `analyze` about the same (7.0-7.3 s), and a new MCP server starts in 156 ms instead of failing. The reader and the writer now share one 1 GiB limit, and the writer refuses past it with an actionable message.
+- **A broken snapshot is no longer silent (B2).** `capture`, `capture --hook` and `issues --brief` print one line, `chisel: snapshot unreadable (<reason>); run chisel analyze to rebuild it`, and still exit 0.
+- **Suspects name the function that changed (B3).** Hunks are mapped to the innermost code unit whose lines cover them, not to git's hunk header (the line before the hunk, `impl ...` inside an impl block). When the changed function is not one the test calls, the reason says so instead of labelling a called, unchanged function with the change.
+- **Reverting an uncommitted break is recorded as a revert (B4).** A new issue records the uncommitted diff at failure; when the test passes with no change against the failing commit, the issue closes as `reverted uncommitted change` with those files, not `none (...flaky?)`.
+
+### Changed
+
+- A save no longer re-parses the snapshot to check its generation when the file is the one this process loaded (same mtime and size).
+
 ## [0.20.0] — 2026-11-05
 
 Automatic issue logging and traceability. Test runs the agent already makes become issues linked to the code and history behind them, with no model tokens spent on capture.
