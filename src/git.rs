@@ -437,6 +437,54 @@ pub fn parse_blame(raw: &str) -> Vec<BlameBlock> {
     blocks
 }
 
+/// HEAD's commit read from `.git` files, without starting git (that costs 70-180 ms on
+/// Windows). Follows `gitdir:` files, `commondir` (worktrees), loose refs and packed-refs.
+/// `None` when the layout is unusual; callers may fall back to `git rev-parse HEAD`.
+pub fn head_commit_fast(project: &std::path::Path) -> Option<String> {
+    let mut dir = project.to_path_buf();
+    let gitdir = loop {
+        let dot = dir.join(".git");
+        if dot.is_dir() {
+            break dot;
+        }
+        if dot.is_file() {
+            let text = std::fs::read_to_string(&dot).ok()?;
+            let target = text.trim().strip_prefix("gitdir:")?.trim();
+            let path = std::path::PathBuf::from(target);
+            break if path.is_absolute() { path } else { dir.join(path) };
+        }
+        dir = dir.parent()?.to_path_buf();
+    };
+    let head = std::fs::read_to_string(gitdir.join("HEAD")).ok()?;
+    let head = head.trim();
+    let is_sha = |s: &str| s.len() >= 40 && s.chars().all(|c| c.is_ascii_hexdigit());
+    let Some(reference) = head.strip_prefix("ref:").map(str::trim) else {
+        return is_sha(head).then(|| head.to_string());
+    };
+    let common = std::fs::read_to_string(gitdir.join("commondir")).ok().map(|c| {
+        let p = std::path::PathBuf::from(c.trim());
+        if p.is_absolute() { p } else { gitdir.join(p) }
+    });
+    for base in [Some(gitdir.clone()), common].into_iter().flatten() {
+        if let Ok(text) = std::fs::read_to_string(base.join(reference)) {
+            let sha = text.trim().to_string();
+            if is_sha(&sha) {
+                return Some(sha);
+            }
+        }
+        if let Ok(packed) = std::fs::read_to_string(base.join("packed-refs")) {
+            for line in packed.lines() {
+                if let Some((sha, name)) = line.split_once(' ') {
+                    if name.trim() == reference && is_sha(sha) {
+                        return Some(sha.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn git_tool_error(project_dir: &str, message: &str) -> crate::json::Value {
     use crate::json::Value;
     let low = message.to_lowercase();

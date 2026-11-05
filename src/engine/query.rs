@@ -1538,6 +1538,12 @@ impl Engine {
                 let id = args.get("job_id").and_then(|v| v.as_str()).unwrap_or("");
                 Ok(self.cancel_job_value(id))
             }
+            "issues" => self.issues_tool(args),
+            "issue" => self.issue_tool(args.get("id").and_then(|v| v.as_str()).unwrap_or("")),
+            "trace" => {
+                let file = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+                self.trace_tool(file, args.get("unit_name").and_then(|v| v.as_str()))
+            }
             "acquire_file_lock" | "release_file_lock" | "refresh_file_lock" | "check_file_lock" | "check_locks" | "list_file_locks" => {
                 self.file_lock_tool(name, args)
             }

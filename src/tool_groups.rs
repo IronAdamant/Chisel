@@ -19,12 +19,13 @@ pub const DISABLE_VAR: &str = "CHISEL_DISABLE";
 pub const AGENT_NAME: &str = "chisel";
 
 /// Group name and its tools, in listing order. `core` is first and always on.
-pub const GROUPS: [(&str, &[&str]); 5] = [
+pub const GROUPS: [(&str, &[&str]); 6] = [
     ("core", &["analyze", "update", "diff_impact", "impact", "suggest_tests", "record_result", "stats"]),
     ("risk", &["risk_map", "test_gaps", "triage", "stale_tests"]),
     ("history", &["churn", "ownership", "coupling", "history", "who_reviews"]),
     ("maintenance", &["start_job", "job_status", "cancel_job", "optimize_storage"]),
     ("locks", &["acquire_file_lock", "release_file_lock", "refresh_file_lock", "check_file_lock", "check_locks", "list_file_locks"]),
+    ("issues", &["issues", "issue", "trace"]),
 ];
 
 pub fn group_of(tool: &str) -> Option<&'static str> {
@@ -389,7 +390,7 @@ mod tests {
         );
         let f = ToolFilter::parse(Some("risk"), None).unwrap();
         assert_eq!(f.disabled_message("churn").unwrap(), "tool \"churn\" is disabled (group \"history\") by CHISEL_TOOLS; add \"history\" to it to enable");
-        assert!(f.summary().starts_with("Tool groups on: core, risk. Off: history, maintenance, locks. Change them with a \"chisel: disable <groups>\""), "{}", f.summary());
+        assert!(f.summary().starts_with("Tool groups on: core, risk. Off: history, maintenance, locks, issues. Change them with a \"chisel: disable <groups>\""), "{}", f.summary());
     }
 
     #[test]
@@ -402,7 +403,7 @@ mod tests {
             assert!(err.starts_with(&format!("CHISEL_DISABLE: group \"core\" is always on and cannot be disabled (\"{lower}\"); groups: core, ")), "{err}");
         }
         let err = ToolFilter::parse(None, Some("lokcs")).unwrap_err();
-        assert!(err.starts_with("CHISEL_DISABLE: unknown group \"lokcs\"; groups: core, risk, history, maintenance, locks; tools: analyze, "), "{err}");
+        assert!(err.starts_with("CHISEL_DISABLE: unknown group \"lokcs\"; groups: core, risk, history, maintenance, locks, issues; tools: analyze, "), "{err}");
         assert!(ToolFilter::parse(None, Some("all")).is_err(), "all is only for CHISEL_TOOLS");
         assert!(ToolFilter::parse(Some("nope"), None).unwrap_err().starts_with("CHISEL_TOOLS: unknown group \"nope\""));
     }
@@ -436,7 +437,7 @@ mod tests {
         let lines = parse_agents_md("```agent-tools\nchisel: disable lokcs\nchisel: disable core\nchisel: enable risk\nchisel: tools risk\n```\n");
         assert_eq!(lines.disable, None);
         assert_eq!(lines.tools.as_deref(), Some("risk"));
-        assert_eq!(lines.warnings[0], "AGENTS.md agent-tools: unknown group \"lokcs\" for chisel; groups: core, risk, history, maintenance, locks");
+        assert_eq!(lines.warnings[0], "AGENTS.md agent-tools: unknown group \"lokcs\" for chisel; groups: core, risk, history, maintenance, locks, issues");
         assert!(lines.warnings[1].contains("group \"core\" is always on and cannot be disabled (\"core\") for chisel"), "{:?}", lines.warnings);
         assert!(lines.warnings[2].contains("unknown key \"enable\""), "{:?}", lines.warnings);
     }

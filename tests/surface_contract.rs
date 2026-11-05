@@ -1,10 +1,10 @@
 //! Schema list and next-step hints from the shipped library.
 
 #[test]
-fn tools_list_has_26_tools_and_suggest_schema() {
+fn tools_list_has_29_tools_and_suggest_schema() {
     let list = chisel::schemas::tool_list_json();
     let tools = list.get("tools").and_then(|v| v.as_array()).expect("tools");
-    assert_eq!(tools.len(), 26);
+    assert_eq!(tools.len(), 29);
     let suggest = tools.iter().find(|t| t.get("name").and_then(|v| v.as_str()) == Some("suggest_tests")).expect("suggest_tests");
     let desc = suggest.get("description").and_then(|v| v.as_str()).unwrap_or("");
     assert!(desc.len() > 20, "{desc}");
@@ -73,7 +73,7 @@ fn no_data_suggests_analyze() {
 fn tools_list_is_short_and_every_description_is_distinct() {
     let list = chisel::schemas::tool_list_json();
     let text = chisel::json::to_string(&list).unwrap();
-    assert!(text.len() < 12_000, "tools/list is {} bytes", text.len());
+    assert!(text.len() < 13_000, "tools/list is {} bytes", text.len());
     let tools = list.get("tools").and_then(|v| v.as_array()).unwrap();
     let mut seen = std::collections::BTreeSet::new();
     for tool in tools {

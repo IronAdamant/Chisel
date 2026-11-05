@@ -48,10 +48,10 @@ fn session_in(dir: &std::path::Path, vars: &[(&str, &str)], requests: &[&str]) -
     lines
 }
 
-/// initialize + tools/list as the 0.18.0 release answered them, with this version and the one
-/// allowed change: `capabilities.tools.listChanged` is always advertised.
+/// initialize + tools/list with no switches set (golden). 0.19.0 changed only
+/// `capabilities.tools.listChanged` against 0.18.0; 0.20.0 adds the `issues` group's tools.
 fn release_output() -> Vec<String> {
-    include_str!("fixtures/mcp/default_0.18.0.jsonl")
+    include_str!("fixtures/mcp/default.jsonl")
         .lines()
         .map(|l| l.replace("@VERSION@", env!("CARGO_PKG_VERSION")).replace(r#""listChanged":false"#, r#""listChanged":true"#))
         .collect()
@@ -74,7 +74,7 @@ fn default_listing_and_instructions_are_unchanged() {
     let lines = session(&[], &[INIT, LIST]);
     let release = release_output();
     assert_eq!(lines, release, "default initialize/tools/list differ from the last release");
-    assert_eq!(names(&lines[1]).len(), 26);
+    assert_eq!(names(&lines[1]).len(), 29);
     let init = json::parse(&lines[0]).unwrap();
     let instructions = init.get("result").and_then(|r| r.get("instructions")).and_then(|v| v.as_str()).unwrap();
     assert!(!instructions.contains("Tool groups"), "{instructions}");
@@ -95,15 +95,15 @@ fn allowlist_and_denylist_filter_by_group_and_by_tool() {
     }
     let init = json::parse(&lines[0]).unwrap();
     let instructions = init.get("result").and_then(|r| r.get("instructions")).and_then(|v| v.as_str()).unwrap();
-    assert!(instructions.ends_with("\nTool groups on: core, risk, history (only churn). Off: maintenance, locks. Change them with a \"chisel: disable <groups>\" or \"chisel: tools <groups>\" line in the agent-tools block of AGENTS.md; CHISEL_TOOLS / CHISEL_DISABLE override it."), "{instructions}");
+    assert!(instructions.ends_with("\nTool groups on: core, risk, history (only churn). Off: maintenance, locks, issues. Change them with a \"chisel: disable <groups>\" or \"chisel: tools <groups>\" line in the agent-tools block of AGENTS.md; CHISEL_TOOLS / CHISEL_DISABLE override it."), "{instructions}");
 
     let lines = session(&[("CHISEL_DISABLE", "locks,history,start_job")], &[LIST]);
     let got = names(&lines[0]);
-    assert_eq!(got.len(), 26 - 6 - 5 - 1, "{got:?}");
+    assert_eq!(got.len(), 29 - 6 - 5 - 1, "{got:?}");
     assert!(got.iter().any(|n| n == "job_status") && !got.iter().any(|n| n == "start_job" || n == "check_locks" || n == "who_reviews"));
 
     let lines = session(&[("CHISEL_TOOLS", "all"), ("CHISEL_DISABLE", "locks")], &[LIST]);
-    assert_eq!(names(&lines[0]).len(), 20);
+    assert_eq!(names(&lines[0]).len(), 23);
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn a_disabled_tool_says_how_to_turn_it_back_on() {
     assert_eq!(result.get("isError").and_then(|v| v.as_bool()), Some(true));
     let text = result.get("content").and_then(|c| c.as_array()).unwrap()[0].get("text").and_then(|v| v.as_str()).unwrap();
     assert_eq!(text, "tool \"acquire_file_lock\" is disabled (group \"locks\") by CHISEL_DISABLE; remove \"locks\" from it to enable");
-    assert!(lines[1].contains("Tool groups on: core, risk, history, maintenance. Off: locks."), "stats does not report groups: {}", lines[1]);
+    assert!(lines[1].contains("Tool groups on: core, risk, history, maintenance, issues. Off: locks."), "stats does not report groups: {}", lines[1]);
 }
 
 /// Exit code and stderr of `serve-mcp` started with one variable set.
@@ -137,7 +137,7 @@ fn an_unknown_name_stops_the_server_with_exit_2() {
     let (code, err) = startup("CHISEL_DISABLE", "lokcs");
     assert_eq!(code, Some(2));
     assert_eq!(err.lines().count(), 1, "{err}");
-    assert!(err.starts_with("CHISEL_DISABLE: unknown group \"lokcs\"; groups: core, risk, history, maintenance, locks; tools: analyze, impact"), "{err}");
+    assert!(err.starts_with("CHISEL_DISABLE: unknown group \"lokcs\"; groups: core, risk, history, maintenance, locks, issues; tools: analyze, impact"), "{err}");
 }
 
 #[test]
@@ -179,10 +179,10 @@ const BLOCK: &str = "# Project\n\n```agent-tools\n# one agent; CoordinationHub o
 fn an_agent_tools_block_in_agents_md_picks_the_groups() {
     let dir = project_with(BLOCK);
     let lines = session_in(&dir, &[], &[INIT, LIST, call("ownership").as_str()]);
-    assert_eq!(names(&lines[1]).len(), 26 - 6 - 5, "{:?}", names(&lines[1]));
+    assert_eq!(names(&lines[1]).len(), 29 - 6 - 5, "{:?}", names(&lines[1]));
     assert_eq!(list_changed(&lines[0]), Some(true));
     let text = instructions(&lines[0]);
-    assert!(text.ends_with("Tool groups on: core, risk, maintenance. Off: history, locks. Change them with a \"chisel: disable <groups>\" or \"chisel: tools <groups>\" line in the agent-tools block of AGENTS.md; CHISEL_TOOLS / CHISEL_DISABLE override it."), "{text}");
+    assert!(text.ends_with("Tool groups on: core, risk, maintenance, issues. Off: history, locks. Change them with a \"chisel: disable <groups>\" or \"chisel: tools <groups>\" line in the agent-tools block of AGENTS.md; CHISEL_TOOLS / CHISEL_DISABLE override it."), "{text}");
     assert!(lines[2].contains(r#"tool \"ownership\" is disabled (group \"history\") by AGENTS.md agent-tools line \"chisel: disable\"; remove \"history\" from it to enable"#), "{}", lines[2]);
 }
 
@@ -204,11 +204,11 @@ fn env_vars_override_the_file_key_by_key() {
 fn file_errors_are_warnings_and_never_stop_the_server() {
     let dir = project_with("```agent-tools\nchisel: disable lokcs\nchisel: disable core\n```\n");
     let lines = session_in(&dir, &[], &[INIT, LIST, call("stats").as_str()]);
-    assert_eq!(names(&lines[1]).len(), 26, "bad lines must leave the default");
+    assert_eq!(names(&lines[1]).len(), 29, "bad lines must leave the default");
     let text = instructions(&lines[0]);
-    assert!(text.contains("\nAGENTS.md agent-tools: unknown group \"lokcs\" for chisel; groups: core, risk, history, maintenance, locks\n"), "{text}");
+    assert!(text.contains("\nAGENTS.md agent-tools: unknown group \"lokcs\" for chisel; groups: core, risk, history, maintenance, locks, issues\n"), "{text}");
     assert!(text.contains("AGENTS.md agent-tools: group \"core\" is always on and cannot be disabled (\"core\") for chisel"), "{text}");
-    assert!(text.lines().last().unwrap().starts_with("Tool groups on: core, risk, history, maintenance, locks. Off: none."), "{text}");
+    assert!(text.lines().last().unwrap().starts_with("Tool groups on: core, risk, history, maintenance, locks, issues. Off: none."), "{text}");
     assert!(lines[2].contains("tool_groups_warnings") && lines[2].contains("lokcs"), "{}", lines[2]);
 }
 
@@ -220,7 +220,7 @@ fn no_block_means_the_release_output() {
     // A block with lines only for other tools changes nothing Chisel lists.
     let dir = project_with("```agent-tools\ntrammel: disable locks\n```\n");
     let lines = session_in(&dir, &[], &[INIT, LIST]);
-    assert_eq!(names(&lines[1]).len(), 26);
+    assert_eq!(names(&lines[1]).len(), 29);
 }
 
 #[test]
@@ -239,15 +239,15 @@ fn editing_the_block_mid_session_notifies_and_applies() {
         line.trim_end().to_string()
     };
     send(LIST);
-    assert_eq!(names(&read()).len(), 26);
+    assert_eq!(names(&read()).len(), 29);
     std::fs::write(dir.join("AGENTS.md"), "```agent-tools\nchisel: disable locks\n```\n").unwrap();
     send(LIST);
     assert_eq!(read(), r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#);
-    assert_eq!(names(&read()).len(), 20);
+    assert_eq!(names(&read()).len(), 23);
     // A change that leaves the tool set alone sends no notification.
     std::fs::write(dir.join("AGENTS.md"), "```agent-tools\n# still only locks off\nchisel: disable locks\n```\n").unwrap();
     send(LIST);
-    assert_eq!(names(&read()).len(), 20);
+    assert_eq!(names(&read()).len(), 23);
     drop(stdin);
     let _ = child.wait();
 }
