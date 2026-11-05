@@ -1,0 +1,12 @@
+{"Time":"2026-11-05T10:00:00.1Z","Action":"start","Package":"example.com/calc"}
+{"Time":"2026-11-05T10:00:00.2Z","Action":"run","Package":"example.com/calc","Test":"TestAdd"}
+{"Time":"2026-11-05T10:00:00.2Z","Action":"output","Package":"example.com/calc","Test":"TestAdd","Output":"=== RUN   TestAdd\n"}
+{"Time":"2026-11-05T10:00:00.2Z","Action":"output","Package":"example.com/calc","Test":"TestAdd","Output":"--- PASS: TestAdd (0.00s)\n"}
+{"Time":"2026-11-05T10:00:00.2Z","Action":"pass","Package":"example.com/calc","Test":"TestAdd","Elapsed":0}
+{"Time":"2026-11-05T10:00:00.3Z","Action":"run","Package":"example.com/calc","Test":"TestSub"}
+{"Time":"2026-11-05T10:00:00.3Z","Action":"output","Package":"example.com/calc","Test":"TestSub","Output":"=== RUN   TestSub\n"}
+{"Time":"2026-11-05T10:00:00.3Z","Action":"output","Package":"example.com/calc","Test":"TestSub","Output":"    calc_test.go:12: Sub(5, 3) = 8, want 2\n"}
+{"Time":"2026-11-05T10:00:00.3Z","Action":"output","Package":"example.com/calc","Test":"TestSub","Output":"--- FAIL: TestSub (0.00s)\n"}
+{"Time":"2026-11-05T10:00:00.3Z","Action":"fail","Package":"example.com/calc","Test":"TestSub","Elapsed":0}
+{"Time":"2026-11-05T10:00:00.4Z","Action":"output","Package":"example.com/calc","Output":"FAIL\n"}
+{"Time":"2026-11-05T10:00:00.4Z","Action":"fail","Package":"example.com/calc","Elapsed":0.004}

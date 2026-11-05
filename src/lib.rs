@@ -6,6 +6,7 @@ pub mod engine;
 pub mod extract;
 pub mod fswatch;
 pub mod syntax;
+pub mod test_output;
 pub mod git;
 pub mod hash;
 pub mod history;
