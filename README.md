@@ -68,7 +68,7 @@ chisel run -- pytest tests/                # run tests and record pass/fail
 
 1. **Scan.** `git ls-files` lists code. A built-in extractor (no tree-sitter) finds functions, classes, and tests in Python, JS/TS, Go, Rust, Java, Kotlin, C#, C/C++, Swift, PHP, Ruby, and Dart, and recognises pytest, Jest, Playwright, Go test, Rust `#[test]`, JUnit, xUnit, XCTest, PHPUnit, RSpec, gtest, and Dart test.
 2. **Link.** Each test's imports and calls become edges to the code units they reach. Imports between code files form a second graph that `diff_impact` walks for indirect hits.
-3. **Mine git.** `git log`, `git blame`, and per-function `git log -L` give churn, co-change coupling, and authorship.
+3. **Mine git.** One `git log --numstat` and one `git log -p` stream give churn, co-change coupling, per-function history and authorship. Chisel replays git's own `-L` and blame rules over the stream instead of starting git once per function and per file.
 4. **Store.** Everything lands in one JSON snapshot, `.chisel/store`, written atomically under a cross-process lock. `update` re-reads only changed files and new commits.
 5. **Answer.** Queries read the snapshot, so most calls return in milliseconds; `diff_impact` also asks git what changed.
 
