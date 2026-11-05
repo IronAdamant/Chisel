@@ -311,7 +311,12 @@ impl Engine {
         }
         extract::clear_extractor_warnings();
         let git = self.git.fork();
-        let files = self.scan_code_files(&git);
+        // The file list and the new commits are independent git calls; run them together.
+        let since = store::meta_get(&self.store.doc, "last_commit_date");
+        let (files, logged) = thread::scope(|s| {
+            let log = s.spawn(|| git.parse_log_since(since.as_deref()).unwrap_or_default());
+            (self.scan_code_files(&git), log.join().unwrap_or_default())
+        });
         let mut before: HashMap<String, (String, i64, i64, f64)> = HashMap::new();
         for row in self.store.rows("file_hashes") {
             let Some(path) = row.get("file_path").and_then(|v| v.as_str()) else { continue };
@@ -338,9 +343,8 @@ impl Engine {
         }
         let file_set: HashSet<&str> = files.iter().map(|s| s.as_str()).collect();
         let removed: Vec<String> = before.keys().filter(|path| !file_set.contains(path.as_str())).cloned().collect();
-        let since = store::meta_get(&self.store.doc, "last_commit_date");
         let known: BTreeSet<String> = self.store.rows("commits").iter().filter_map(|c| c.get("hash").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
-        let new_commits: Vec<git::Commit> = git.parse_log_since(since.as_deref()).unwrap_or_default().into_iter().filter(|c| !known.contains(&c.hash)).collect();
+        let new_commits: Vec<git::Commit> = logged.into_iter().filter(|c| !known.contains(&c.hash)).collect();
         let commit_touch: BTreeSet<String> = new_commits.iter().flat_map(|c| c.files.iter().map(|f| f.path.clone())).collect();
         if changed.is_empty() && new_commits.is_empty() && removed.is_empty() {
             let cleaned = self.cleanup_orphaned_results();

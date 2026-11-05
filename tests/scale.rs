@@ -212,7 +212,7 @@ fn diff_impact_reads_all_changed_functions_from_one_diff_beside_the_file_list() 
     let (now, max, seen) = (Arc::clone(&inflight), Arc::clone(&peak), Arc::clone(&log));
     engine.set_git_runner(Arc::new(move |repo, args| {
         seen.lock().unwrap().push(args.join(" "));
-        let tracked = args.contains(&"-U0") || args.contains(&"--name-only");
+        let tracked = ["-U0", "--name-only", "--abbrev-ref", "--others"].iter().any(|flag| args.contains(flag));
         if tracked {
             max.fetch_max(now.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(40));
@@ -229,7 +229,8 @@ fn diff_impact_reads_all_changed_functions_from_one_diff_beside_the_file_list() 
     assert_eq!(ids, expected);
     let diffs = log.lock().unwrap().iter().filter(|a| a.contains("-U0")).count();
     assert_eq!(diffs, 1, "one diff for all changed files");
-    assert!(peak.load(Ordering::SeqCst) > 1, "the file list and the diff ran one after the other");
+    // On main the branch lookup, untracked listing, file list and diff all run in one round.
+    assert!(peak.load(Ordering::SeqCst) >= 3, "diff_impact ran its git calls in more than one round");
 }
 
 #[test]
@@ -2100,4 +2101,35 @@ fn history_stream_matches_per_function_git_and_spawns_neither() {
     assert!(per_function.is_empty(), "{per_function:?}");
     assert_eq!(blames.len(), 1, "{blames:?}");
     assert!(blames[0].contains("src/c.py"), "{blames:?}");
+}
+
+#[test]
+fn update_lists_files_and_reads_new_commits_together() {
+    let dir = scratch("updpar");
+    fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    fs::write(dir.join("a.py"), "def a():\n    return 2\n").unwrap();
+    commit_all(&dir, "two");
+    let inflight = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (now, max) = (Arc::clone(&inflight), Arc::clone(&peak));
+    engine.set_git_runner(Arc::new(move |repo, args| {
+        let tracked = args.contains(&"ls-files") || args.iter().any(|a| a.starts_with("--since="));
+        if tracked {
+            max.fetch_max(now.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        let out = Command::new("git").args(args).current_dir(repo).output();
+        if tracked {
+            now.fetch_sub(1, Ordering::SeqCst);
+        }
+        out
+    }));
+    let update = engine.update().unwrap();
+    assert_eq!(update.get("new_commits").and_then(|v| v.as_i64()), Some(1), "{update:?}");
+    assert_eq!(peak.load(Ordering::SeqCst), 2, "file listing and git log ran one after the other");
 }

@@ -326,10 +326,17 @@ impl Engine {
         }
         self.store.reload()?;
         let git = self.git.fork();
-        // Each git spawn is a process start; on Windows that is ~100 ms. Overlap the independent ones.
-        let (branch, untracked) = std::thread::scope(|s| {
+        // Each git spawn is a process start; on Windows that is ~100 ms. Overlap the independent
+        // ones, and diff against the likely ref (HEAD, or the requested one) before the branch is
+        // known. On main/master that finishes diff_impact's git work in one round.
+        let likely_ref = self.diff_ref_override.clone().unwrap_or_else(|| "HEAD".to_string());
+        let (branch, untracked, likely) = std::thread::scope(|s| {
             let untracked = s.spawn(|| git.untracked());
-            (git.current_branch(), untracked.join().unwrap_or_else(|_| Ok(Vec::new())))
+            let files = s.spawn(|| git.changed_files(&likely_ref));
+            let functions = s.spawn(|| git.changed_functions_all(&likely_ref));
+            let branch = git.current_branch();
+            let likely = (files.join().unwrap_or_else(|_| Ok(Vec::new())), functions.join().unwrap_or_else(|_| Ok(BTreeMap::new())));
+            (branch, untracked.join().unwrap_or_else(|_| Ok(Vec::new())), likely)
         });
         let branch = match branch {
             Ok(b) => b,
@@ -350,10 +357,14 @@ impl Engine {
             "HEAD".into()
         };
         // The changed-file list and the changed functions come from two git calls run together.
-        let (diff_files, all_functions) = std::thread::scope(|s| {
-            let functions = s.spawn(|| git.changed_functions_all(&diff_ref));
-            (git.changed_files(&diff_ref), functions.join().unwrap_or_else(|_| Ok(BTreeMap::new())))
-        });
+        let (diff_files, all_functions) = if diff_ref == likely_ref {
+            likely
+        } else {
+            std::thread::scope(|s| {
+                let functions = s.spawn(|| git.changed_functions_all(&diff_ref));
+                (git.changed_files(&diff_ref), functions.join().unwrap_or_else(|_| Ok(BTreeMap::new())))
+            })
+        };
         let diff_files = match diff_files {
             Ok(v) => v,
             Err(e) => return Ok(git::git_tool_error(&self.project_dir.to_string_lossy(), &e.0)),

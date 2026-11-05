@@ -141,11 +141,17 @@ pub(crate) fn replay(git: &GitAnalyzer, project: &Path, blame_files: &[String], 
     }
     let replayable = |f: &str| in_head.contains(f) && plain.contains(f) && !added_from_outside.contains(f);
 
-    // HEAD content: the worktree when it matches HEAD, else the committed blob.
+    // HEAD content: the worktree when it matches HEAD, else the committed blob. Blame of a dirty
+    // or unreplayable file needs real `git blame` (worktree lines); those spawns run meanwhile.
     let wanted: Vec<String> = scope.iter().filter(|f| replayable(f)).map(|f| f.to_string()).collect();
-    let committed: Vec<Option<Vec<String>>> = pool_map(&wanted, |f| {
-        let text = if dirty.contains(f) { git.head_blob(f).ok()? } else { String::from_utf8_lossy(&std::fs::read(project.join(f)).ok()?).into_owned() };
-        Some(history::split_lines(&text))
+    let early_blames: Vec<usize> = (0..blame_files.len()).filter(|&i| in_head.contains(&blame_files[i]) && (dirty.contains(&blame_files[i]) || !replayable(&blame_files[i]))).collect();
+    let (committed, early_blocks): (Vec<Option<Vec<String>>>, Vec<Vec<BlameBlock>>) = std::thread::scope(|s| {
+        let blames = s.spawn(|| pool_map(&early_blames, |&i| git.blame(&blame_files[i]).unwrap_or_default()));
+        let committed = pool_map(&wanted, |f| {
+            let text = if dirty.contains(f) { git.head_blob(f).ok()? } else { String::from_utf8_lossy(&std::fs::read(project.join(f)).ok()?).into_owned() };
+            Some(history::split_lines(&text))
+        });
+        (committed, blames.join().unwrap_or_default())
     });
     let content: HashMap<&str, Vec<String>> = wanted.iter().zip(committed).filter_map(|(f, c)| Some((f.as_str(), c?))).collect();
 
@@ -199,6 +205,9 @@ pub(crate) fn replay(git: &GitAnalyzer, project: &Path, blame_files: &[String], 
             blame_history.blame(f, lines.len())
         })
         .collect();
+    for (&i, blocks) in early_blames.iter().zip(early_blocks) {
+        blames[i] = Some(blocks);
+    }
 
     let spawn_tasks: Vec<usize> = (0..tasks.len()).filter(|&i| logs[i].is_none()).collect();
     let spawn_blames: Vec<usize> = (0..blame_files.len()).filter(|&i| blames[i].is_none()).collect();
