@@ -326,7 +326,12 @@ impl Engine {
         }
         self.store.reload()?;
         let git = self.git.fork();
-        let branch = match git.current_branch() {
+        // Each git spawn is a process start; on Windows that is ~100 ms. Overlap the independent ones.
+        let (branch, untracked) = std::thread::scope(|s| {
+            let untracked = s.spawn(|| git.untracked());
+            (git.current_branch(), untracked.join().unwrap_or_else(|_| Ok(Vec::new())))
+        });
+        let branch = match branch {
             Ok(b) => b,
             Err(e) => return Ok(git::git_tool_error(&self.project_dir.to_string_lossy(), &e.0)),
         };
@@ -348,7 +353,7 @@ impl Engine {
             Ok(v) => v,
             Err(e) => return Ok(git::git_tool_error(&self.project_dir.to_string_lossy(), &e.0)),
         };
-        let untracked_code: BTreeSet<String> = git.untracked().unwrap_or_default().into_iter().filter(|p| extract::path_has_code_extension(p)).collect();
+        let untracked_code: BTreeSet<String> = untracked.unwrap_or_default().into_iter().filter(|p| extract::path_has_code_extension(p)).collect();
         let mut changed: Vec<String> = diff_files.into_iter().filter(|p| extract::path_has_code_extension(p)).chain(untracked_code.iter().cloned()).collect();
         changed.sort();
         changed.dedup();
@@ -372,8 +377,9 @@ impl Engine {
             ]));
         }
         let mut functions: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for f in &changed {
-            if let Ok(names) = git.changed_functions(f, &diff_ref) {
+        let per_file = pool_map(&changed, |f| git.changed_functions(f, &diff_ref));
+        for (f, names) in changed.iter().zip(per_file) {
+            if let Ok(names) = names {
                 if !names.is_empty() {
                     functions.insert(f.clone(), names);
                 }

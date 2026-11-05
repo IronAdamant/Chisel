@@ -191,6 +191,44 @@ fn diff_impact_on_an_untested_helper_names_the_tests_of_its_file() {
 }
 
 #[test]
+fn diff_impact_runs_per_file_git_diffs_concurrently() {
+    let dir = scratch("diffpool");
+    fs::create_dir_all(dir.join("tests")).unwrap();
+    for i in 0..4 {
+        fs::write(dir.join(format!("m{i}.py")), format!("def f{i}():\n    return {i}\n")).unwrap();
+        fs::write(dir.join(format!("tests/test_m{i}.py")), format!("from m{i} import f{i}\n\n\ndef test_f{i}():\n    assert f{i}() == {i}\n")).unwrap();
+    }
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    for i in 0..4 {
+        fs::write(dir.join(format!("m{i}.py")), format!("def f{i}():\n    return {i} + 0\n")).unwrap();
+    }
+    let inflight = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (now, max) = (Arc::clone(&inflight), Arc::clone(&peak));
+    engine.set_git_runner(Arc::new(move |repo, args| {
+        let tracked = args.contains(&"-U0");
+        if tracked {
+            max.fetch_max(now.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        let out = Command::new("git").args(args).current_dir(repo).output();
+        if tracked {
+            now.fetch_sub(1, Ordering::SeqCst);
+        }
+        out
+    }));
+    let mut ids = diff_test_ids(&mut engine);
+    ids.sort();
+    let expected: Vec<String> = (0..4).map(|i| format!("tests/test_m{i}.py:test_f{i}")).collect();
+    assert_eq!(ids, expected);
+    assert!(peak.load(Ordering::SeqCst) > 1, "per-file git diffs ran one at a time");
+}
+
+#[test]
 fn typescript_test_file_produces_an_edge() {
     let dir = scratch("ts");
     fs::create_dir_all(dir.join("src")).unwrap();
