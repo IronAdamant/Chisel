@@ -210,3 +210,41 @@ fn the_hook_is_silent_fast_and_always_exits_zero() {
     assert!(skip < Duration::from_millis(20), "non-test command took {skip:?}");
     assert!(pass < Duration::from_millis(budget), "passing run took {pass:?}");
 }
+
+/// Child half of `chisel_run_writes_results_and_issues_in_one_flush`: a fake pytest.
+#[test]
+fn helper_fake_pytest() {
+    if std::env::var_os("CHISEL_FAKE_PYTEST").is_none() {
+        return;
+    }
+    println!("tests/test_calc.py::test_add PASSED");
+    println!("tests/test_calc.py::test_sub FAILED");
+    println!("FAILED tests/test_calc.py::test_sub - AssertionError: assert 8 == 2");
+    std::process::exit(1);
+}
+
+fn generation(dir: &Path) -> i64 {
+    let doc = json::parse(&std::fs::read_to_string(dir.join(".chisel/store")).unwrap()).unwrap();
+    doc.get("generation").and_then(|v| v.as_i64()).unwrap()
+}
+
+#[test]
+fn chisel_run_writes_results_and_issues_in_one_flush() {
+    let dir = repo(&[("calc.py", CALC), ("fmtx.py", FMTX), ("tests/test_calc.py", TESTS)]);
+    let before = generation(&dir);
+    let me = std::env::current_exe().unwrap();
+    let me = me.to_string_lossy().into_owned();
+    let out = Command::new(env!("CARGO_BIN_EXE_chisel"))
+        .arg("--project-dir")
+        .arg(&dir)
+        .args(["run", "--", &me, "helper_fake_pytest", "--exact", "--nocapture", "--test-threads=1"])
+        .env("CHISEL_FAKE_PYTEST", "1")
+        .env_remove("CHISEL_PROJECT_DIR")
+        .env_remove("CHISEL_STORAGE_DIR")
+        .output()
+        .unwrap();
+    let (code, out) = (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned());
+    assert_eq!(code, 1, "the test command's exit code is forwarded: {out}");
+    assert_eq!(generation(&dir), before + 1, "one snapshot flush for results and issues");
+    assert!(out.contains("[chisel] Recorded 2 test result(s)") && out.contains("new I1 tests/test_calc.py:test_sub"), "{out}");
+}
