@@ -212,9 +212,12 @@ impl Value {
     }
 }
 
+/// The largest document `parse` accepts, and the largest snapshot the store writes.
+pub const MAX_INPUT: usize = 1 << 30;
+
 pub fn parse(input: &str) -> Result<Value, Error> {
-    if input.len() > 32 * 1024 * 1024 {
-        return Err(Error { message: "json exceeds 32MiB".into() });
+    if input.len() > MAX_INPUT {
+        return Err(Error { message: format!("json is {} MiB, over the {} MiB limit", input.len() >> 20, MAX_INPUT >> 20) });
     }
     let mut p = Parser {
         buf: Arc::from(input),

@@ -209,8 +209,10 @@ fn replays_line_log_and_blame_like_git() {
 }
 
 fn snapshot_rows(store: &Path, key: &str) -> Vec<String> {
-    let doc = chisel::json::parse(&std::fs::read_to_string(store.join("store")).unwrap()).unwrap();
-    let mut rows: Vec<String> = doc.get(key).and_then(|v| v.as_array()).unwrap_or(&[]).iter().map(|r| chisel::json::to_string(r).unwrap()).collect();
+    // Through the store: some tables are compact on disk.
+    let snap = chisel::store::Store::open(store).unwrap();
+    let mut rows: Vec<String> = snap.rows(key).iter().map(|r| chisel::json::to_string(r).unwrap()).collect();
+    assert!(!rows.is_empty(), "no {key} rows");
     rows.sort();
     rows
 }
