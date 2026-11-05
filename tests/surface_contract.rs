@@ -68,3 +68,23 @@ fn no_data_suggests_analyze() {
     let text = chisel::json::to_string(&chisel::json::Value::Array(steps)).unwrap();
     assert!(text.contains("analyze"), "{text}");
 }
+
+#[test]
+fn tools_list_is_short_and_every_description_is_distinct() {
+    let list = chisel::schemas::tool_list_json();
+    let text = chisel::json::to_string(&list).unwrap();
+    assert!(text.len() < 12_000, "tools/list is {} bytes", text.len());
+    let tools = list.get("tools").and_then(|v| v.as_array()).unwrap();
+    let mut seen = std::collections::BTreeSet::new();
+    for tool in tools {
+        let name = tool.get("name").and_then(|v| v.as_str()).unwrap();
+        let desc = tool.get("description").and_then(|v| v.as_str()).unwrap();
+        assert!(desc.len() <= 260, "{name}: {} chars", desc.len());
+        assert!(seen.insert(desc.to_string()), "{name} repeats another description");
+        assert!(!desc.contains("Zero crate dependencies"), "{name}: boilerplate");
+        let props = tool.get("inputSchema").and_then(|v| v.get("properties")).and_then(|v| v.as_object()).unwrap();
+        for (arg, spec) in props {
+            assert!(spec.get("description").and_then(|v| v.as_str()).is_some_and(|d| !d.is_empty()), "{name}.{arg} has no description");
+        }
+    }
+}
