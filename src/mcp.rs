@@ -6,10 +6,19 @@ use crate::engine::Engine;
 use crate::json::{self, Value};
 use crate::next_steps::compute_next_steps;
 use crate::schemas::tool_list_json;
+use crate::tool_groups::ToolFilter;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
+/// A call to a tool hidden by CHISEL_TOOLS / CHISEL_DISABLE, with its one-line explanation.
+struct DisabledTool(String);
+
 pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
+    // A typo in CHISEL_TOOLS / CHISEL_DISABLE stops the server, so the client shows it as failed.
+    let groups = ToolFilter::from_env().unwrap_or_else(|line| {
+        eprintln!("{line}");
+        std::process::exit(2);
+    });
     let mut engine = Engine::open(project, storage)?;
     let stdin = io::stdin();
     let mut input = stdin.lock();
@@ -64,18 +73,33 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
                     ("name".into(), Value::String("chisel".into())),
                     ("version".into(), Value::String(env!("CARGO_PKG_VERSION").into())),
                 ])),
-                ("instructions".into(), Value::String(
-                    "Storage is .chisel/store. Branch on status. Call analyze when status is no_data. Call diff_impact after edits. This process is stdio MCP (chisel serve-mcp).".into()
-                )),
+                ("instructions".into(), Value::String({
+                    let base = "Storage is .chisel/store. Branch on status. Call analyze when status is no_data. Call diff_impact after edits. This process is stdio MCP (chisel serve-mcp).";
+                    if groups.is_active() { format!("{base} {}", groups.summary()) } else { base.to_string() }
+                })),
             ]),
-            "tools/list" => tool_list_json(),
+            "tools/list" => groups.filter_list(tool_list_json()),
             "tools/call" => {
                 let params = msg.get("params");
                 let name = params.and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or("");
                 let empty = Value::object(vec![]);
                 let args = params.and_then(|p| p.get("arguments")).unwrap_or(&empty);
-                match engine.dispatch(name, args) {
-                    Ok(result) => {
+                let outcome = match groups.disabled_message(name) {
+                    Some(line) => Err(DisabledTool(line)),
+                    None => Ok(engine.dispatch(name, args)),
+                };
+                match outcome {
+                    Err(DisabledTool(line)) => Value::object(vec![
+                        ("content".into(), Value::Array(vec![Value::object(vec![
+                            ("type".into(), Value::String("text".into())),
+                            ("text".into(), Value::String(line)),
+                        ])])),
+                        ("isError".into(), Value::Bool(true)),
+                    ]),
+                    Ok(Ok(mut result)) => {
+                        if name == "stats" && groups.is_active() {
+                            result.insert("tool_groups", Value::String(groups.summary()));
+                        }
                         let mut steps = compute_next_steps(name, &result);
                         if name == "suggest_tests" {
                             let file = args.get("file_path").and_then(|v| v.as_str());
@@ -95,7 +119,7 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
                             ])])),
                         ])
                     }
-                    Err(e) => Value::object(vec![
+                    Ok(Err(e)) => Value::object(vec![
                         ("content".into(), Value::Array(vec![Value::object(vec![
                             ("type".into(), Value::String("text".into())),
                             ("text".into(), Value::String(json::to_string(&Value::object(vec![

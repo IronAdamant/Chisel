@@ -17,6 +17,7 @@ pub mod mcp;
 pub mod next_steps;
 pub mod run_cmd;
 pub mod schemas;
+pub mod tool_groups;
 pub mod sqlite_import;
 pub mod store;
 
