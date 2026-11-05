@@ -62,8 +62,24 @@ fn capture_inner(args: &Args, input: String) -> Option<String> {
     if parsed.outcomes.is_empty() && parsed.passed_files.is_empty() && parsed.passed_packages.is_empty() {
         return None;
     }
-    let mut engine = Engine::open(&project, Some(&store)).ok()?;
-    engine.capture(&parsed, &command, true).ok()?.line()
+    // A broken snapshot must not make the hook silently inert: say so in one line.
+    let mut engine = match Engine::open(&project, Some(&store)) {
+        Ok(engine) => engine,
+        Err(e) => return Some(unreadable(&e)),
+    };
+    match engine.capture(&parsed, &command, true) {
+        Ok(summary) => summary.line(),
+        Err(e) => Some(format!("chisel: test results not recorded ({}); run `chisel analyze` if this repeats", short_reason(&e))),
+    }
+}
+
+fn short_reason(e: &str) -> String {
+    e.lines().next().unwrap_or(e).chars().take(120).collect()
+}
+
+/// The one line for a snapshot that exists but cannot be loaded.
+fn unreadable(e: &str) -> String {
+    format!("chisel: snapshot unreadable ({}); run `chisel analyze` to rebuild it", short_reason(e))
 }
 
 /// `chisel capture`. Always 0.
@@ -102,7 +118,10 @@ pub fn brief(args: &Args) -> i32 {
         if !store.join("store").is_file() {
             return Vec::new();
         }
-        Engine::open(&args.project_dir, Some(&store)).map(|mut e| e.issues_brief()).unwrap_or_default()
+        match Engine::open(&args.project_dir, Some(&store)) {
+            Ok(mut engine) => engine.issues_brief(),
+            Err(e) => vec![unreadable(&e)],
+        }
     })
     .unwrap_or_default();
     for line in lines {

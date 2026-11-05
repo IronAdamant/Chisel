@@ -275,7 +275,7 @@ impl Engine {
                             del += 1;
                         }
                     }
-                    let changed = git::parse_diff_functions(section);
+                    let changed = self.changed_units(file, section);
                     // Functions the test names (test_sub -> sub) come first: file-level imports put
                     // every imported function on a test's edges.
                     let test_name = test_id.rsplit(':').next().unwrap_or(test_id).to_ascii_lowercase();
@@ -283,12 +283,15 @@ impl Engine {
                     hit.sort_by_key(|n| !test_name.contains(&n.to_ascii_lowercase()));
                     let uncommitted = dirty.contains(file.as_str());
                     let score = weight * (1.0 + ((add + del) as f64).ln_1p()) * if uncommitted { 1.5 } else { 1.0 } * (1.0 + 0.5 * churn_score.min(2.0)) * (1.0 + hit.len() as f64);
-                    let what = if hit.is_empty() {
-                        format!("the test calls {}", called_list.join(", "))
-                    } else {
+                    let what = if !hit.is_empty() {
                         format!("changed {}, which the test calls", hit.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
+                    } else if !changed.is_empty() {
+                        format!("changed {} (the test calls {}, not it directly)", changed.iter().take(3).map(|s| s.as_str()).collect::<Vec<_>>().join(", "), called_list.join(", "))
+                    } else {
+                        format!("changed outside any function; the test calls {}", called_list.join(", "))
                     };
-                    let unit = hit.first().map(|s| s.to_string()).or_else(|| called_list.first().map(|s| s.to_string()));
+                    // The unit is what changed: a called function first, else the edited one.
+                    let unit = hit.first().map(|s| s.to_string()).or_else(|| changed.first().cloned());
                     (score, unit, format!("+{add} -{del} {since}{}; {what}", if uncommitted { ", uncommitted" } else { "" }))
                 }
                 None => {
@@ -308,8 +311,56 @@ impl Engine {
         rows.into_iter().take(SUSPECTS).map(|(_, v)| v).collect()
     }
 
+    /// Functions a diff section changed: each hunk maps to the innermost code unit whose lines
+    /// cover it (the snapshot's ranges), then names on changed definition lines. git's hunk
+    /// header names the line *before* a hunk, which inside an `impl` block is not the method.
+    fn changed_units(&self, file: &str, section: &str) -> Vec<String> {
+        let units: Vec<(usize, usize, &str)> = self
+            .store
+            .units_by_file(file)
+            .into_iter()
+            .filter(|u| !is_test_unit_row(u))
+            .filter(|u| matches!(u.get("unit_type").and_then(|v| v.as_str()), Some("function" | "async_function" | "method")))
+            .filter_map(|u| Some((u.get("line_start")?.as_i64()? as usize, u.get("line_end")?.as_i64()? as usize, u.get("name")?.as_str()?)))
+            .collect();
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |name: &str| {
+            if !out.iter().any(|n| n == name) {
+                out.push(name.to_string());
+            }
+        };
+        for line in section.lines() {
+            let Some(rest) = line.strip_prefix("@@ -") else { continue };
+            let mut sides = rest.split(' ');
+            let span = |t: Option<&str>| -> Option<(usize, usize)> {
+                let t = t?.trim_start_matches(['-', '+']);
+                let (start, len) = match t.split_once(',') {
+                    Some((a, b)) => (a.parse::<usize>().ok()?, b.parse::<usize>().ok()?),
+                    None => (t.parse::<usize>().ok()?, 1),
+                };
+                Some((start.max(1), (start + len.max(1) - 1).max(start.max(1))))
+            };
+            let old = span(sides.next());
+            let new = span(sides.next());
+            // The snapshot may hold the file before or after the edit: try both sides.
+            for (a, b) in [new, old].into_iter().flatten() {
+                if let Some(&(_, _, name)) = units.iter().filter(|(s, e, _)| *s <= b && a <= *e).min_by_key(|(s, e, _)| e - s) {
+                    push(name);
+                    break;
+                }
+            }
+        }
+        for name in git::parse_diff_functions(section) {
+            if units.iter().any(|(_, _, n)| *n == name) {
+                push(&name);
+            }
+        }
+        out
+    }
+
     /// Files changed between the failing commit and the working tree, for a closed issue.
-    fn fix_summary(&self, failing_commit: &str, head: &str) -> (String, Vec<Value>) {
+    /// `dirty_at_failure` is the uncommitted diff recorded when the issue was opened.
+    fn fix_summary(&self, failing_commit: &str, head: &str, dirty_at_failure: &[Value]) -> (String, Vec<Value>) {
         if failing_commit.is_empty() {
             return (if head.is_empty() { "unknown".into() } else { short_sha(head).to_string() }, Vec::new());
         }
@@ -329,10 +380,14 @@ impl Engine {
         files.sort_by(|x, y| y.0.cmp(&x.0));
         let commit = if !head.is_empty() && head != failing_commit {
             short_sha(head).to_string()
-        } else if files.is_empty() {
-            "none (passed with no code change; flaky?)".to_string()
-        } else {
+        } else if !files.is_empty() {
             "uncommitted".to_string()
+        } else if !dirty_at_failure.is_empty() {
+            // Back to the failing commit's exact content: the uncommitted edit that broke the
+            // test was undone.
+            return ("reverted uncommitted change".to_string(), dirty_at_failure.to_vec());
+        } else {
+            "none (passed with no code change; flaky?)".to_string()
         };
         (commit, files.into_iter().take(8).map(|(_, v)| v).collect())
     }
@@ -400,6 +455,12 @@ impl Engine {
             .map(|o| o.iter().map(|(k, v)| (k.to_string(), s(v, "commit"))).collect())
             .unwrap_or_default();
         let mut fresh: Vec<(String, &Outcome, String, Vec<Value>)> = Vec::new();
+        let new_failures = failing.iter().any(|(id, o)| {
+            let sig = signature(id, &o.message);
+            !issues.iter().any(|i| s(i, "sig") == sig)
+        });
+        let git = self.git.fork();
+        let dirty_job = new_failures.then(|| std::thread::spawn(move || git.run_args(&["-c".into(), "core.quotePath=false".into(), "diff".into(), "--numstat".into(), "HEAD".into(), "--".into()]).unwrap_or_default()));
         for (id, o) in &failing {
             let sig = signature(id, &o.message);
             if issues.iter().any(|i| s(i, "sig") == sig) {
@@ -408,12 +469,24 @@ impl Engine {
             let base = passes.get(id).filter(|c| !c.is_empty()).map(|c| c.as_str());
             fresh.push((id.clone(), o, sig, self.suspects(id, base, now)));
         }
+        let dirty_now: Vec<Value> = dirty_job
+            .and_then(|h| h.join().ok())
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                let mut p = l.split('\t');
+                let (a, d, path) = (p.next()?, p.next()?, p.next()?);
+                (!path.starts_with(".chisel/")).then(|| Value::String(format!("{path} +{a} -{d}")))
+            })
+            .take(8)
+            .collect();
         let closing: Vec<(usize, String, Vec<Value>)> = issues
             .iter()
             .enumerate()
             .filter(|(_, i)| s(i, "status") == "open" && passing.contains(&s(i, "test")))
             .map(|(k, i)| {
-                let (commit, files) = self.fix_summary(&s(i, "last_commit"), &head);
+                let dirty = i.get("dirty_at_failure").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+                let (commit, files) = self.fix_summary(&s(i, "last_commit"), &head, &dirty);
                 (k, commit, files)
             })
             .collect();
@@ -467,6 +540,7 @@ impl Engine {
                 ("last_commit".into(), Value::String(head.clone())),
                 ("suspects".into(), Value::Array(suspects)),
                 ("excerpt".into(), Value::String(o.excerpt.clone())),
+                ("dirty_at_failure".into(), Value::Array(dirty_now.clone())),
             ]);
             issues.push(Value::object(row));
         }
