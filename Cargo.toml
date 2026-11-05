@@ -18,3 +18,7 @@ path = "src/bin/chisel-mcp.rs"
 [dependencies]
 
 [dev-dependencies]
+
+[[example]]
+name = "benchmark_parity"
+test = true

@@ -35,6 +35,14 @@ jobs:
           PY
       - name: Test
         run: cargo test -- --test-threads=8
+      - name: Benchmark harness smoke run
+        run: |
+          cargo build --release --bin chisel --example benchmark_parity
+          target/release/examples/benchmark_parity \
+            --rust target/release/chisel --python target/release/chisel \
+            --small "$RUNNER_TEMP/bench-small" --large "$RUNNER_TEMP/bench-small" --large-file src/calc.py \
+            --out "$RUNNER_TEMP/bench.md"
+          grep -qx "None." "$RUNNER_TEMP/bench.md"
 
   rust-linux-musl:
     runs-on: ubuntu-latest

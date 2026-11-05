@@ -13,32 +13,56 @@ pub struct LegacyResult {
     pub recorded_at: f64,
 }
 
-pub fn read_test_results(path: &Path) -> Result<Vec<LegacyResult>, String> {
-    let mut bytes = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    if bytes.len() < 100 || &bytes[..16] != b"SQLite format 3\0" {
-        return Err("not a SQLite database".into());
-    }
-    apply_wal(path, &mut bytes);
-    let page_size = page_size_of(&bytes)?;
-    let reserved = bytes[20] as usize;
-    let master = table_rows(&bytes, page_size, reserved, 1)?;
-    let mut root = None;
-    let mut columns = Vec::new();
-    for row in master {
-        let typ = row.first().and_then(Cell::as_text).unwrap_or("");
-        let name = row.get(1).and_then(Cell::as_text).unwrap_or("");
-        if typ == "table" && name == "test_results" {
-            root = row.get(3).and_then(Cell::as_int);
-            if let Some(sql) = row.get(4).and_then(Cell::as_text) {
-                columns = column_names(sql);
-            }
-            break;
+struct Db {
+    bytes: Vec<u8>,
+    page_size: usize,
+    reserved: usize,
+}
+
+impl Db {
+    fn open(path: &Path) -> Result<Db, String> {
+        let mut bytes = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        if bytes.len() < 100 || &bytes[..16] != b"SQLite format 3\0" {
+            return Err("not a SQLite database".into());
         }
+        apply_wal(path, &mut bytes);
+        let page_size = page_size_of(&bytes)?;
+        let reserved = bytes[20] as usize;
+        Ok(Db { bytes, page_size, reserved })
     }
-    let root = root.ok_or_else(|| "test_results table not found".to_string())?;
-    if root < 1 {
-        return Err("test_results has no root page".into());
+
+    /// Root page and column names of `table`.
+    fn table(&self, table: &str) -> Result<(usize, Vec<String>), String> {
+        for row in table_rows(&self.bytes, self.page_size, self.reserved, 1)? {
+            let typ = row.first().and_then(Cell::as_text).unwrap_or("");
+            let name = row.get(1).and_then(Cell::as_text).unwrap_or("");
+            if typ == "table" && name == table {
+                let root = row.get(3).and_then(Cell::as_int).unwrap_or(0);
+                if root < 1 {
+                    return Err(format!("{table} has no root page"));
+                }
+                let columns = row.get(4).and_then(Cell::as_text).map(column_names).unwrap_or_default();
+                return Ok((root as usize, columns));
+            }
+        }
+        Err(format!("{table} table not found"))
     }
+
+    fn rows(&self, root: usize) -> Result<Vec<Vec<Cell>>, String> {
+        table_rows(&self.bytes, self.page_size, self.reserved, root)
+    }
+}
+
+/// Number of rows in `table` of a SQLite file, read without SQLite.
+pub fn table_row_count(path: &Path, table: &str) -> Result<usize, String> {
+    let db = Db::open(path)?;
+    let (root, _) = db.table(table)?;
+    Ok(db.rows(root)?.len())
+}
+
+pub fn read_test_results(path: &Path) -> Result<Vec<LegacyResult>, String> {
+    let db = Db::open(path)?;
+    let (root, columns) = db.table("test_results")?;
     let idx = |name: &str, fallback: usize| -> usize {
         columns.iter().position(|c| c == name).unwrap_or(fallback)
     };
@@ -47,7 +71,7 @@ pub fn read_test_results(path: &Path) -> Result<Vec<LegacyResult>, String> {
     let dur_i = idx("duration_ms", 2);
     let at_i = idx("recorded_at", 3);
     let mut out = Vec::new();
-    for row in table_rows(&bytes, page_size, reserved, root as usize)? {
+    for row in db.rows(root)? {
         let Some(test_id) = row.get(id_i).and_then(Cell::as_text) else { continue };
         if test_id.is_empty() {
             continue;
@@ -458,6 +482,13 @@ mod tests {
         let sub = rows.iter().find(|r| r.test_id.ends_with("test_sub")).unwrap();
         assert!(!sub.passed);
         assert!(sub.duration_ms.is_none());
+    }
+
+    #[test]
+    fn counts_rows_of_a_named_table() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy/chisel.sqlite");
+        assert_eq!(table_row_count(&path, "test_results"), Ok(3));
+        assert_eq!(table_row_count(&path, "test_units"), Err("test_units table not found".to_string()));
     }
 
     #[test]
