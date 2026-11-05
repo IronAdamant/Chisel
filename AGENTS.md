@@ -25,13 +25,33 @@ CLI agents pass `--json` and branch on `status`. Exit code is not enough.
 
 `no_data` and `stale_db` exit 0. `error` and `git_error` exit 1.
 
-MCP is `chisel serve-mcp` or the `chisel-mcp` binary. Stdio messages are newline-delimited JSON. Content-Length framing is still accepted and answered in the same framing. HTTP `chisel serve` answers `GET /health`, `GET /tools`, and `POST /call` only. There is no `/mcp` path. `suggest_tests` on a JS or TS file that calls `eval` or `new Function` adds a `warn_eval_used` next step.
+MCP is `chisel serve-mcp` or the `chisel-mcp` binary. `CHISEL_TOOLS` and `CHISEL_DISABLE` hide MCP tool groups (`core` always on; `risk`, `history`, `maintenance`, `locks`); a hidden tool's call returns `isError` naming the variable to change; an unknown name, or core in `CHISEL_DISABLE`, exits 2 at startup. See README "Tool groups". Stdio messages are newline-delimited JSON. Content-Length framing is still accepted and answered in the same framing. HTTP `chisel serve` answers `GET /health`, `GET /tools`, and `POST /call` only. There is no `/mcp` path. `suggest_tests` on a JS or TS file that calls `eval` or `new Function` adds a `warn_eval_used` next step.
 
 First call `analyze` when you see `no_data`. After edits, call `diff_impact`. Use `suggest_tests` with `file_path`. Use `triage` for a bounded risk pass. `impact` requires `files`. A missing required argument returns `status: "error"`, not an empty list.
 
 A refused `acquire_file_lock` returns the holder, its `purpose`, `ttl_remaining` and a `reason`. A failed `release_file_lock` or `refresh_file_lock` returns a `reason`. An unknown tool name returns the list of valid names.
 
 `start_job` returns `queued` and a real `job_id` before the work finishes. `job_status` reads that job. `cancel_job` is observed between files.
+
+## Choosing groups
+
+Agents pick Chisel's MCP tool groups per project with an `agent-tools` block in the project's root `AGENTS.md`. Add one line for Chisel; other tools read their own lines:
+
+````markdown
+```agent-tools
+chisel: disable locks, history
+```
+````
+
+| Group | What it is for | Turn it off when |
+|---|---|---|
+| `core` | analyze, update, diff_impact, impact, suggest_tests, record_result, stats | never (always on) |
+| `risk` | risk_map, test_gaps, triage, stale_tests: where to look and what to test next | you only need "which tests to run" |
+| `history` | churn, ownership, coupling, history, who_reviews | you read `git log`/`git blame` yourself, or another tool covers it |
+| `maintenance` | start_job, job_status, cancel_job, optimize_storage | analyze finishes well within your client's timeout |
+| `locks` | advisory file locks with a `purpose` note | a single agent works on the project, or CoordinationHub or Trammel manages claims |
+
+`chisel: tools risk` keeps only `core` and `risk`. Lists take group or tool names, separated by commas or spaces. Chisel re-reads the file on each request and sends `notifications/tools/list_changed` when the visible tools change, so no restart is needed. A bad name is ignored and reported as a warning in the `initialize` instructions and in `stats`. `CHISEL_TOOLS` / `CHISEL_DISABLE` in the client's `env` override the `tools` / `disable` lines respectively.
 
 ## Scale
 

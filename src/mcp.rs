@@ -6,11 +6,21 @@ use crate::engine::Engine;
 use crate::json::{self, Value};
 use crate::next_steps::compute_next_steps;
 use crate::schemas::tool_list_json;
+use crate::tool_groups::{Surface, ToolFilter};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
+/// A call to a hidden tool, with its one-line explanation.
+struct DisabledTool(String);
+
 pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
+    // A typo in CHISEL_TOOLS / CHISEL_DISABLE stops the server, so the client shows it as failed.
+    // Problems in the project's AGENTS.md block are warnings instead (see `tool_groups`).
     let mut engine = Engine::open(project, storage)?;
+    let mut surface = Surface::start(&engine.project_dir).unwrap_or_else(|line| {
+        eprintln!("{line}");
+        std::process::exit(2);
+    });
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let stdout = io::stdout();
@@ -54,28 +64,56 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
         {
             continue;
         }
+        // An agent may edit the agent-tools block mid-session. Tell the client before answering.
+        if id.is_some() && surface.refresh() {
+            let note = Value::object(vec![
+                ("jsonrpc".into(), Value::String("2.0".into())),
+                ("method".into(), Value::String("notifications/tools/list_changed".into())),
+            ]);
+            write_message(&mut output, &json::to_string(&note).unwrap_or_default(), newline).map_err(|e| e.to_string())?;
+        }
+        let groups: &ToolFilter = &surface.filter;
         let result = match method {
             "initialize" => Value::object(vec![
                 ("protocolVersion".into(), Value::String("2024-11-05".into())),
                 ("capabilities".into(), Value::object(vec![
-                    ("tools".into(), Value::object(vec![("listChanged".into(), Value::Bool(false))])),
+                    ("tools".into(), Value::object(vec![("listChanged".into(), Value::Bool(true))])),
                 ])),
                 ("serverInfo".into(), Value::object(vec![
                     ("name".into(), Value::String("chisel".into())),
                     ("version".into(), Value::String(env!("CARGO_PKG_VERSION").into())),
                 ])),
-                ("instructions".into(), Value::String(
-                    "Storage is .chisel/store. Branch on status. Call analyze when status is no_data. Call diff_impact after edits. This process is stdio MCP (chisel serve-mcp).".into()
-                )),
+                ("instructions".into(), Value::String({
+                    let base = "Storage is .chisel/store. Branch on status. Call analyze when status is no_data. Call diff_impact after edits. This process is stdio MCP (chisel serve-mcp).";
+                    let report = surface.report_lines();
+                    if report.is_empty() { base.to_string() } else { format!("{base}\n{}", report.join("\n")) }
+                })),
             ]),
-            "tools/list" => tool_list_json(),
+            "tools/list" => groups.filter_list(tool_list_json()),
             "tools/call" => {
                 let params = msg.get("params");
                 let name = params.and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or("");
                 let empty = Value::object(vec![]);
                 let args = params.and_then(|p| p.get("arguments")).unwrap_or(&empty);
-                match engine.dispatch(name, args) {
-                    Ok(result) => {
+                let outcome = match groups.disabled_message(name) {
+                    Some(line) => Err(DisabledTool(line)),
+                    None => Ok(engine.dispatch(name, args)),
+                };
+                match outcome {
+                    Err(DisabledTool(line)) => Value::object(vec![
+                        ("content".into(), Value::Array(vec![Value::object(vec![
+                            ("type".into(), Value::String("text".into())),
+                            ("text".into(), Value::String(line)),
+                        ])])),
+                        ("isError".into(), Value::Bool(true)),
+                    ]),
+                    Ok(Ok(mut result)) => {
+                        if name == "stats" && surface.configured() {
+                            result.insert("tool_groups", Value::String(groups.summary()));
+                            if !surface.file.warnings.is_empty() {
+                                result.insert("tool_groups_warnings", Value::Array(surface.file.warnings.iter().cloned().map(Value::String).collect()));
+                            }
+                        }
                         let mut steps = compute_next_steps(name, &result);
                         if name == "suggest_tests" {
                             let file = args.get("file_path").and_then(|v| v.as_str());
@@ -95,7 +133,7 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
                             ])])),
                         ])
                     }
-                    Err(e) => Value::object(vec![
+                    Ok(Err(e)) => Value::object(vec![
                         ("content".into(), Value::Array(vec![Value::object(vec![
                             ("type".into(), Value::String("text".into())),
                             ("text".into(), Value::String(json::to_string(&Value::object(vec![

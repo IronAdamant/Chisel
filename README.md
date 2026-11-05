@@ -64,6 +64,36 @@ chisel run -- pytest tests/                # run tests and record pass/fail
 | `record_result`, `stats`, `optimize_storage` | Feed results back, read counts, compact the snapshot. |
 | `acquire_file_lock` and five more lock tools | Advisory locks with a `purpose` note so parallel agents see who is editing what. |
 
+## Tool groups
+
+Every MCP tool belongs to one group. When Chisel runs next to other tools that already cover a feature, switch that group off so its schemas stop taking context. `CHISEL_TOOLS` lists what to keep (groups or tool names, `all` allowed); `CHISEL_DISABLE` lists what to hide and is applied after it. `core` is always on. Empty values count as unset; with neither set, nothing changes. The CLI is not affected.
+
+| Group | Tools | Overlaps with |
+|---|---|---|
+| `core` (always on) | `analyze`, `update`, `diff_impact`, `impact`, `suggest_tests`, `record_result`, `stats` | none |
+| `risk` | `risk_map`, `test_gaps`, `triage`, `stale_tests` | none |
+| `history` | `churn`, `ownership`, `coupling`, `history`, `who_reviews` | other suite tools' git history lookups |
+| `maintenance` | `start_job`, `job_status`, `cancel_job`, `optimize_storage` | none |
+| `locks` | `acquire_file_lock`, `release_file_lock`, `refresh_file_lock`, `check_file_lock`, `check_locks`, `list_file_locks` | Trammel step claims, CoordinationHub leases |
+
+```json
+"env": {"CHISEL_DISABLE": "locks,history"}
+```
+
+An unknown name, or `core` (or a core tool) in `CHISEL_DISABLE`, stops the server with exit code 2 and a one-line message listing the valid groups and tools. Calling a hidden tool returns an error that says which variable to change.
+
+### Choosing groups (for agents)
+
+Write the choice into the project's root `AGENTS.md`; Chisel re-reads it on each request and tells the client when its tool list changes:
+
+````markdown
+```agent-tools
+chisel: disable locks, history
+```
+````
+
+Turn off `locks` when one agent works on the project or CoordinationHub/Trammel manages claims, `history` when you read git history yourself, `risk` when you only need which tests to run, and `maintenance` when `analyze` is quick. Bad names become warnings in the `initialize` instructions, never errors. Env vars override the file key by key. See [AGENTS.md](AGENTS.md#choosing-groups).
+
 ## How it works
 
 1. **Scan.** `git ls-files` lists code. A built-in extractor (no tree-sitter) finds functions, classes, and tests in Python, JS/TS, Go, Rust, Java, Kotlin, C#, C/C++, Swift, PHP, Ruby, and Dart, and recognises pytest, Jest, Playwright, Go test, Rust `#[test]`, JUnit, xUnit, XCTest, PHPUnit, RSpec, gtest, and Dart test.

@@ -1,6 +1,6 @@
 [package]
 name = "chisel"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2021"
 description = "Test impact analysis and code intelligence for LLM agents"
 license = "MIT"
