@@ -112,6 +112,13 @@ impl Engine {
         if let Some(summary) = self.cached_analyze(&git, &files) {
             return Ok(summary);
         }
+        // The history streams need only the file list, so they run while units are extracted.
+        // Above 2000 files there is no function churn, and blame alone stays per file: reading a
+        // deep history in full would not be cheaper than that.
+        let prefetch = (self.history_stream && files.len() <= 2000).then(|| {
+            let (git, files) = (git.fork(), files.clone());
+            thread::spawn(move || history_churn::prefetch(&git, &files, true))
+        });
         let commits = git.parse_log().unwrap_or_default();
         let mut units_by_file: BTreeMap<String, Vec<CodeUnit>> = BTreeMap::new();
         let mut all_units = Vec::new();
@@ -200,17 +207,17 @@ impl Engine {
             let (count, authors, ins, del, last) = acc.map(|a| (a.count, a.authors.len() as i64, a.ins, a.del, a.last.clone())).unwrap_or((0, 0, 0, 0, String::new()));
             churn_rows.push(churn_row(rel, "", ChurnCounts { commits: count, authors, insertions: ins, deletions: del }, &last, score));
         }
-        if files.len() <= 2000 {
-            let tasks = unit_log_tasks(&files, &units_by_file);
-            let logs = pool_map(&tasks, |task| git.function_log(&task.0, &task.2).ok());
-            for (task, func_commits) in tasks.iter().zip(logs) {
-                let Some(func_commits) = func_commits else { continue };
-                if func_commits.is_empty() {
-                    continue;
-                }
-                let (func_count, author_n, ins, del, last, func_score) = unit_churn_from(&func_commits, &task.0);
-                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: author_n, insertions: ins, deletions: del }, &last, func_score));
+        let tasks = if files.len() <= 2000 { unit_log_tasks(&files, &units_by_file) } else { Vec::new() };
+        let renames = rename_targets(commits.iter().flat_map(|c| c.files.iter().map(move |f| (c.hash.as_str(), f.path.as_str()))));
+        let prefetched = prefetch.and_then(|p| p.join().ok().flatten());
+        let history = history_churn::replay(&git, &self.project_dir, &files, &tasks, &renames, prefetched);
+        for (task, func_commits) in tasks.iter().zip(history.logs) {
+            let Some(func_commits) = func_commits else { continue };
+            if func_commits.is_empty() {
+                continue;
             }
+            let (func_count, author_n, ins, del, last, func_score) = unit_churn_from(&func_commits, &task.0);
+            churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: author_n, insertions: ins, deletions: del }, &last, func_score));
         }
         self.store.doc.insert("churn", Value::Array(churn_rows));
 
@@ -229,8 +236,7 @@ impl Engine {
         for (rel, hashed_file) in files.iter().zip(&hashed) {
             hash_rows.push(hashed_file.row(rel));
         }
-        let blame_blocks = pool_map(&files, |rel| git.blame(rel).unwrap_or_default());
-        for ((rel, blocks), hashed_file) in files.iter().zip(blame_blocks).zip(&hashed) {
+        for ((rel, blocks), hashed_file) in files.iter().zip(history.blames).zip(&hashed) {
             for b in blocks {
                 blame_rows.push(Value::object(vec![
                     ("file_path".into(), Value::String(rel.clone())),
@@ -307,7 +313,12 @@ impl Engine {
         }
         extract::clear_extractor_warnings();
         let git = self.git.fork();
-        let files = self.scan_code_files(&git);
+        // The file list and the new commits are independent git calls; run them together.
+        let since = store::meta_get(&self.store.doc, "last_commit_date");
+        let (files, logged) = thread::scope(|s| {
+            let log = s.spawn(|| git.parse_log_since(since.as_deref()).unwrap_or_default());
+            (self.scan_code_files(&git), log.join().unwrap_or_default())
+        });
         let mut before: HashMap<String, (String, i64, i64, f64)> = HashMap::new();
         for row in self.store.rows("file_hashes") {
             let Some(path) = row.get("file_path").and_then(|v| v.as_str()) else { continue };
@@ -334,9 +345,8 @@ impl Engine {
         }
         let file_set: HashSet<&str> = files.iter().map(|s| s.as_str()).collect();
         let removed: Vec<String> = before.keys().filter(|path| !file_set.contains(path.as_str())).cloned().collect();
-        let since = store::meta_get(&self.store.doc, "last_commit_date");
         let known: BTreeSet<String> = self.store.rows("commits").iter().filter_map(|c| c.get("hash").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
-        let new_commits: Vec<git::Commit> = git.parse_log_since(since.as_deref()).unwrap_or_default().into_iter().filter(|c| !known.contains(&c.hash)).collect();
+        let new_commits: Vec<git::Commit> = logged.into_iter().filter(|c| !known.contains(&c.hash)).collect();
         let commit_touch: BTreeSet<String> = new_commits.iter().flat_map(|c| c.files.iter().map(|f| f.path.clone())).collect();
         if changed.is_empty() && new_commits.is_empty() && removed.is_empty() {
             let cleaned = self.cleanup_orphaned_results();
@@ -427,6 +437,7 @@ impl Engine {
         }
 
         let skip_unit = files.len() > 2000;
+        let mut unit_tasks: Vec<history_churn::Task> = Vec::new();
         let mut scope = changed.to_vec();
         for path in _commit_touch {
             if files.iter().any(|f| f == path) && !scope.iter().any(|f| f == path) {
@@ -476,16 +487,17 @@ impl Engine {
                 let extracted = stored_units.iter().filter(|u| u.get("file_path").and_then(|v| v.as_str()) == Some(rel.as_str())).map(code_unit_from_row).collect();
                 units_by_file.insert(rel.clone(), extracted);
             }
-            let tasks = unit_log_tasks(&scope, &units_by_file);
-            let logs = pool_map(&tasks, |task| git.function_log(&task.0, &task.2).ok());
-            for (task, func_commits) in tasks.iter().zip(logs) {
-                let Some(func_commits) = func_commits else { continue };
-                if func_commits.is_empty() {
-                    continue;
-                }
-                let (func_count, author_n, ins, del, last, func_score) = unit_churn_from(&func_commits, &task.0);
-                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: author_n, insertions: ins, deletions: del }, &last, func_score));
+            unit_tasks = unit_log_tasks(&scope, &units_by_file);
+        }
+        let renames = rename_targets(commit_files.iter().filter_map(|r| Some((r.get("hash")?.as_str()?, r.get("path")?.as_str()?))));
+        let history = history_churn::churn_and_blame(git, &self.project_dir, &scope, &unit_tasks, &renames, self.history_stream, false);
+        for (task, func_commits) in unit_tasks.iter().zip(history.logs) {
+            let Some(func_commits) = func_commits else { continue };
+            if func_commits.is_empty() {
+                continue;
             }
+            let (func_count, author_n, ins, del, last, func_score) = unit_churn_from(&func_commits, &task.0);
+            churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: author_n, insertions: ins, deletions: del }, &last, func_score));
         }
         self.store.doc.insert("churn", Value::Array(churn_rows));
 
@@ -501,8 +513,7 @@ impl Engine {
             let content = fs::read(&abs).unwrap_or_default();
             hash_rows.push(HashedFile::from_path(&abs, &content).row(rel));
         }
-        let blame_blocks = pool_map(&scope, |rel| git.blame(rel).unwrap_or_default());
-        for (rel, blocks) in scope.iter().zip(blame_blocks) {
+        for (rel, blocks) in scope.iter().zip(history.blames) {
             let hash = hash_rows.iter().rev().find(|h| h.get("file_path").and_then(|v| v.as_str()) == Some(rel.as_str())).and_then(|h| h.get("hash").and_then(|v| v.as_str())).unwrap_or("");
             for b in blocks {
                 blame_rows.push(Value::object(vec![
@@ -734,7 +745,8 @@ impl Engine {
                 id_file.insert(id, path);
             }
         }
-        let mut dep_cache: BTreeMap<String, (Vec<extract::Dep>, BTreeSet<String>)> = BTreeMap::new();
+        let test_ids: BTreeSet<&str> = test_units.iter().filter_map(|t| t.get("id").and_then(|v| v.as_str())).collect();
+        let mut dep_cache: BTreeMap<String, (String, Vec<extract::Dep>, BTreeSet<String>)> = BTreeMap::new();
         for tu in &test_units {
             let file = tu.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             let tid = tu.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -743,9 +755,22 @@ impl Engine {
                 let content = fs::read_to_string(self.project_dir.join(file)).unwrap_or_default();
                 let deps = extract::extract_deps_in(file, &content, Some(&self.project_dir), self.allow_repo_extractor);
                 let resolved = resolve_deps(&deps, &import_index);
-                dep_cache.insert(file.to_string(), (deps, resolved));
+                dep_cache.insert(file.to_string(), (content, deps, resolved));
             }
-            let (deps, resolved) = dep_cache.get(file).expect("deps");
+            let (content, file_deps, resolved) = dep_cache.get(file).expect("deps");
+            // A Rust `#[test]` inside a code file tests that file. Read its calls from its own
+            // lines, not from the production code around it, and let it link to that same file.
+            let inline = tu.get("framework").and_then(|v| v.as_str()) == Some("rust") && !looks_like_test(file);
+            let body_deps;
+            let deps = if inline {
+                let start = tu.get("line_start").and_then(|v| v.as_i64()).unwrap_or(1).max(1) as usize;
+                let end = tu.get("line_end").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
+                let body: Vec<&str> = content.lines().skip(start - 1).take(end.saturating_sub(start - 1)).collect();
+                body_deps = extract::extract_deps_in(file, &body.join("\n"), Some(&self.project_dir), self.allow_repo_extractor);
+                &body_deps
+            } else {
+                file_deps
+            };
             for path in resolved {
                 let key = format!("{file}|{path}");
                 if static_seen.insert(key) {
@@ -759,7 +784,10 @@ impl Engine {
                 let matched = match_dep(file, dep, &code_units, resolved, index);
                 for cid in matched {
                     let code_file = id_file.get(cid.as_str()).copied().unwrap_or("");
-                    if code_file.is_empty() || code_file == file {
+                    if code_file.is_empty() || (code_file == file && !inline) {
+                        continue;
+                    }
+                    if inline && cid.rsplit_once(':').is_some_and(|(unit, _)| test_ids.contains(unit)) {
                         continue;
                     }
                     let key = format!("{tid}|{cid}|{}", dep.dep_type);
@@ -1339,6 +1367,11 @@ impl Engine {
         ]))
     }
 
+}
+
+/// `(commit, new path)` of every rename in numstat rows (`a/{x => y}/b`).
+fn rename_targets<'a>(rows: impl Iterator<Item = (&'a str, &'a str)>) -> HashSet<(String, String)> {
+    rows.filter_map(|(hash, path)| Some((hash.to_string(), history_churn::numstat_rename_target(path)?))).collect()
 }
 
 fn unit_churn_from(commits: &[crate::git::Commit], file: &str) -> (i64, i64, i64, i64, String, f64) {

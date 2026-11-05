@@ -63,7 +63,7 @@ impl Engine {
                     return false;
                 }
             }
-            if self.exclude_tests && (looks_like_test(p) || gtest_files.contains(p)) {
+            if self.exclude_tests && (looks_like_test(p) || gtest_files.contains(p) || is_test_support_path(p)) {
                 return false;
             }
             true
@@ -326,7 +326,19 @@ impl Engine {
         }
         self.store.reload()?;
         let git = self.git.fork();
-        let branch = match git.current_branch() {
+        // Each git spawn is a process start; on Windows that is ~100 ms. Overlap the independent
+        // ones, and diff against the likely ref (HEAD, or the requested one) before the branch is
+        // known. On main/master that finishes diff_impact's git work in one round.
+        let likely_ref = self.diff_ref_override.clone().unwrap_or_else(|| "HEAD".to_string());
+        let (branch, untracked, likely) = std::thread::scope(|s| {
+            let untracked = s.spawn(|| git.untracked());
+            let files = s.spawn(|| git.changed_files(&likely_ref));
+            let functions = s.spawn(|| git.changed_functions_all(&likely_ref));
+            let branch = git.current_branch();
+            let likely = (files.join().unwrap_or_else(|_| Ok(Vec::new())), functions.join().unwrap_or_else(|_| Ok(BTreeMap::new())));
+            (branch, untracked.join().unwrap_or_else(|_| Ok(Vec::new())), likely)
+        });
+        let branch = match branch {
             Ok(b) => b,
             Err(e) => return Ok(git::git_tool_error(&self.project_dir.to_string_lossy(), &e.0)),
         };
@@ -344,11 +356,21 @@ impl Engine {
         } else {
             "HEAD".into()
         };
-        let diff_files = match git.changed_files(&diff_ref) {
+        // The changed-file list and the changed functions come from two git calls run together.
+        let (diff_files, all_functions) = if diff_ref == likely_ref {
+            likely
+        } else {
+            std::thread::scope(|s| {
+                let functions = s.spawn(|| git.changed_functions_all(&diff_ref));
+                (git.changed_files(&diff_ref), functions.join().unwrap_or_else(|_| Ok(BTreeMap::new())))
+            })
+        };
+        let diff_files = match diff_files {
             Ok(v) => v,
             Err(e) => return Ok(git::git_tool_error(&self.project_dir.to_string_lossy(), &e.0)),
         };
-        let untracked_code: BTreeSet<String> = git.untracked().unwrap_or_default().into_iter().filter(|p| extract::path_has_code_extension(p)).collect();
+        let all_functions = all_functions.unwrap_or_default();
+        let untracked_code: BTreeSet<String> = untracked.unwrap_or_default().into_iter().filter(|p| extract::path_has_code_extension(p)).collect();
         let mut changed: Vec<String> = diff_files.into_iter().filter(|p| extract::path_has_code_extension(p)).chain(untracked_code.iter().cloned()).collect();
         changed.sort();
         changed.dedup();
@@ -371,14 +393,7 @@ impl Engine {
                 ("hint".into(), Value::String("Run 'chisel update' first to include new or changed files.".into())),
             ]));
         }
-        let mut functions: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for f in &changed {
-            if let Ok(names) = git.changed_functions(f, &diff_ref) {
-                if !names.is_empty() {
-                    functions.insert(f.clone(), names);
-                }
-            }
-        }
+        let functions: BTreeMap<String, Vec<String>> = all_functions.into_iter().filter(|(f, names)| !names.is_empty() && changed.contains(f)).collect();
         let mut rows = self.impacted(&changed, &functions, &untracked_code);
         self.attach_working_tree_hits(&mut rows, &changed, &untracked_code);
         Ok(Value::Array(rows))
@@ -625,26 +640,40 @@ impl Engine {
         }).collect();
         let mut best: BTreeMap<String, (f64, Value)> = BTreeMap::new();
         for file in files {
-            let fns = functions.get(file);
-            for unit in self.store.units_by_file(file) {
+            let units = self.store.units_by_file(file);
+            let named = |unit: &Value, list: &[String]| {
                 let uname = unit.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let bare = uname.rsplit('.').next().unwrap_or(uname);
-                if let Some(list) = fns {
-                    if !list.iter().any(|n| n == uname || n == bare) {
-                        continue;
-                    }
+                list.iter().any(|n| n == uname || n == bare)
+            };
+            let fns = functions.get(file).map(|v| v.as_slice());
+            // Narrow to the changed functions only when one of them has a direct test. A changed
+            // private helper is still exercised by the tests of its siblings in the same file.
+            let narrowed = fns.filter(|list| {
+                units.iter().any(|u| named(u, list) && !self.store.edges_for_code(u.get("id").and_then(|v| v.as_str()).unwrap_or("")).is_empty())
+            });
+            let widened = fns.is_some() && narrowed.is_none();
+            for unit in &units {
+                if narrowed.is_some_and(|list| !named(unit, list)) {
+                    continue;
                 }
+                let uname = unit.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let id = unit.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 for e in self.store.edges_for_code(id) {
                     let tid = e.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
                     let weight = e.get("weight").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let test = tests.get(tid);
                     let edge_type = e.get("edge_type").and_then(|v| v.as_str()).unwrap_or("import");
+                    let reason = if widened {
+                        format!("direct edge to {uname} ({edge_type}); no test calls the changed {} directly", fns.unwrap_or(&[]).join(", "))
+                    } else {
+                        format!("direct edge to {uname} ({edge_type})")
+                    };
                     let row = Value::object(vec![
                         ("test_id".into(), Value::String(tid.into())),
                         ("file_path".into(), test.and_then(|t| t.get("file_path")).cloned().unwrap_or(Value::String(String::new()))),
                         ("name".into(), test.and_then(|t| t.get("name")).cloned().unwrap_or(Value::String(String::new()))),
-                        ("reason".into(), Value::String(format!("direct edge to {uname} ({edge_type})"))),
+                        ("reason".into(), Value::String(reason)),
                         ("score".into(), Value::Float(weight)),
                         ("source".into(), Value::String("direct".into())),
                     ]);
@@ -1214,6 +1243,7 @@ impl Engine {
                 ("hint".into(), Value::String("Run 'chisel update' first to include new or changed files.".into())),
             ]));
         }
+        let all_functions = git.changed_functions_all(&diff_ref).unwrap_or_default();
         let mut rows = Vec::new();
         let mut any = false;
         for (name, group) in &groups {
@@ -1222,17 +1252,11 @@ impl Engine {
                 continue;
             }
             any = true;
-            let mut functions: BTreeMap<String, Vec<String>> = BTreeMap::new();
-            for file in group {
-                if untracked_code.contains(file) {
-                    continue;
-                }
-                if let Ok(names) = git.changed_functions(file, &diff_ref) {
-                    if !names.is_empty() {
-                        functions.insert(file.clone(), names);
-                    }
-                }
-            }
+            let functions: BTreeMap<String, Vec<String>> = group
+                .iter()
+                .filter(|f| !untracked_code.contains(*f))
+                .filter_map(|f| all_functions.get(f).filter(|names| !names.is_empty()).map(|names| (f.clone(), names.clone())))
+                .collect();
             let owned: BTreeSet<String> = group.iter().filter(|f| untracked_code.contains(*f)).cloned().collect();
             let mut part = sub.impacted(group, &functions, &owned);
             sub.attach_working_tree_hits(&mut part, group, &owned);
@@ -1517,10 +1541,10 @@ impl Engine {
             "acquire_file_lock" | "release_file_lock" | "refresh_file_lock" | "check_file_lock" | "check_locks" | "list_file_locks" => {
                 self.file_lock_tool(name, args)
             }
-            _ => Err(format!("unknown tool: {name}")),
+            _ => Err(format!("unknown tool: {name}. Valid tools: {}", crate::schemas::TOOL_NAMES.join(", "))),
         }?;
         let limited = self.apply_limit(name, args, result);
-        Ok(self.finish_auto(auto, limited))
+        Ok(self.finish_auto(auto, compact_risk_rows(name, limited)))
     }
 
     pub(super) fn test_gaps(&mut self) -> Result<Value, String> {
@@ -1584,7 +1608,7 @@ impl Engine {
                 if !path_in_directory(path, dir) { continue; }
             }
             if is_test_unit_row(u) && self.exclude_tests { continue; }
-            if self.exclude_tests && (looks_like_test(path) || gtest_files.contains(path)) { continue; }
+            if self.exclude_tests && (looks_like_test(path) || gtest_files.contains(path) || is_test_support_path(path)) { continue; }
             let id = u.get("id").and_then(|v| v.as_str()).unwrap_or("");
             if covered.contains(id) {
                 continue;
@@ -1994,4 +2018,19 @@ impl Engine {
         Ok(Value::object(pairs))
     }
 
+}
+
+/// `risk_map` and `triage` rows with their no-signal fields dropped (see `impact::compact_risk_row`).
+fn compact_risk_rows(name: &str, mut result: Value) -> Value {
+    let key = match name {
+        "risk_map" => "files",
+        "triage" => "top_risk_files",
+        _ => return result,
+    };
+    if let Some(Value::Array(rows)) = result.get_mut(key) {
+        for row in rows.iter_mut() {
+            *row = impact::compact_risk_row(row);
+        }
+    }
+    result
 }

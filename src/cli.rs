@@ -206,7 +206,7 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
         } else if a == "--help" || a == "-h" {
             help = true;
         } else if a.starts_with("--") {
-            return Err(format!("status=error unknown or unimplemented flag {a}"));
+            return Err(format!("status=error unknown flag {a}. `chisel {} --help` lists the flags.", if command.is_empty() { "<command>" } else { command.as_str() }));
         } else if command.is_empty() {
             command = a.clone();
         } else {

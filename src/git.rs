@@ -1,8 +1,8 @@
 //! Git porcelain via the system git binary. Lossy UTF-8. No libgit2.
 
+use std::collections::BTreeMap;
 use std::process::{Command, Output};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// `repo_dir` plus the argument list. Tests wrap this to count spawns and still call git.
 pub type GitRunner = Arc<dyn Fn(&str, &[&str]) -> Result<Output, std::io::Error> + Send + Sync>;
@@ -145,6 +145,13 @@ impl GitAnalyzer {
         Ok(parse_diff_functions(&raw))
     }
 
+    /// `changed_functions` for every file that differs from `ref`, from one `git diff`.
+    pub fn changed_functions_all(&self, r#ref: &str) -> Result<BTreeMap<String, Vec<String>>, GitError> {
+        guard_ref(r#ref)?;
+        let raw = self.run(&["diff", "-U0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--end-of-options", r#ref])?;
+        Ok(split_diff_by_file(&raw).into_iter().map(|(path, section)| (path, parse_diff_functions(&section))).collect())
+    }
+
     pub fn function_log(&self, file: &str, func: &str) -> Result<Vec<Commit>, GitError> {
         let spec = format!("-L:{func}:{file}");
         let raw = self.run(&["log", "--format=COMMIT_START%n%H|%an|%ae|%aI|%s", &spec])?;
@@ -154,6 +161,17 @@ impl GitAnalyzer {
     pub fn blame(&self, file: &str) -> Result<Vec<BlameBlock>, GitError> {
         let raw = self.run(&["blame", "--porcelain", "--", file])?;
         Ok(parse_blame(&raw))
+    }
+
+    /// Any git command, for callers that build their own arguments.
+    pub fn run_args(&self, args: &[String]) -> Result<String, GitError> {
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        self.run(&refs)
+    }
+
+    /// The file as committed at HEAD, without eol or textconv conversion.
+    pub fn head_blob(&self, path: &str) -> Result<String, GitError> {
+        self.run(&["cat-file", "blob", &format!("HEAD:{path}")])
     }
 
     pub fn toplevel(&self) -> Result<String, GitError> {
@@ -174,18 +192,25 @@ fn finish(args: &[&str], output: Output) -> Result<String, GitError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn utc_z(date: &str) -> String {
+pub(crate) fn utc_z(date: &str) -> String {
     date.strip_suffix("+00:00").map(|prefix| format!("{prefix}Z")).unwrap_or_else(|| date.to_string())
 }
 
+/// Commits from `--format=COMMIT_START%n%H|%an|%ae|%aI|%s` output with `--numstat` or a patch
+/// (`git log -L`). A patch counts its `+` and `-` lines inside hunks; a file's `---`/`+++`
+/// header and unchanged context lines are not changes.
 pub fn parse_log_output(raw: &str) -> Vec<Commit> {
-    let mut commits = Vec::new();
-    for block in raw.split("COMMIT_START") {
-        let block = block.trim();
-        if block.is_empty() {
-            continue;
+    let mut blocks: Vec<Vec<&str>> = Vec::new();
+    for line in raw.split('\n') {
+        if line.trim_end() == "COMMIT_START" {
+            blocks.push(Vec::new());
+        } else if let Some(block) = blocks.last_mut() {
+            block.push(line);
         }
-        let mut lines = block.split('\n');
+    }
+    let mut commits = Vec::new();
+    for block in blocks {
+        let mut lines = block.into_iter().skip_while(|l| l.trim().is_empty());
         let Some(header) = lines.next() else { continue };
         let parts: Vec<&str> = header.trim().splitn(5, '|').collect();
         if parts.len() < 5 {
@@ -201,48 +226,90 @@ pub fn parse_log_output(raw: &str) -> Vec<Commit> {
         };
         let mut diff_ins = 0i64;
         let mut diff_del = 0i64;
-        let mut has_numstat = false;
+        let mut in_hunk = false;
         for line in lines {
-            let line = line.trim_end();
-            if line.is_empty() {
+            let line = line.trim_end_matches('\r');
+            if line.starts_with("diff --git ") {
+                in_hunk = false;
+                continue;
+            }
+            if line.starts_with("@@") {
+                in_hunk = true;
+                continue;
+            }
+            if in_hunk {
+                if line.starts_with('+') {
+                    diff_ins += 1;
+                } else if line.starts_with('-') {
+                    diff_del += 1;
+                }
                 continue;
             }
             let file_parts: Vec<&str> = line.split('\t').collect();
             if file_parts.len() == 3 {
                 let (ins, del, path) = (file_parts[0], file_parts[1], file_parts[2]);
-                let ins_ok = ins == "-" || ins.chars().all(|c| c.is_ascii_digit());
-                let del_ok = del == "-" || del.chars().all(|c| c.is_ascii_digit());
+                let ins_ok = ins == "-" || (!ins.is_empty() && ins.chars().all(|c| c.is_ascii_digit()));
+                let del_ok = del == "-" || (!del.is_empty() && del.chars().all(|c| c.is_ascii_digit()));
                 if ins_ok && del_ok {
-                    has_numstat = true;
                     commit.files.push(GitFile {
                         path: path.into(),
                         insertions: if ins == "-" { 0 } else { ins.parse().unwrap_or(0) },
                         deletions: if del == "-" { 0 } else { del.parse().unwrap_or(0) },
                     });
-                    continue;
-                }
-            }
-            if !has_numstat {
-                let trimmed = line.trim();
-                if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
-                    diff_ins += 1;
-                } else if trimmed.starts_with('-') && !trimmed.starts_with("---") {
-                    diff_del += 1;
                 }
             }
         }
-        if !has_numstat && (diff_ins > 0 || diff_del > 0) {
+        if diff_ins > 0 || diff_del > 0 {
             commit.files.push(GitFile { path: String::new(), insertions: diff_ins, deletions: diff_del });
         }
         commits.push(commit);
     }
-    let _ = Duration::from_secs(0);
     commits
+}
+
+/// One diff split per file, keyed by the new path (the old path for a deletion).
+pub fn split_diff_by_file(raw: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut section = String::new();
+    let mut old_path: Option<String> = None;
+    let mut new_path: Option<String> = None;
+    let mut flush = |section: &mut String, old: &mut Option<String>, new: &mut Option<String>| {
+        if let Some(path) = new.take().or_else(|| old.take()) {
+            out.push((path, std::mem::take(section)));
+        }
+        section.clear();
+        *old = None;
+    };
+    for line in raw.split('\n') {
+        if line.starts_with("diff --git ") {
+            flush(&mut section, &mut old_path, &mut new_path);
+        } else if let Some(rest) = line.strip_prefix("--- ").filter(|_| old_path.is_none() && new_path.is_none()) {
+            old_path = (rest != "/dev/null").then(|| crate::history::unquote(rest).trim_start_matches("a/").to_string());
+        } else if let Some(rest) = line.strip_prefix("+++ ").filter(|_| new_path.is_none()) {
+            new_path = (rest != "/dev/null").then(|| crate::history::unquote(rest).trim_start_matches("b/").to_string());
+        }
+        section.push_str(line);
+        section.push('\n');
+    }
+    flush(&mut section, &mut old_path, &mut new_path);
+    out
 }
 
 pub fn parse_diff_functions(raw: &str) -> Vec<String> {
     let mut functions = Vec::new();
     for line in raw.lines() {
+        // A hunk header names the function *before* the hunk, so an edit that starts on a
+        // signature line is credited to the previous function. Also read the changed lines.
+        if !line.starts_with("+++") && !line.starts_with("---") {
+            if let Some(changed) = line.strip_prefix('+').or_else(|| line.strip_prefix('-')) {
+                if let Some(name) = defined_name(changed) {
+                    if !functions.contains(&name) {
+                        functions.push(name);
+                    }
+                }
+                continue;
+            }
+        }
         let Some(rest) = line.strip_prefix("@@") else { continue };
         let Some(idx) = rest.find("@@") else { continue };
         let context = rest[idx + 2..].trim();
@@ -256,6 +323,32 @@ pub fn parse_diff_functions(raw: &str) -> Vec<String> {
         }
     }
     functions
+}
+
+/// The name a line defines, when the line itself starts a function definition
+/// (`pub async fn x(`, `def x(`, `func (r *T) X(`, `export function x(`). Calls never match.
+fn defined_name(line: &str) -> Option<String> {
+    const MODIFIERS: [&str; 10] = ["pub", "async", "export", "default", "static", "unsafe", "const", "private", "public", "extern"];
+    let mut rest = line.trim_start();
+    loop {
+        let word_end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+        let word = &rest[..word_end];
+        let modifier = MODIFIERS.contains(&word) || (word.starts_with("pub(") && word.ends_with(')')) || (word.len() > 1 && word.starts_with('"') && word.ends_with('"'));
+        rest = rest[word_end..].trim_start();
+        if modifier {
+            continue;
+        }
+        if !matches!(word, "fn" | "def" | "func" | "fun" | "function") {
+            return None;
+        }
+        break;
+    }
+    if rest.starts_with('(') {
+        // Go method receiver `(r *T)` comes before the name.
+        rest = rest[rest.find(')')? + 1..].trim_start();
+    }
+    let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+    if name.is_empty() { None } else { Some(name) }
 }
 
 fn func_name_from_context(context: &str) -> Option<String> {
@@ -362,4 +455,80 @@ pub fn git_tool_error(project_dir: &str, message: &str) -> crate::json::Value {
             "Use the repository root as the project directory: `chisel ... --project-dir /path/to/repo` or start the MCP server with cwd set to the git checkout.".into(),
         )),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_diff_functions;
+
+    #[test]
+    fn line_log_output_counts_only_hunk_changes() {
+        use super::parse_log_output;
+        // A context line that starts with "-" after indentation is not a deletion. A changed
+        // line whose text starts with "++" or "--" is still a change.
+        let raw = [
+            "COMMIT_START",
+            "abc|Ann|a@x|2024-01-01T00:00:00+00:00|subject with COMMIT_START inside",
+            "",
+            "diff --git a/f.py b/f.py",
+            "--- a/f.py",
+            "+++ b/f.py",
+            "@@ -1,3 +1,3 @@",
+            " def f():",
+            "-    return 1",
+            "+    return 2",
+            "     - bullet in a docstring",
+            "+++counter",
+            "--- a lua comment",
+            "COMMIT_START",
+            "def|Bob|b@x|2024-01-02T00:00:00+00:00|merge",
+            "",
+        ]
+        .join("\n");
+        let raw = raw.as_str();
+        let commits = parse_log_output(raw);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].date, "2024-01-01T00:00:00Z");
+        assert_eq!(commits[0].message, "subject with COMMIT_START inside");
+        assert_eq!((commits[0].files[0].insertions, commits[0].files[0].deletions), (2, 2));
+        assert!(commits[1].files.is_empty());
+    }
+
+    #[test]
+    fn one_diff_splits_into_files() {
+        use super::split_diff_by_file;
+        let raw = [
+            "diff --git a/x.py b/x.py",
+            "--- a/x.py",
+            "+++ b/x.py",
+            "@@ -1 +1 @@ def f():",
+            "-    return 1",
+            "+    return 2",
+            "diff --git a/gone.py b/gone.py",
+            "deleted file mode 100644",
+            "--- a/gone.py",
+            "+++ /dev/null",
+            "@@ -1,2 +0,0 @@",
+            "-def g():",
+            "-    pass",
+        ]
+        .join("\n");
+        let files = split_diff_by_file(&raw);
+        let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(names, vec!["x.py", "gone.py"]);
+        assert_eq!(parse_diff_functions(&files[0].1), vec!["f"]);
+        assert_eq!(parse_diff_functions(&files[1].1), vec!["g"]);
+    }
+
+    #[test]
+    fn changed_signature_lines_name_their_function() {
+        let raw = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -5 +5 @@ fn before() {\n-fn after(x: i32) {\n+pub(crate) async fn after(x: i64) {\n@@ -9 +9 @@ fn before() {\n-    let y = call(x);\n+    let y = call(x + 1);\n";
+        assert_eq!(parse_diff_functions(raw), vec!["before", "after"]);
+    }
+
+    #[test]
+    fn definition_keywords_across_languages() {
+        let raw = "@@ -1 +1 @@\n+func (r *Repo) Load() error {\n+    def method(self):\n+export default function render() {\n+extern \"C\" fn ffi() {}\n+// this function does nothing\n+x = fn(1)\n";
+        assert_eq!(parse_diff_functions(raw), vec!["Load", "method", "render", "ffi"]);
+    }
 }

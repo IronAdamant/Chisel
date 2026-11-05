@@ -1,6 +1,5 @@
-//! The 26 tool names and their input schemas.
-//! Schema bodies are the Python descriptions and parameter objects, embedded
-//! so the binary does not import Python at runtime.
+//! The 26 tool names and their input schemas (`schemas_data.json`, embedded in the binary).
+//! Descriptions are short on purpose: every MCP session loads them into the agent's context.
 
 use crate::json::{self, Value};
 

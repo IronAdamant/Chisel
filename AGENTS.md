@@ -29,11 +29,13 @@ MCP is `chisel serve-mcp` or the `chisel-mcp` binary. Stdio messages are newline
 
 First call `analyze` when you see `no_data`. After edits, call `diff_impact`. Use `suggest_tests` with `file_path`. Use `triage` for a bounded risk pass. `impact` requires `files`. A missing required argument returns `status: "error"`, not an empty list.
 
+A refused `acquire_file_lock` returns the holder, its `purpose`, `ttl_remaining` and a `reason`. A failed `release_file_lock` or `refresh_file_lock` returns a `reason`. An unknown tool name returns the list of valid names.
+
 `start_job` returns `queued` and a real `job_id` before the work finishes. `job_status` reads that job. `cancel_job` is observed between files.
 
 ## Scale
 
-A no-op `update` sets `edge_rebuild_skipped` true and does not spawn `git blame` or per-function `git log -L`. One changed file recomputes that file plus newer commits. Above 2000 code files, file-level churn still runs and per-function `git log -L` does not (`unit_churn_skipped`). `auto_update` refreshes inline at or under 50 changed files. Above that, or while a job is running, the read still returns and sets `auto_update_skip_reason`.
+Per-function churn and blame come from one batched `git log -p` history stream, replayed in-process with git's own `-L` and blame rules (`src/history.rs`). A file it cannot replay exactly (dirty or untracked, a diff-driver attribute, a binary diff, a rename from a non-code path) falls back to `git log -L` per function and `git blame` per file. A no-op `update` sets `edge_rebuild_skipped` true and reads no history. One changed file recomputes that file plus newer commits. Above 2000 code files, file-level churn still runs and per-function churn does not (`unit_churn_skipped`). `auto_update` refreshes inline at or under 50 changed files. Above that, or while a job is running, the read still returns and sets `auto_update_skip_reason`.
 
 `working_tree` reads the worktree only when set. `stats` returns counts, not the full result history. List tools apply a default limit and set `truncated` when capped.
 
@@ -41,7 +43,7 @@ Shards are one snapshot each under `.chisel/shards/<shard>/`, configured by `CHI
 
 `chisel run -- pytest …` and Jest record results in one snapshot flush and forward the test process exit code. `chisel watch` waits on an inotify, kqueue, or Windows change notification, then runs `update` when `git status` changed. It does not use a file-watcher crate. Python units come from the built-in syntax tree. Locks are advisory records. They do not lock source files.
 
-Scores are heuristics. Read `_meta.uniform_components` before trusting a composite risk score. `flakiness_trend` is present when a covering test has dated results in the current week and in an older week of the last 28 days. It does not change risk weights. `record_result` stores `recorded_at`.
+Scores are heuristics. Read `_meta.uniform_components` before trusting a composite risk score. `risk_map` and `triage` rows omit fields that are zero, null, false or empty; `file_path`, `risk_score` and `flakiness_trend` always appear. With `exclude_tests` (the default), `risk_map` and `test_gaps` also leave out code under test-support directories (`tests/`, `test/`, `__tests__/`, `testdata/`, `fixtures/`, `__mocks__/`, `spec/`). `flakiness_trend` is present when a covering test has dated results in the current week and in an older week of the last 28 days. It does not change risk weights. `record_result` stores `recorded_at`.
 
 Test filenames that produce edges include `test_*.py`, `*_test.py`, `*.test.ts`, `*.spec.ts`, `*_test.go`, `*_test.rs`, and any `.rs` file under the top-level `tests/` directory. Rust functions marked `#[test]`, `#[tokio::test]`, `#[rstest]`, or `#[test_case]` are test units even when the file is not named like a test.
 

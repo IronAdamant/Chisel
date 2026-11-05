@@ -2,6 +2,7 @@
 //! The snapshot is `.chisel/store`. `chisel.db` is never opened.
 
 mod analyze;
+mod history_churn;
 mod query;
 mod locks;
 
@@ -222,6 +223,9 @@ pub struct Engine {
     /// `(shard name, full shard config)` for overlaying cross edges. `shards` stays empty on a view.
     shard_view: Option<(String, Vec<(String, String)>)>,
     overlay_applied: bool,
+    /// Per-function churn and blame from batched `git log -p` streams (`crate::history`).
+    /// Off: one `git log -L` per function and one `git blame` per file.
+    pub history_stream: bool,
 }
 
 impl Engine {
@@ -257,6 +261,7 @@ impl Engine {
             result_log: None,
             shard_view: None,
             overlay_applied: false,
+            history_stream: true,
         };
         engine.shards = load_shard_config(&engine.project_dir);
         Ok(engine)
@@ -506,6 +511,16 @@ pub(crate) fn unit_obj(rel: &str, u: &CodeUnit, hash: &str) -> Value {
         ("line_end".into(), Value::Int(u.line_end as i64)),
         ("content_hash".into(), Value::String(hash.into())),
     ])
+}
+
+/// Code that lives under a test-support directory (`tests/`, `fixtures/`, `testdata/`, ...)
+/// without being a test file itself: fixtures, sample projects, mocks, helpers.
+/// `risk_map` and `test_gaps` leave it out when `exclude_tests` is on.
+pub(crate) fn is_test_support_path(path: &str) -> bool {
+    const DIRS: [&str; 10] = ["tests", "test", "__tests__", "testdata", "test_data", "fixtures", "__fixtures__", "__mocks__", "spec", "testing"];
+    let mut parts: Vec<&str> = path.split('/').collect();
+    parts.pop();
+    parts.iter().any(|d| DIRS.iter().any(|t| d.eq_ignore_ascii_case(t)))
 }
 
 pub(crate) fn is_test_unit_type(unit_type: &str) -> bool {

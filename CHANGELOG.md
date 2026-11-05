@@ -7,6 +7,29 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-11-05
+
+Agent-facing speed and output size. `analyze` reads git history in one batched stream instead of one git process per function and per file, `tools/list` and risk rows are about half the size, and lock and tool errors say what to do next. The crate still links only the standard library.
+
+### Fixed
+
+- A Rust `#[test]` inside a `#[cfg(test)]` module now links to the code in its own file, and takes its calls from its own lines rather than the whole file. `impact` and `suggest_tests` on such a file no longer come back empty or fall back to every test in the repo.
+- `diff_impact` no longer returns `[]` when the changed function has no direct test. It falls back to the tests of that file and says so in `reason`. An edit that starts on a signature line is credited to that function, not to the one before it.
+- `cargo test --release` passes. The durability tests ran helper subcommands that only existed in debug builds; the helpers now live in the test binary.
+
+- Function churn counts real diff lines. Parsing `git log -L` output used to count indented context lines that begin with `+` or `-` (a docstring bullet, a continued expression), skip changed lines whose text starts with `++` or `--`, and split commits on any line containing `COMMIT_START`.
+- `risk_map` and `test_gaps` no longer rank code under test-support directories (`tests/`, `fixtures/`, `testdata/`, ...) when `exclude_tests` is on. On Trammel the top three "risky files" were sample projects under `tests/archetypes/`.
+
+### Changed
+
+- `analyze` reads function churn and blame from one batched `git log -p` stream and replays git's `-L` and blame rules in-process (`src/history.rs`), instead of one `git log -L` per function and one `git blame` per file. On a 144-file Trammel clone `analyze` went from 10-19 s to 0.5-1.1 s; on Specula (587 code files, 791 commits) from 160-243 s to 9-17 s. Above 2000 code files, where there is no function churn, blame stays one `git blame` per file as before. Results matched real git for 1952 functions and 306 files across four repositories; files the stream cannot replay exactly still spawn git. `update` uses the same path for the files in scope and lists files and new commits together.
+- `diff_impact` reads every changed function from one `git diff -U0` and, when the ref is HEAD (or the one passed), runs it in the same round as the branch lookup, the untracked listing and the file list.
+- `risk_map` and `triage` rows drop fields that are zero, null, false or empty (about half of each row). `file_path`, `risk_score` and `flakiness_trend` always stay.
+- `tools/list` is 11.6 KB instead of 19.2 KB. Descriptions say what each tool answers and when to call it; arguments are unchanged.
+- A refused `acquire_file_lock` returns the holder's `purpose`, `ttl_remaining` and a `reason`. A failed `release_file_lock` or `refresh_file_lock` says who holds the lock or that none exists. An unknown tool name lists the valid tools. An unknown CLI flag points at `chisel <command> --help`.
+- The benchmark harness reports argument errors in its own words (`missing --python, --small, --large`) instead of argparse's.
+- `scripts/benchmark_parity.py` is now `examples/benchmark_parity.rs` (std-only, same report and exit codes). On Windows it keeps snapshots in the absolute temp directory; `/tmp` there is drive-relative.
+
 ## [0.17.0] — 2026-11-03
 
 The Rust binary picks up the Python 0.15.1 behaviour that 0.16.1 still missed: stdio MCP framing, the flags and directory scopes that did not reach the engine, test detection for Java, Kotlin, C#, Swift, and C++, `chisel migrate`, and `CHISEL_DEP_EXTRACTOR`. The crate still links only the standard library. Figures below are copied from `scripts/benchmark_results.md`. None are estimated.

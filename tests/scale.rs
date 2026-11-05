@@ -149,8 +149,92 @@ fn unit_churn_skipped_above_2000_files() {
     assert!(text.contains("\"unit_churn_skipped\":true") || text.contains("\"unit_churn_skipped\": true"), "{text}");
     let spawns = log.lock().unwrap().clone();
     assert!(spawns.iter().all(|s| !s.contains("-L:")), "function log ran: {spawns:?}");
+    // With no function churn to compute, blame-only work keeps per-file `git blame` (as before
+    // the history stream existed), so a deep history is never read in full for it.
+    assert!(spawns.iter().all(|s| !s.contains("log -p")), "history stream ran above 2000 files");
+    assert_eq!(spawns.iter().filter(|s| s.starts_with("blame")).count(), 2001);
     let snap = fs::read_to_string(store.join("store")).unwrap();
     assert!(snap.contains("\"file_path\":\"src/f0.py\"") && snap.contains("\"unit_name\":\"\""), "file-level churn row missing: {snap}");
+}
+
+fn diff_test_ids(engine: &mut chisel::Engine) -> Vec<String> {
+    let diff = engine.diff_impact().unwrap();
+    diff.as_array()
+        .unwrap_or_else(|| panic!("{}", chisel::json::to_string(&diff).unwrap()))
+        .iter()
+        .filter_map(|row| row.get("test_id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect()
+}
+
+#[test]
+fn diff_impact_on_an_untested_helper_names_the_tests_of_its_file() {
+    let dir = scratch("helper");
+    fs::create_dir_all(dir.join("tests")).unwrap();
+    let calc = "def add(a, b):\n    return _norm(a) + _norm(b)\n\n\ndef scale(x):\n    return _norm(x) * 2\n\n\ndef _norm(x):\n    return x\n";
+    fs::write(dir.join("calc.py"), calc).unwrap();
+    fs::write(dir.join("tests/test_add.py"), "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n").unwrap();
+    fs::write(dir.join("tests/test_scale.py"), "from calc import scale\n\n\ndef test_scale():\n    assert scale(2) == 4\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    let both = vec!["tests/test_add.py:test_add".to_string(), "tests/test_scale.py:test_scale".to_string()];
+
+    // Body edit: the hunk names `_norm`, which no test calls directly. Its file's tests still run it.
+    fs::write(dir.join("calc.py"), calc.replace("    return x\n", "    return int(x)\n")).unwrap();
+    let mut ids = diff_test_ids(&mut engine);
+    ids.sort();
+    assert_eq!(ids, both);
+
+    // Signature edit: git's hunk header names the function *before* the hunk (`add`).
+    // The changed line itself defines `scale`, so its test must be reported too.
+    fs::write(dir.join("calc.py"), calc.replace("def scale(x):", "def scale(x, k=2):")).unwrap();
+    let ids = diff_test_ids(&mut engine);
+    assert!(ids.contains(&"tests/test_scale.py:test_scale".to_string()), "{ids:?}");
+}
+
+#[test]
+fn diff_impact_reads_all_changed_functions_from_one_diff_beside_the_file_list() {
+    let dir = scratch("diffpool");
+    fs::create_dir_all(dir.join("tests")).unwrap();
+    for i in 0..4 {
+        fs::write(dir.join(format!("m{i}.py")), format!("def f{i}():\n    return {i}\n")).unwrap();
+        fs::write(dir.join(format!("tests/test_m{i}.py")), format!("from m{i} import f{i}\n\n\ndef test_f{i}():\n    assert f{i}() == {i}\n")).unwrap();
+    }
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    for i in 0..4 {
+        fs::write(dir.join(format!("m{i}.py")), format!("def f{i}():\n    return {i} + 0\n")).unwrap();
+    }
+    let inflight = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let (now, max, seen) = (Arc::clone(&inflight), Arc::clone(&peak), Arc::clone(&log));
+    engine.set_git_runner(Arc::new(move |repo, args| {
+        seen.lock().unwrap().push(args.join(" "));
+        let tracked = ["-U0", "--name-only", "--abbrev-ref", "--others"].iter().any(|flag| args.contains(flag));
+        if tracked {
+            max.fetch_max(now.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        let out = Command::new("git").args(args).current_dir(repo).output();
+        if tracked {
+            now.fetch_sub(1, Ordering::SeqCst);
+        }
+        out
+    }));
+    let mut ids = diff_test_ids(&mut engine);
+    ids.sort();
+    let expected: Vec<String> = (0..4).map(|i| format!("tests/test_m{i}.py:test_f{i}")).collect();
+    assert_eq!(ids, expected);
+    let diffs = log.lock().unwrap().iter().filter(|a| a.contains("-U0")).count();
+    assert_eq!(diffs, 1, "one diff for all changed files");
+    // On main the branch lookup, untracked listing, file list and diff all run in one round.
+    assert!(peak.load(Ordering::SeqCst) >= 3, "diff_impact ran its git calls in more than one round");
 }
 
 #[test]
@@ -445,8 +529,10 @@ fn one_new_commit_limits_blame_and_function_log() {
     assert!(text.contains("\"new_commits\":1") || text.contains("\"new_commits\": 1"), "{text}");
     let spawns = log.lock().unwrap().clone();
     assert!(spawns.iter().any(|s| s.contains("--since=")), "{spawns:?}");
-    assert!(spawns.iter().any(|s| s.contains("-L:") && s.contains("src/a.py")), "{spawns:?}");
-    assert!(spawns.iter().filter(|s| s.contains("blame") || s.contains("-L:")).all(|s| !s.contains("src/b.py")), "{spawns:?}");
+    // Function history comes from one `git log -p` scoped to the touched file (or `-L` per function).
+    let history = |s: &&String| s.contains("-L:") || s.contains("log -p");
+    assert!(spawns.iter().filter(history).any(|s| s.contains("src/a.py")), "{spawns:?}");
+    assert!(spawns.iter().filter(|s| s.contains("blame") || history(s)).all(|s| !s.contains("src/b.py")), "{spawns:?}");
 }
 
 #[test]
@@ -641,7 +727,7 @@ fn commit_after_dirty_analyze_replaces_blame() {
     engine.update().unwrap();
     let spawns = log.lock().unwrap().clone();
     let blames: Vec<_> = spawns.iter().filter(|s| s.contains("blame") && s.contains("src/a.py")).cloned().collect();
-    assert_eq!(blames.len(), 1, "update blamed src/a.py more than once: {spawns:?}");
+    assert!(blames.len() <= 1, "update blamed src/a.py more than once: {spawns:?}");
     let owned = engine.dispatch("ownership", &chisel::json::Value::object(vec![
         ("file_path".into(), chisel::json::Value::String("src/a.py".into())),
     ])).unwrap();
@@ -886,6 +972,8 @@ fn git_pool_overlaps_at_most_eight_and_merges_in_path_order() {
     let inflight = Arc::new(AtomicUsize::new(0));
     let max_seen = Arc::new(AtomicUsize::new(0));
     let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    // The per-function spawn path, which files the history stream cannot replay still use.
+    engine.history_stream = false;
     engine.set_git_runner(overlap_runner(Arc::clone(&log), Arc::clone(&inflight), Arc::clone(&max_seen)));
     engine.analyze().unwrap();
     let peak = max_seen.load(Ordering::SeqCst);
@@ -969,7 +1057,12 @@ fn feature_branch_co_change_feeds_risk_and_matches_python() {
         .unwrap();
     assert!(risk.status.success(), "{}", String::from_utf8_lossy(&risk.stderr));
     let got = chisel::json::parse(&String::from_utf8_lossy(&risk.stdout)).unwrap();
-    let want = chisel::json::parse(include_str!("fixtures/oracle/feature-risk-map.json")).unwrap();
+    let mut want = chisel::json::parse(include_str!("fixtures/oracle/feature-risk-map.json")).unwrap();
+    if let Some(chisel::json::Value::Array(rows)) = want.get_mut("files") {
+        for row in rows.iter_mut() {
+            *row = chisel::impact::compact_risk_row(row);
+        }
+    }
     assert_eq!(got, want, "{}", String::from_utf8_lossy(&risk.stdout));
 }
 
@@ -1898,4 +1991,149 @@ fn watch_keeps_running_after_a_git_index_lock() {
         latest.contains("\"files_updated\": 1") || latest.contains("\"files_updated\":1"),
         "{latest}"
     );
+}
+
+#[test]
+fn lock_refusals_and_unknown_tools_say_what_to_do() {
+    let dir = scratch("lockmsg");
+    fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    let call = |engine: &mut chisel::Engine, name: &str, pairs: &[(&str, &str)]| {
+        let args = chisel::json::Value::object(pairs.iter().map(|(k, v)| (k.to_string().into(), chisel::json::Value::String(v.to_string()))).collect());
+        engine.dispatch(name, &args)
+    };
+    call(&mut engine, "acquire_file_lock", &[("file_path", "a.py"), ("agent_id", "planner"), ("purpose", "step 2 of 3: rename f")]).unwrap();
+    let refused = call(&mut engine, "acquire_file_lock", &[("file_path", "a.py"), ("agent_id", "coder")]).unwrap();
+    assert_eq!(refused.get("acquired").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(refused.get("holder").and_then(|v| v.as_str()), Some("planner"));
+    assert_eq!(refused.get("purpose").and_then(|v| v.as_str()), Some("step 2 of 3: rename f"));
+    assert!(refused.get("ttl_remaining").and_then(|v| v.as_f64()).unwrap() > 0.0);
+    assert!(refused.get("reason").and_then(|v| v.as_str()).unwrap().contains("planner holds this lock"));
+
+    let wrong = call(&mut engine, "release_file_lock", &[("file_path", "a.py"), ("agent_id", "coder")]).unwrap();
+    assert_eq!(wrong.get("released").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(wrong.get("holder").and_then(|v| v.as_str()), Some("planner"));
+    assert!(wrong.get("reason").and_then(|v| v.as_str()).unwrap().contains("Only the holder"));
+    let none = call(&mut engine, "refresh_file_lock", &[("file_path", "b.py"), ("agent_id", "coder")]).unwrap();
+    assert_eq!(none.get("refreshed").and_then(|v| v.as_bool()), Some(false));
+    assert!(none.get("reason").and_then(|v| v.as_str()).unwrap().contains("No active lock on b.py"));
+
+    let err = call(&mut engine, "suggest_test", &[]).unwrap_err();
+    assert!(err.starts_with("unknown tool: suggest_test. Valid tools: analyze, impact, suggest_tests"), "{err}");
+}
+
+#[test]
+fn risk_rows_are_compact_and_skip_test_support_code() {
+    let dir = scratch("riskrows");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::create_dir_all(dir.join("tests/fixtures/sample/src")).unwrap();
+    fs::write(dir.join("src/app.py"), "def run():\n    return 1\n").unwrap();
+    fs::write(dir.join("tests/fixtures/sample/src/hub.py"), "def hub():\n    return 2\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    let risk = engine.dispatch("risk_map", &chisel::json::Value::object(vec![])).unwrap();
+    let files = risk.get("files").and_then(|v| v.as_array()).unwrap();
+    let paths: Vec<&str> = files.iter().filter_map(|f| f.get("file_path").and_then(|v| v.as_str())).collect();
+    assert_eq!(paths, vec!["src/app.py"], "fixture code under tests/ must not be ranked");
+    let row = chisel::json::to_string(&files[0]).unwrap();
+    for noise in ["\"unit_name\"", "shadow_edge_count", "dynamic_edge_count", "\"cochange_branch\"", ":0.0,", ":0.0}", ":0,", ":0}", ":null", ":[]"] {
+        assert!(!row.contains(noise), "{noise} in {row}");
+    }
+    assert!(row.contains("\"risk_score\"") && row.contains("\"coverage_gap\":1.0"), "{row}");
+    let gaps = engine.dispatch("test_gaps", &chisel::json::Value::object(vec![])).unwrap();
+    assert!(!chisel::json::to_string(&gaps).unwrap().contains("hub.py"));
+    let all = engine.dispatch("risk_map", &chisel::json::Value::object(vec![("exclude_tests".into(), chisel::json::Value::Bool(false))])).unwrap();
+    assert!(chisel::json::to_string(&all).unwrap().contains("tests/fixtures/sample/src/hub.py"));
+}
+
+fn snapshot_rows(store: &Path, key: &str) -> Vec<String> {
+    let doc = chisel::json::parse(&fs::read_to_string(store.join("store")).unwrap()).unwrap();
+    let mut rows: Vec<String> = doc.get(key).and_then(|v| v.as_array()).unwrap_or(&[]).iter().map(|r| chisel::json::to_string(r).unwrap()).collect();
+    rows.sort();
+    rows
+}
+
+/// The history stream must store exactly what one `git log -L` per function and one
+/// `git blame` per file stored, on a history with a rename, a merge, and a dirty file.
+#[test]
+fn history_stream_matches_per_function_git_and_spawns_neither() {
+    let dir = scratch("stream");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    init_repo(&dir);
+    let step = |files: &[(&str, &str)], msg: &str| {
+        for (p, t) in files {
+            fs::write(dir.join(p), t).unwrap();
+        }
+        commit_all(&dir, msg);
+    };
+    step(&[("src/a.py", "def alpha(x):\n    return x\n\n\ndef beta(y):\n    return y\n")], "one");
+    step(&[("src/a.py", "def alpha(x):\n    x = abs(x)\n    return x\n\n\ndef beta(y):\n    return y\n"), ("src/c.py", "def gamma():\n    return 3\n")], "two");
+    git(&dir, &["mv", "src/a.py", "src/b.py"]);
+    commit_all(&dir, "rename");
+    git(&dir, &["checkout", "-q", "-b", "side"]);
+    step(&[("src/b.py", "def alpha(x):\n    x = abs(x)\n    return x\n\n\ndef beta(y):\n    return y + 1\n")], "side");
+    git(&dir, &["checkout", "-q", "main"]);
+    step(&[("src/c.py", "def gamma():\n    return 4\n")], "main");
+    git(&dir, &["merge", "-q", "--no-edit", "side"]);
+    fs::write(dir.join("src/c.py"), "def gamma():\n    return 5\n").unwrap();
+
+    let slow_store = dir.join("slow");
+    let mut slow = chisel::Engine::open(&dir, Some(&slow_store)).unwrap();
+    slow.history_stream = false;
+    slow.analyze().unwrap();
+
+    let fast_store = dir.join("fast");
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fast = chisel::Engine::open(&dir, Some(&fast_store)).unwrap();
+    fast.set_git_runner(recording_runner(Arc::clone(&log)));
+    fast.analyze().unwrap();
+
+    for key in ["churn", "blame"] {
+        assert_eq!(snapshot_rows(&fast_store, key), snapshot_rows(&slow_store, key), "{key} differs");
+    }
+    assert!(snapshot_rows(&fast_store, "churn").iter().any(|r| r.contains("\"unit_name\":\"beta\"")), "no unit churn");
+    let spawns = log.lock().unwrap().clone();
+    let per_function: Vec<&String> = spawns.iter().filter(|s| s.contains("-L:")).collect();
+    let blames: Vec<&String> = spawns.iter().filter(|s| s.contains("blame")).collect();
+    // Only the dirty file needs real `git blame` (uncommitted lines); nothing needs `-L`.
+    assert!(per_function.is_empty(), "{per_function:?}");
+    assert_eq!(blames.len(), 1, "{blames:?}");
+    assert!(blames[0].contains("src/c.py"), "{blames:?}");
+}
+
+#[test]
+fn update_lists_files_and_reads_new_commits_together() {
+    let dir = scratch("updpar");
+    fs::write(dir.join("a.py"), "def a():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    fs::write(dir.join("a.py"), "def a():\n    return 2\n").unwrap();
+    commit_all(&dir, "two");
+    let inflight = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (now, max) = (Arc::clone(&inflight), Arc::clone(&peak));
+    engine.set_git_runner(Arc::new(move |repo, args| {
+        let tracked = args.contains(&"ls-files") || args.iter().any(|a| a.starts_with("--since="));
+        if tracked {
+            max.fetch_max(now.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        let out = Command::new("git").args(args).current_dir(repo).output();
+        if tracked {
+            now.fetch_sub(1, Ordering::SeqCst);
+        }
+        out
+    }));
+    let update = engine.update().unwrap();
+    assert_eq!(update.get("new_commits").and_then(|v| v.as_i64()), Some(1), "{update:?}");
+    assert_eq!(peak.load(Ordering::SeqCst), 2, "file listing and git log ran one after the other");
 }

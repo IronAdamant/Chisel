@@ -111,9 +111,23 @@ fn run(bin: &str, dir: &Path, storage: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// Risk rows drop no-signal fields (zeros, nulls, empty lists); the oracle is compared the same way.
+fn compacted(mut doc: chisel::json::Value, key: &str) -> chisel::json::Value {
+    if let Some(chisel::json::Value::Array(rows)) = doc.get_mut(key) {
+        for row in rows.iter_mut() {
+            *row = chisel::impact::compact_risk_row(row);
+        }
+    }
+    doc
+}
+
 fn expect(actual: &str, fixture: &str) {
     let got = chisel::json::parse(actual.trim()).unwrap();
-    let want = frozen(fixture);
+    let want = match fixture {
+        "risk-map" => compacted(frozen(fixture), "files"),
+        "triage" => compacted(frozen(fixture), "top_risk_files"),
+        _ => frozen(fixture),
+    };
     assert_eq!(got, want, "{fixture} mismatch\n{actual}");
 }
 

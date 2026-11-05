@@ -46,8 +46,10 @@ Always pass `--json` on the CLI and branch on `status` before treating a payload
 - `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` apply when the CLI flags are absent.
 - `CHISEL_INCLUDE_IGNORED=1` scans ignored files. Non-git projects are unfiltered.
 - Shards: `CHISEL_SHARDS` or `.chisel/shards.toml`. One snapshot per shard. Unscoped reads aggregate. Unknown shard is `status: "error"`. Cross-shard test edges are overlaid from the parent snapshot. `flakiness_trend` is set when dated results span two of the last four weeks.
-- Above 2000 code files, file-level churn still runs and per-function `git log -L` does not (`unit_churn_skipped`).
-- A no-op `update` sets `edge_rebuild_skipped` true and does not run `git blame` or `git log -L`.
+- Function churn and blame come from one batched `git log -p` stream; only files it cannot replay (dirty, untracked, diff-driver attributes) spawn `git log -L` or `git blame`.
+- Above 2000 code files, file-level churn still runs and per-function churn does not (`unit_churn_skipped`).
+- A no-op `update` sets `edge_rebuild_skipped` true and reads no history.
+- `risk_map`/`triage` rows omit zero and empty fields. A refused lock returns the holder's `purpose` and expiry.
 - `chisel run` records pytest and Jest and forwards the test process exit code. One snapshot flush for the whole run.
 - `chisel watch` polls `git status` and runs `update` when the worktree changes. `--interval` is seconds. `--once` exits after one check.
 - A custom parser is an executable named by `CHISEL_EXTRACTOR`, or by `.chisel/extensions.toml` when the process starts with `--allow-repo-extractor` or `CHISEL_ALLOW_REPO_EXTRACTOR=1`. `CHISEL_DEP_EXTRACTOR` or `dep_extractor` in that file supplies test dependencies. A tool argument cannot turn the repo file on. The path must stay inside the project. Its libraries stay outside this binary.

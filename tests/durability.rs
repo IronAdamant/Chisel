@@ -1,7 +1,7 @@
 //! Kill a writer after the temp snapshot exists, and prove readers never see a tear.
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,6 +9,60 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_chisel")
+}
+
+const CHILD_ENV: &str = "CHISEL_DURABILITY_CHILD_DIR";
+
+/// Re-run this test binary so that only `helper` runs, as a separate process.
+/// The helpers live here rather than in the shipped binary, so they exist in
+/// debug and release test builds alike.
+fn spawn_helper(helper: &str, dir: &std::path::Path, stderr: Stdio) -> std::process::Child {
+    Command::new(std::env::current_exe().unwrap())
+        .args([helper, "--exact", "--nocapture", "--test-threads=1"])
+        .env(CHILD_ENV, dir)
+        .stdout(Stdio::piped())
+        .stderr(stderr)
+        .spawn()
+        .unwrap()
+}
+
+fn child_dir() -> Option<PathBuf> {
+    std::env::var_os(CHILD_ENV).map(PathBuf::from)
+}
+
+/// Child half of `kill_before_rename_keeps_previous_snapshot`. A no-op unless spawned.
+#[test]
+fn helper_pause_before_rename() {
+    let Some(dir) = child_dir() else { return };
+    let mut store = chisel::store::Store::open(&dir).unwrap();
+    let current = store.doc.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let next = format!("{current}-pending");
+    store.doc.insert("token", chisel::json::Value::String(next.clone()));
+    store.doc.insert("token_copy", chisel::json::Value::String(next));
+    let _guard = store.hold_exclusive_after_temp().unwrap();
+    println!("READY");
+    let _ = std::io::stdout().flush();
+    std::thread::sleep(std::time::Duration::from_secs(30));
+}
+
+/// Child half of `shared_reader_never_sees_a_torn_snapshot`. A no-op unless spawned.
+#[test]
+fn helper_read_loop() {
+    let Some(dir) = child_dir() else { return };
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_millis(800) {
+        let store = chisel::store::Store::open(&dir).unwrap();
+        let token = store.doc.get("token").and_then(|v| v.as_str()).unwrap_or("");
+        let copy = store.doc.get("token_copy").and_then(|v| v.as_str()).unwrap_or("");
+        if token != copy {
+            println!("TORN {token} {copy}");
+            let _ = std::io::stdout().flush();
+            return;
+        }
+        println!("OK");
+        let _ = std::io::stdout().flush();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 fn scratch() -> PathBuf {
@@ -28,13 +82,7 @@ fn kill_before_rename_keeps_previous_snapshot() {
     store.doc.insert("token_copy", chisel::json::Value::String("first".into()));
     store.save().unwrap();
 
-    let mut child = Command::new(bin())
-        .args(["internal-pause-before-rename", "--storage-dir"])
-        .arg(&dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = spawn_helper("helper_pause_before_rename", &dir, Stdio::null());
     let mut stdout = child.stdout.take().unwrap();
     let mut out = String::new();
     let mut buf = [0u8; 32];
@@ -64,13 +112,7 @@ fn shared_reader_never_sees_a_torn_snapshot() {
     store.doc.insert("token_copy", chisel::json::Value::String("0".into()));
     store.save().unwrap();
 
-    let mut reader = Command::new(bin())
-        .args(["internal-read-loop", "--storage-dir"])
-        .arg(&dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut reader = spawn_helper("helper_read_loop", &dir, Stdio::piped());
     std::thread::sleep(std::time::Duration::from_millis(30));
     for i in 1..=30 {
         let token = i.to_string();

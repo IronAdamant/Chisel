@@ -8,6 +8,7 @@ pub mod fswatch;
 pub mod syntax;
 pub mod git;
 pub mod hash;
+pub mod history;
 pub mod http;
 pub mod impact;
 pub mod json;
