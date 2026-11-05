@@ -25,7 +25,7 @@ CLI agents pass `--json` and branch on `status`. Exit code is not enough.
 
 `no_data` and `stale_db` exit 0. `error` and `git_error` exit 1.
 
-MCP is `chisel serve-mcp` or the `chisel-mcp` binary. Stdio messages are newline-delimited JSON. Content-Length framing is still accepted and answered in the same framing. HTTP `chisel serve` answers `GET /health`, `GET /tools`, and `POST /call` only. There is no `/mcp` path. `suggest_tests` on a JS or TS file that calls `eval` or `new Function` adds a `warn_eval_used` next step.
+MCP is `chisel serve-mcp` or the `chisel-mcp` binary. `CHISEL_TOOLS` and `CHISEL_DISABLE` hide MCP tool groups (`core` always on; `risk`, `history`, `maintenance`, `locks`); a hidden tool's call returns `isError` naming the variable to change, and an unknown name exits 2 at startup. See README "Tool groups". Stdio messages are newline-delimited JSON. Content-Length framing is still accepted and answered in the same framing. HTTP `chisel serve` answers `GET /health`, `GET /tools`, and `POST /call` only. There is no `/mcp` path. `suggest_tests` on a JS or TS file that calls `eval` or `new Function` adds a `warn_eval_used` next step.
 
 First call `analyze` when you see `no_data`. After edits, call `diff_impact`. Use `suggest_tests` with `file_path`. Use `triage` for a bounded risk pass. `impact` requires `files`. A missing required argument returns `status: "error"`, not an empty list.
 
