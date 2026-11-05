@@ -1,52 +1,26 @@
 # Chisel
 
-Test impact analysis and code intelligence built for AI coding agents. Zero external dependencies, open source, MIT licensed.
+Test impact analysis and code intelligence for AI coding agents. One std-only Rust binary, no crates, MIT licensed.
 
-Chisel maps tests to code, code to git history, and answers: **what to run, what's risky, and who touched it.** It runs as an MCP server alongside your agent — Claude Code, Cursor, Windsurf, Cline, or any MCP-compatible client.
+After an edit, an agent asks Chisel **which tests to run**, **which files are risky**, and **who knows this code**. Chisel answers from a graph of your code, your tests, and your git history, over MCP (Claude Code, Cursor, Windsurf, Cline) or a JSON CLI.
 
-![Chisel analyzing a real project — risk map, churn, ownership, test gaps, and agent interpretation](docs/chisel-demo.png)
-
-## What it does
-
-Chisel builds a graph connecting your code, tests, and git history, then answers three questions:
-
-### 1. What to run
-
-You change a function in `src/engine/analyze.rs`. Chisel tells the agent which tests are impacted, through direct edges and the import graph, instead of running the whole suite or guessing from the filename.
-
-### 2. What's risky
-
-Risk scores per file based on churn rate, coupling breadth, test coverage gaps, author concentration, and test instability. A file that changes often, has one author, and no tests? That's your highest risk.
-
-### 3. Who touched it
-
-Blame-based ownership (who wrote it) and commit-activity-based reviewer suggestions (who maintains it). Useful when multiple agents or developers work on the same codebase and you need to understand lineage.
-
-## Why it exists
-
-When multiple LLM agents (or agents + humans) work on the same codebase, changes in one area can silently break another.
-
-Chisel gives AI coding assistants the intelligence to understand the blast radius of their changes before they commit. One agent's refactor doesn't silently regress another agent's work — automated code quality checks that work at the speed of your agent.
+![Chisel analyzing a real project: risk map, churn, ownership, test gaps](docs/chisel-demo.png)
 
 ## Install
 
-The tool you run is the Rust binary. Build it from this repo. Result checks use the JSON under `tests/fixtures/oracle`. There is no Python package to install.
+Download a binary for Linux (musl), macOS (arm64, x64), or Windows from [Releases](https://github.com/IronAdamant/Chisel/releases), put it on your `PATH` as `chisel`, and make sure `git` is installed. Or build it:
 
 ```bash
 git clone https://github.com/IronAdamant/Chisel.git
 cd Chisel
-cargo build --release
+cargo build --release        # binary: target/release/chisel
 ```
 
-The binary is `target/release/chisel`. `chisel serve-mcp` starts the stdio MCP server. A local build also writes `chisel-mcp`, which is the same program.
-
-Storage is a snapshot file at `.chisel/store`. Pass `--json` and branch on the `status` field. `no_data` means run `analyze`. `stale_db` means run `update` or pass `auto_update`.
-
-If you still have a SQLite `chisel.db` from the Python release, `chisel migrate path/to/chisel.db` copies the recorded test results into the snapshot. Other commands leave that file alone. The live store is not SQLite.
+On Windows without the MSVC Build Tools, build with the GNU toolchain: `cargo +stable-x86_64-pc-windows-gnu build --release`, adding `RUSTFLAGS="-C link-self-contained=yes"` if your MinGW is llvm-mingw.
 
 ## Use with Claude Code (MCP)
 
-Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.json`):
+Add to `.mcp.json` in your project (or `~/.claude.json`):
 
 ```json
 {
@@ -54,138 +28,64 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.j
     "chisel": {
       "command": "chisel",
       "args": ["serve-mcp"],
-      "env": {
-        "CHISEL_PROJECT_DIR": "/path/to/your/project",
-        "CHISEL_STORAGE_DIR": "/path/to/your/project/.chisel"
-      }
+      "env": { "CHISEL_PROJECT_DIR": "/path/to/your/project" }
     }
   }
 }
 ```
 
-`chisel serve-mcp` speaks newline-delimited JSON-RPC on stdio, the same framing standard MCP clients send. A client that sends `Content-Length` headers still receives a `Content-Length` reply. `initialize` reports the crate version in `serverInfo.version`. The release binary is `chisel`. A copy named `chisel-mcp` or `chisel-mcp.exe` starts the same server. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` are honoured when the CLI flags are absent.
+The snapshot goes to `<project>/.chisel/store` unless `CHISEL_STORAGE_DIR` says otherwise. Any stdio MCP client works the same way. `chisel serve --port 8377` is a separate JSON HTTP API (`GET /health`, `GET /tools`, `POST /call`), not an MCP URL.
 
-Run `analyze` first to build the project graph, then `diff_impact` after edits to see which tests to run. `analyze` with `force` on more than 300 code files returns `auto_queued` and a `job_id`. Poll `job_status`. `--working-tree` reads the worktree. Leave it off to answer from the snapshot.
+The agent loop: call `analyze` once, `diff_impact` after each edit, run the tests it names, then `record_result`. When something needs doing, the response has a `status` (`no_data`: call `analyze`; `stale_db`: call `update`), and most responses suggest `next_steps`. The full calling contract is in [AGENTS.md](AGENTS.md). A ready-made Claude Code skill is in [skills/SKILL.md](skills/SKILL.md).
 
-**Monorepo sharding:** `CHISEL_SHARDS` or `.chisel/shards.toml` gives each shard its own snapshot under `.chisel/shards/<shard>/`. Unscoped reads aggregate. Writes use the longest path prefix. A test in one shard that imports code in another is stored on the parent snapshot and included in `impact` and `suggest_tests`. An unknown shard returns `status: "error"`.
-
-After running tests, call `record_result` so Chisel can track failure rates and test instability over time. Or use `chisel run -- pytest tests/` to run tests and record results automatically.
-
-There is also an installable Claude Code **skill** with the distilled agent protocol: copy [`skills/SKILL.md`](skills/SKILL.md) to `~/.claude/skills/chisel/SKILL.md`.
-
-## Use with Cursor, Windsurf, Cline, or other MCP clients
-
-Stdio MCP for local clients:
+## CLI in 30 seconds
 
 ```bash
-chisel serve-mcp
+chisel analyze .                           # build the graph (once; `update` after that)
+chisel diff-impact --json                  # tests touched by your uncommitted changes
+chisel suggest-tests src/engine/analyze.rs # ranked tests for one file
+chisel triage                              # top risky files, untested code, stale tests
+chisel run -- pytest tests/                # run tests and record pass/fail
 ```
 
-HTTP is a separate JSON API, not an MCP URL. `chisel serve --port 8377` answers `GET /health`, `GET /tools`, and `POST /call`. There is no `/mcp` path.
+`chisel --help` lists every command and `chisel <command> --help` shows its flags. With `--json`, branch on `status`: `error` and `git_error` exit 1, everything else exits 0.
 
-## Quickstart (CLI)
+## MCP tools
 
-```bash
-# Analyze a project (builds the graph)
-chisel analyze .
+| Tool | Answers |
+|---|---|
+| `analyze`, `update` | Build or incrementally refresh the snapshot. `start_job`, `job_status`, `cancel_job` run them in the background. |
+| `diff_impact` | Which tests cover what changed in `git diff` (plus untracked code)? |
+| `impact`, `suggest_tests` | Which tests cover these files, ranked? |
+| `triage`, `risk_map`, `test_gaps` | Where is risk: churn, coupling, coverage gaps, one-author code, flaky tests? |
+| `churn`, `coupling`, `history` | How often does this change, and what changes with it? |
+| `ownership`, `who_reviews` | Who wrote it, and who maintains it now? |
+| `stale_tests` | Which tests point at code that no longer exists? |
+| `record_result`, `stats`, `optimize_storage` | Feed results back, read counts, compact the snapshot. |
+| `acquire_file_lock` and five more lock tools | Advisory locks with a `purpose` note so parallel agents see who is editing what. |
 
-# What tests are impacted by my current changes?
-chisel diff-impact
+## How it works
 
-# What tests should I run for this file?
-chisel suggest-tests src/engine/analyze.rs
+1. **Scan.** `git ls-files` lists code. A built-in extractor (no tree-sitter) finds functions, classes, and tests in Python, JS/TS, Go, Rust, Java, Kotlin, C#, C/C++, Swift, PHP, Ruby, and Dart, and recognises pytest, Jest, Playwright, Go test, Rust `#[test]`, JUnit, xUnit, XCTest, PHPUnit, RSpec, gtest, and Dart test.
+2. **Link.** Each test's imports and calls become edges to the code units they reach. Imports between code files form a second graph that `diff_impact` walks for indirect hits.
+3. **Mine git.** `git log`, `git blame`, and per-function `git log -L` give churn, co-change coupling, and authorship.
+4. **Store.** Everything lands in one JSON snapshot, `.chisel/store`, written atomically under a cross-process lock. `update` re-reads only changed files and new commits.
+5. **Answer.** Queries read the snapshot, so most calls return in milliseconds; `diff_impact` also asks git what changed.
 
-# Risk heatmap (defaults: line-weighted coverage + proximity adjustment)
-chisel risk-map
-chisel risk-map --working-tree --auto-update
-chisel risk-map --no-proximity --coverage-mode unit   # override defaults
+Scores are heuristics. Read `_meta.uniform_components` before trusting a composite risk score.
 
-# Find code with no test coverage, sorted by risk
-chisel test-gaps --working-tree
+## More
 
-# Who owns this code?
-chisel ownership src/engine/analyze.rs
-
-# Run tests AND record pass/fail results in one step
-chisel run -- pytest tests/
-
-# Incremental update (near-instant when nothing changed)
-chisel update
-
-# Copy recorded results out of a Python-era chisel.db
-chisel migrate path/to/chisel.db
-
-# One command's flags
-chisel churn --help
-```
-
-## Try it on this repo
-
-```bash
-git clone https://github.com/IronAdamant/Chisel.git
-cd Chisel
-cargo build --release
-./target/release/chisel analyze .
-chisel risk-map
-chisel diff-impact
-chisel test-gaps
-```
-
-The same binary has been run on flask, requests, cJSON, quixbugs, and the Probatio Separate language trees. Those snapshots were written outside the repos.
-
-## MCP Tools
-
-20 functional tools plus 6 advisory file-lock helpers for multi-agent coordination.
-
-| Tool | What it does |
-|------|-------------|
-| `analyze` | Full project scan — builds the code/test/git graph. Optional `shard` param for sharded monorepos |
-| `update` | Incremental re-analysis of changed files only. Optional `shard` param for sharded monorepos |
-| `diff_impact` | Detects your changes from `git diff` and returns impacted tests. `working_tree=true` reads untracked files. `auto_update=true` refreshes a stale snapshot inline |
-| `suggest_tests` | Ranks tests for one file (`file_path`) or every code file under `directory`. `fallback_to_all` ranks every known test when nothing else matches. A file that is not in the snapshot returns `stale_db` unless `working_tree` is set |
-| `impact` | Which tests cover these files? Pass `functions` to limit the direct edges to those names |
-| `risk_map` | Risk scores for all files (churn + coupling + coverage gaps). Defaults: line-weighted coverage + proximity. `working_tree=true` includes untracked files. `exclude_new_file_boost=true` suppresses the new-file boost. `auto_update=true` refreshes a stale snapshot inline |
-| `test_gaps` | Code with zero test coverage, sorted by risk. `working_tree=true` includes uncommitted files. `auto_update=true` refreshes a stale snapshot inline |
-| `triage` | Top risks + gaps + stale tests in one call. Supports `exclude_new_file_boost` and `auto_update` |
-| `churn` | How often does this file or function change? |
-| `coupling` | Files that change together or import each other |
-| `ownership` | Blame-based — who wrote this code? |
-| `who_reviews` | Commit-activity-based — who maintains this code? |
-| `stale_tests` | Tests whose edges name code ids that are no longer in the snapshot |
-| `history` | Commit history for a file |
-| `record_result` | Log a pass or fail. `duration_ms` is stored and feeds the duration-variance part of test instability |
-| `run` | CLI-only: stream a test command and record pytest or Jest results. Jest is invoked with `--json` and a relative test id. `npx` is treated as Jest. `go test` gets `-json` and `cargo test` gets `--message-format=json` |
-| `stats` | Snapshot counts. It does not return the full result history |
-| `start_job` | Run analyze/update in background (avoids MCP timeouts). Optional `shard` param |
-| `job_status` | Poll a background job until complete |
-| `cancel_job` | Request cooperative cancellation of a running background job |
-| `optimize_storage` | Rewrite the snapshot file at `.chisel/store` |
-
-## Features
-
-- **Zero dependencies** — the Rust binary links only the standard library. No crates.io crates. System `git` is required at runtime.
-- **Multi-language** — Python, JavaScript/TypeScript, Go, Rust, C#, Java, Kotlin, C/C++, Swift, PHP, Ruby, Dart
-- **Framework-aware** — pytest, Jest, Go test, Rust `#[test]` (including `#[tokio::test]` and `#[rstest]`, in `tests/*.rs` and in source files), Playwright, xUnit/NUnit/MSTest, JUnit (incl. parameterized), XCTest + Swift Testing, PHPUnit, RSpec, Minitest, gtest, Dart test
-- **Incremental** — `update` recomputes changed files and newer commits. A no-op update sets `edge_rebuild_skipped` and does not run `git blame` or per-function `git log -L`. Above 2000 code files, file-level churn still runs and per-function `git log -L` does not (`unit_churn_skipped`).
-- **gitignore-aware** — ignored trees (vendored deps, build output, fixtures) are never scanned; untracked files still are (`CHISEL_INCLUDE_IGNORED=1` to override)
-- **Branch-aware** — `diff_impact` auto-detects feature branch vs main. Feature-branch co-change comes from `merge-base..HEAD`. `main` and `master` keep that list empty.
-- **Multi-agent safe** — cross-process locks so parallel agents don't corrupt the snapshot
-- **MCP + CLI** — stdio MCP (`chisel serve-mcp`, newline JSON or Content-Length) and a JSON HTTP API (`GET /health`, `GET /tools`, `POST /call`). `chisel <command> --help` prints that command. HTTP `suggest_tests` adds a warning when the file uses `eval` or `new Function`
-- **CI-friendly** — `error` and `git_error` exit 1. Other statuses, including `no_data` and `stale_db`, exit 0. `examples/github-actions/chisel.yml` builds this binary with Cargo. Do not pip-install Chisel.
-- **Monorepo sharding** — one snapshot per shard under `.chisel/shards/<shard>/` (`CHISEL_SHARDS` or `.chisel/shards.toml`). Cross-shard test edges are overlaid from the parent snapshot. `flakiness_trend` appears when dated test results span two weeks.
-- **Custom extractors** — `CHISEL_EXTRACTOR` names an executable that returns code units. `CHISEL_DEP_EXTRACTOR`, or `dep_extractor` in `.chisel/extensions.toml`, names an executable that returns import and call dependencies. That replaces the old Python `register_dep_extractor` hook. `CHISEL_BOOTSTRAP` is not a Python import: if it points at an executable it is used as the dependency extractor, otherwise it is ignored with a warning. The binary does not load tree-sitter or plugins.
-
-## Ecosystem
-
-Chisel sits in the agent loop: impact -> tests -> record results -> refresh analysis. It works standalone or alongside [Stele](https://github.com/IronAdamant/Stele) for semantic code context.
-
-**Docs for this binary:** [AGENTS.md](AGENTS.md) | [Claude Code skill](skills/SKILL.md)
-
-Checked-in oracle JSON lives in `tests/fixtures/oracle`. There is no Python package to install.
+- [AGENTS.md](AGENTS.md): statuses, environment variables, sharding, scale limits
+- [docs/AGENT_PLAYBOOK.md](docs/AGENT_PLAYBOOK.md) and [docs/LLM_CONTRACT.md](docs/LLM_CONTRACT.md): how an agent should call Chisel
+- [docs/CUSTOM_EXTRACTORS.md](docs/CUSTOM_EXTRACTORS.md): plug in your own extractor executable
+- [docs/ZERO_DEPS.md](docs/ZERO_DEPS.md): why there are no crates
+- [ARCHITECTURE.md](ARCHITECTURE.md): module map
+- `chisel migrate path/to/chisel.db` copies recorded results from a Python-era SQLite database into the snapshot.
 
 ## Benchmarks
 
-Timed on this machine: Linux 6.12.94+, 4 vCPUs, Intel Xeon, 15.6 GiB RAM, Rust 1.97.0, Python 3.12.3. Five runs per command. The figure is the median in milliseconds, with the minimum and maximum in parentheses. The small repo is a two-file Python sample. The large repo is the `django` package from django/django (about 1000 code files) plus 80 of its test modules, with history split into commits of at most 100 paths so a shallow-clone boundary commit does not pair every file with every other file. Peak RSS and the raw log are in [`scripts/benchmark_results.md`](scripts/benchmark_results.md). Reproduce with `scripts/benchmark_parity.py`.
+Timed on this machine: Linux 6.12.94+, 4 vCPUs, Intel Xeon, 15.6 GiB RAM, Rust 1.97.0, Python 3.12.3. Five runs per command. The figure is the median in milliseconds, with the minimum and maximum in parentheses. The small repo is a two-file Python sample. The large repo is the `django` package from django/django (about 1000 code files) plus 80 of its test modules, with history split into commits of at most 100 paths so a shallow-clone boundary commit does not pair every file with every other file. Peak RSS and the raw log are in [`scripts/benchmark_results.md`](scripts/benchmark_results.md). Reproduce with `cargo run --release --example benchmark_parity` (arguments at the top of [`examples/benchmark_parity.rs`](examples/benchmark_parity.rs)).
 
 | Command | Python small | Rust small | Python large | Rust large |
 |---|---:|---:|---:|---:|
