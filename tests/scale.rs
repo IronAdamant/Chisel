@@ -1052,7 +1052,12 @@ fn feature_branch_co_change_feeds_risk_and_matches_python() {
         .unwrap();
     assert!(risk.status.success(), "{}", String::from_utf8_lossy(&risk.stderr));
     let got = chisel::json::parse(&String::from_utf8_lossy(&risk.stdout)).unwrap();
-    let want = chisel::json::parse(include_str!("fixtures/oracle/feature-risk-map.json")).unwrap();
+    let mut want = chisel::json::parse(include_str!("fixtures/oracle/feature-risk-map.json")).unwrap();
+    if let Some(chisel::json::Value::Array(rows)) = want.get_mut("files") {
+        for row in rows.iter_mut() {
+            *row = chisel::impact::compact_risk_row(row);
+        }
+    }
     assert_eq!(got, want, "{}", String::from_utf8_lossy(&risk.stdout));
 }
 
@@ -1981,6 +1986,33 @@ fn watch_keeps_running_after_a_git_index_lock() {
         latest.contains("\"files_updated\": 1") || latest.contains("\"files_updated\":1"),
         "{latest}"
     );
+}
+
+#[test]
+fn risk_rows_are_compact_and_skip_test_support_code() {
+    let dir = scratch("riskrows");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::create_dir_all(dir.join("tests/fixtures/sample/src")).unwrap();
+    fs::write(dir.join("src/app.py"), "def run():\n    return 1\n").unwrap();
+    fs::write(dir.join("tests/fixtures/sample/src/hub.py"), "def hub():\n    return 2\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    let risk = engine.dispatch("risk_map", &chisel::json::Value::object(vec![])).unwrap();
+    let files = risk.get("files").and_then(|v| v.as_array()).unwrap();
+    let paths: Vec<&str> = files.iter().filter_map(|f| f.get("file_path").and_then(|v| v.as_str())).collect();
+    assert_eq!(paths, vec!["src/app.py"], "fixture code under tests/ must not be ranked");
+    let row = chisel::json::to_string(&files[0]).unwrap();
+    for noise in ["\"unit_name\"", "shadow_edge_count", "dynamic_edge_count", "\"cochange_branch\"", ":0.0,", ":0.0}", ":0,", ":0}", ":null", ":[]"] {
+        assert!(!row.contains(noise), "{noise} in {row}");
+    }
+    assert!(row.contains("\"risk_score\"") && row.contains("\"coverage_gap\":1.0"), "{row}");
+    let gaps = engine.dispatch("test_gaps", &chisel::json::Value::object(vec![])).unwrap();
+    assert!(!chisel::json::to_string(&gaps).unwrap().contains("hub.py"));
+    let all = engine.dispatch("risk_map", &chisel::json::Value::object(vec![("exclude_tests".into(), chisel::json::Value::Bool(false))])).unwrap();
+    assert!(chisel::json::to_string(&all).unwrap().contains("tests/fixtures/sample/src/hub.py"));
 }
 
 fn snapshot_rows(store: &Path, key: &str) -> Vec<String> {

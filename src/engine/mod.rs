@@ -513,6 +513,16 @@ pub(crate) fn unit_obj(rel: &str, u: &CodeUnit, hash: &str) -> Value {
     ])
 }
 
+/// Code that lives under a test-support directory (`tests/`, `fixtures/`, `testdata/`, ...)
+/// without being a test file itself: fixtures, sample projects, mocks, helpers.
+/// `risk_map` and `test_gaps` leave it out when `exclude_tests` is on.
+pub(crate) fn is_test_support_path(path: &str) -> bool {
+    const DIRS: [&str; 10] = ["tests", "test", "__tests__", "testdata", "test_data", "fixtures", "__fixtures__", "__mocks__", "spec", "testing"];
+    let mut parts: Vec<&str> = path.split('/').collect();
+    parts.pop();
+    parts.iter().any(|d| DIRS.iter().any(|t| d.eq_ignore_ascii_case(t)))
+}
+
 pub(crate) fn is_test_unit_type(unit_type: &str) -> bool {
     unit_type == "test_case" || unit_type == "test_suite"
 }

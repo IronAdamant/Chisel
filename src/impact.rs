@@ -260,6 +260,38 @@ pub fn score_file(inp: &RiskInputs) -> Value {
     ])
 }
 
+/// A risk row without the fields that carry no signal: null, zero, false, and empty lists or
+/// objects, at any depth. `file_path`, `risk_score` and `flakiness_trend` (0.0 is a flat trend) always stay. Ranking and `_meta` are
+/// computed from the full row first.
+pub fn compact_risk_row(row: &Value) -> Value {
+    fn empty(v: &Value) -> bool {
+        match v {
+            Value::Null | Value::Bool(false) => true,
+            Value::Int(n) => *n == 0,
+            Value::Float(f) => *f == 0.0,
+            Value::Array(a) => a.is_empty(),
+            Value::Object(o) => o.is_empty(),
+            _ => false,
+        }
+    }
+    fn compact(v: &Value) -> Value {
+        match v {
+            Value::Object(pairs) => Value::Object(
+                pairs
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        let v = compact(v);
+                        let keep = k == "file_path" || k == "risk_score" || k == "flakiness_trend" || !empty(&v);
+                        keep.then(|| (k.clone(), v))
+                    })
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    compact(row)
+}
+
 fn depth_num(depth: f64) -> Value {
     Value::Float(depth)
 }

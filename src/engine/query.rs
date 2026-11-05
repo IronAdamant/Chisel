@@ -63,7 +63,7 @@ impl Engine {
                     return false;
                 }
             }
-            if self.exclude_tests && (looks_like_test(p) || gtest_files.contains(p)) {
+            if self.exclude_tests && (looks_like_test(p) || gtest_files.contains(p) || is_test_support_path(p)) {
                 return false;
             }
             true
@@ -1533,7 +1533,7 @@ impl Engine {
             _ => Err(format!("unknown tool: {name}")),
         }?;
         let limited = self.apply_limit(name, args, result);
-        Ok(self.finish_auto(auto, limited))
+        Ok(self.finish_auto(auto, compact_risk_rows(name, limited)))
     }
 
     pub(super) fn test_gaps(&mut self) -> Result<Value, String> {
@@ -1597,7 +1597,7 @@ impl Engine {
                 if !path_in_directory(path, dir) { continue; }
             }
             if is_test_unit_row(u) && self.exclude_tests { continue; }
-            if self.exclude_tests && (looks_like_test(path) || gtest_files.contains(path)) { continue; }
+            if self.exclude_tests && (looks_like_test(path) || gtest_files.contains(path) || is_test_support_path(path)) { continue; }
             let id = u.get("id").and_then(|v| v.as_str()).unwrap_or("");
             if covered.contains(id) {
                 continue;
@@ -2007,4 +2007,19 @@ impl Engine {
         Ok(Value::object(pairs))
     }
 
+}
+
+/// `risk_map` and `triage` rows with their no-signal fields dropped (see `impact::compact_risk_row`).
+fn compact_risk_rows(name: &str, mut result: Value) -> Value {
+    let key = match name {
+        "risk_map" => "files",
+        "triage" => "top_risk_files",
+        _ => return result,
+    };
+    if let Some(Value::Array(rows)) = result.get_mut(key) {
+        for row in rows.iter_mut() {
+            *row = impact::compact_risk_row(row);
+        }
+    }
+    result
 }
