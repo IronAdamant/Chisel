@@ -31,6 +31,8 @@ First call `analyze` when you see `no_data`. After edits, call `diff_impact`. Us
 
 A refused `acquire_file_lock` returns the holder, its `purpose`, `ttl_remaining` and a `reason`. A failed `release_file_lock` or `refresh_file_lock` returns a `reason`. An unknown tool name returns the list of valid names.
 
+Test failures are logged automatically when the `chisel capture --hook` PostToolUse hook is installed (`chisel hook-install --write`). Call `issues` to see open failures, `issue <id>` for suspects (covered code changed since the test last passed) and the fix once it passes, and `trace` for a file's history of breakage. Issues close themselves when the test passes again.
+
 `start_job` returns `queued` and a real `job_id` before the work finishes. `job_status` reads that job. `cancel_job` is observed between files.
 
 ## Choosing groups
@@ -50,6 +52,7 @@ chisel: disable locks, history
 | `history` | churn, ownership, coupling, history, who_reviews | you read `git log`/`git blame` yourself, or another tool covers it |
 | `maintenance` | start_job, job_status, cancel_job, optimize_storage | analyze finishes well within your client's timeout |
 | `locks` | advisory file locks with a `purpose` note | a single agent works on the project, or CoordinationHub or Trammel manages claims |
+| `issues` | issues, issue, trace: failures captured from test runs, their suspects and fixes | no capture hook runs here and you do not use `chisel run` |
 
 `chisel: tools risk` keeps only `core` and `risk`. Lists take group or tool names, separated by commas or spaces. Chisel re-reads the file on each request and sends `notifications/tools/list_changed` when the visible tools change, so no restart is needed. A bad name is ignored and reported as a warning in the `initialize` instructions and in `stats`. `CHISEL_TOOLS` / `CHISEL_DISABLE` in the client's `env` override the `tools` / `disable` lines respectively.
 

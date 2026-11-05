@@ -62,6 +62,7 @@ chisel run -- pytest tests/                # run tests and record pass/fail
 | `ownership`, `who_reviews` | Who wrote it, and who maintains it now? |
 | `stale_tests` | Which tests point at code that no longer exists? |
 | `record_result`, `stats`, `optimize_storage` | Feed results back, read counts, compact the snapshot. |
+| `issues`, `issue`, `trace` | Which tests are failing, what probably broke them, and what fixed them before. |
 | `acquire_file_lock` and five more lock tools | Advisory locks with a `purpose` note so parallel agents see who is editing what. |
 
 ## Tool groups
@@ -75,6 +76,7 @@ Every MCP tool belongs to one group. When Chisel runs next to other tools that a
 | `history` | `churn`, `ownership`, `coupling`, `history`, `who_reviews` | other suite tools' git history lookups |
 | `maintenance` | `start_job`, `job_status`, `cancel_job`, `optimize_storage` | none |
 | `locks` | `acquire_file_lock`, `release_file_lock`, `refresh_file_lock`, `check_file_lock`, `check_locks`, `list_file_locks` | Trammel step claims, CoordinationHub leases |
+| `issues` | `issues`, `issue`, `trace` | none |
 
 ```json
 "env": {"CHISEL_DISABLE": "locks,history"}
@@ -92,7 +94,26 @@ chisel: disable locks, history
 ```
 ````
 
-Turn off `locks` when one agent works on the project or CoordinationHub/Trammel manages claims, `history` when you read git history yourself, `risk` when you only need which tests to run, and `maintenance` when `analyze` is quick. Bad names become warnings in the `initialize` instructions, never errors. Env vars override the file key by key. See [AGENTS.md](AGENTS.md#choosing-groups).
+Turn off `locks` when one agent works on the project or CoordinationHub/Trammel manages claims, `history` when you read git history yourself, `risk` when you only need which tests to run, `maintenance` when `analyze` is quick, and `issues` when no test-capture hook runs in the project. Bad names become warnings in the `initialize` instructions, never errors. Env vars override the file key by key. See [AGENTS.md](AGENTS.md#choosing-groups).
+
+## Issues and traceability
+
+Chisel logs test failures as issues with no model tokens spent. A Claude Code `PostToolUse` hook pipes every test run the agent makes (cargo test, pytest, Jest, Vitest, go test, node:test) into `chisel capture`, which parses failing tests, records each result, and keeps one issue per distinct failure:
+
+- **Dedupe:** test id plus the error with numbers, paths, addresses and times stripped. Repeats raise a count.
+- **Suspects:** the code the failing test covers (its test edges) that changed since the test last passed, ranked by the size of the change, uncommitted edits, recency and churn, each with a one-line reason.
+- **Auto-close:** when the test passes again the issue closes with the fixing commit (or `uncommitted`) and the files changed since it failed. The same failure later reopens it.
+
+The hook prints nothing on success and one line for a new, reopened or fixed issue; it always exits 0 and does nothing in a project without a snapshot (run `chisel analyze` once). `chisel hook-install` prints the hooks and `chisel hook-install --write` merges them into `.claude/settings.local.json`:
+
+```json
+{"hooks": {
+  "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "chisel capture --hook"}]}],
+  "SessionStart": [{"hooks": [{"type": "command", "command": "chisel issues --brief"}]}]
+}}
+```
+
+The SessionStart line prints at most two lines, and only when issues are open. Agents read issues through the `issues` group: `issues` (compact rows, about 150 bytes each), `issue` (suspects, occurrences, excerpt, fix) and `trace` (what broke in a file or function and what fixed it). Without hooks, `chisel run -- <test command>` runs the tests and captures them the same way.
 
 ## How it works
 
