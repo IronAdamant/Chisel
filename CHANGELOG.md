@@ -7,6 +7,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-11-05
+
+Agent-facing speed and output size. `analyze` reads git history in one batched stream instead of one git process per function and per file, `tools/list` and risk rows are about half the size, and lock and tool errors say what to do next. The crate still links only the standard library.
+
 ### Fixed
 
 - A Rust `#[test]` inside a `#[cfg(test)]` module now links to the code in its own file, and takes its calls from its own lines rather than the whole file. `impact` and `suggest_tests` on such a file no longer come back empty or fall back to every test in the repo.
@@ -18,7 +22,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- `analyze` reads function churn and blame from one batched `git log -p` stream and replays git's `-L` and blame rules in-process (`src/history.rs`), instead of one `git log -L` per function and one `git blame` per file. On a 144-file Trammel clone `analyze` went from 10-19 s to 0.5-1.1 s. Results matched real git for 1952 functions and 306 files across four repositories; files the stream cannot replay exactly still spawn git. `update` uses the same path for the files in scope and lists files and new commits together.
+- `analyze` reads function churn and blame from one batched `git log -p` stream and replays git's `-L` and blame rules in-process (`src/history.rs`), instead of one `git log -L` per function and one `git blame` per file. On a 144-file Trammel clone `analyze` went from 10-19 s to 0.5-1.1 s; on Specula (587 code files, 791 commits) from 160-243 s to 9-17 s. Above 2000 code files, where there is no function churn, blame stays one `git blame` per file as before. Results matched real git for 1952 functions and 306 files across four repositories; files the stream cannot replay exactly still spawn git. `update` uses the same path for the files in scope and lists files and new commits together.
 - `diff_impact` reads every changed function from one `git diff -U0` and, when the ref is HEAD (or the one passed), runs it in the same round as the branch lookup, the untracked listing and the file list.
 - `risk_map` and `triage` rows drop fields that are zero, null, false or empty (about half of each row). `file_path`, `risk_score` and `flakiness_trend` always stay.
 - `tools/list` is 11.6 KB instead of 19.2 KB. Descriptions say what each tool answers and when to call it; arguments are unchanged.
