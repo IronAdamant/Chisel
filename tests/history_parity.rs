@@ -88,7 +88,8 @@ fn compare(dir: &Path, limit: usize) -> Tally {
         .filter(|p| chisel::extract::path_has_code_extension(p) && !dirty.contains(*p))
         .map(String::from)
         .collect();
-    for path in files.iter().take(limit) {
+    let only = std::env::var("CHISEL_VERIFY_ONLY").ok();
+    for path in files.iter().filter(|p| only.as_deref().is_none_or(|o| p.as_str() == o)).take(limit) {
         let attr = git(dir, &["check-attr", "diff", "--", path]);
         if !(attr.trim_end().ends_with("unspecified") || attr.trim_end().ends_with(": set")) {
             continue;
@@ -134,7 +135,15 @@ fn compare(dir: &Path, limit: usize) -> Tally {
                     shown
                 }
             };
-            let real_known = real.filter(|r| !r.is_empty());
+            // Churn is order-independent (counts, sums, latest date). git may print commits from
+            // parallel branches in a different order than the stream lists them, so compare sets.
+            let sorted = |v: Option<Vec<(String, i64, i64)>>| {
+                v.map(|mut v| {
+                    v.sort();
+                    v
+                })
+            };
+            let (ours, real_known) = (sorted(ours), sorted(real.filter(|r| !r.is_empty())));
             if ours != real_known {
                 tally.function_mismatch.push(format!("{path}:{name}: ours {ours:?} real {real_known:?}"));
             }
