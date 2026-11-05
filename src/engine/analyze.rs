@@ -746,6 +746,10 @@ impl Engine {
             }
         }
         let test_ids: BTreeSet<&str> = test_units.iter().filter_map(|t| t.get("id").and_then(|v| v.as_str())).collect();
+        let type_files = type_files(&code_units);
+        let mut use_cache: HashMap<String, HashMap<String, Vec<Vec<String>>>> = HashMap::new();
+        let mut declared_cache: HashMap<String, BTreeSet<String>> = HashMap::new();
+        let project_dir = self.project_dir.clone();
         let mut dep_cache: BTreeMap<String, (String, Vec<extract::Dep>, BTreeSet<String>)> = BTreeMap::new();
         for tu in &test_units {
             let file = tu.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
@@ -758,19 +762,25 @@ impl Engine {
                 dep_cache.insert(file.to_string(), (content, deps, resolved));
             }
             let (content, file_deps, resolved) = dep_cache.get(file).expect("deps");
-            // A Rust `#[test]` inside a code file tests that file. Read its calls from its own
-            // lines, not from the production code around it, and let it link to that same file.
-            let inline = tu.get("framework").and_then(|v| v.as_str()) == Some("rust") && !looks_like_test(file);
+            // A Rust `#[test]` reads its calls from its own lines plus the same-file helpers it
+            // calls, not from every test in the file. Inside a code file it tests that file,
+            // so it may link to it.
+            let rust_test = tu.get("framework").and_then(|v| v.as_str()) == Some("rust");
+            let inline = rust_test && !looks_like_test(file);
             let body_deps;
-            let deps = if inline {
-                let start = tu.get("line_start").and_then(|v| v.as_i64()).unwrap_or(1).max(1) as usize;
-                let end = tu.get("line_end").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
-                let body: Vec<&str> = content.lines().skip(start - 1).take(end.saturating_sub(start - 1)).collect();
-                body_deps = extract::extract_deps_in(file, &body.join("\n"), Some(&self.project_dir), self.allow_repo_extractor);
-                &body_deps
+            let body_text;
+            let (deps, call_text): (&Vec<extract::Dep>, &str) = if rust_test {
+                body_text = test_body_with_helpers(content, tu, units_by_file.get(file).map(|u| u.as_slice()).unwrap_or(&[]));
+                body_deps = extract::extract_deps_in(file, &body_text, Some(&self.project_dir), self.allow_repo_extractor);
+                (&body_deps, &body_text)
             } else {
-                file_deps
+                (file_deps, content.as_str())
             };
+            // Names called in many files (new, len, parse) are narrowed by how they are called.
+            let narrowing = matches!(extract::detect_language(file), Some("rust" | "c" | "cpp")).then(|| {
+                let uses = use_cache.entry(file.to_string()).or_insert_with(|| extract::calls::use_paths(content));
+                (extract::calls::call_sites(call_text), uses.clone())
+            });
             for path in resolved {
                 let key = format!("{file}|{path}");
                 if static_seen.insert(key) {
@@ -781,7 +791,13 @@ impl Engine {
                 }
             }
             for dep in deps {
-                let matched = match_dep(file, dep, &code_units, resolved, index);
+                let mut matched = match_dep(file, dep, &code_units, resolved, index);
+                if let (Some((sites, uses)), true) = (&narrowing, dep.module_path.is_none()) {
+                    let mut declares = |f: &str, ty: &str| {
+                        declared_cache.entry(f.to_string()).or_insert_with(|| declared_types(&fs::read_to_string(project_dir.join(f)).unwrap_or_default())).contains(ty)
+                    };
+                    matched = narrow_by_call_site(file, &dep.name, matched, sites.get(&dep.name), uses, &id_file, &type_files, &mut declares);
+                }
                 for cid in matched {
                     let code_file = id_file.get(cid.as_str()).copied().unwrap_or("");
                     if code_file.is_empty() || (code_file == file && !inline) {
@@ -1372,6 +1388,145 @@ impl Engine {
 /// `(commit, new path)` of every rename in numstat rows (`a/{x => y}/b`).
 fn rename_targets<'a>(rows: impl Iterator<Item = (&'a str, &'a str)>) -> HashSet<(String, String)> {
     rows.filter_map(|(hash, path)| Some((hash.to_string(), history_churn::numstat_rename_target(path)?))).collect()
+}
+
+/// Type name -> files that define it (struct, enum, class, trait).
+fn type_files(code_units: &[Value]) -> HashMap<String, BTreeSet<String>> {
+    let mut out: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for u in code_units {
+        let kind = u.get("unit_type").and_then(|v| v.as_str()).unwrap_or("");
+        if !matches!(kind, "struct" | "enum" | "class" | "trait" | "interface") {
+            continue;
+        }
+        if let (Some(name), Some(file)) = (u.get("name").and_then(|v| v.as_str()), u.get("file_path").and_then(|v| v.as_str())) {
+            out.entry(name.to_string()).or_default().insert(file.to_string());
+        }
+    }
+    out
+}
+
+/// Types a file declares or implements: the name after `struct`, `enum`, `trait`, `union`,
+/// `type`, `class`, `impl` (skipping generics) and `for`. One pass per file.
+fn declared_types(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let words: Vec<&str> = text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '<' || c == '>')).filter(|w| !w.is_empty()).collect();
+    for pair in words.windows(2) {
+        let kw = pair[0].split('<').next().unwrap_or("");
+        if matches!(kw, "struct" | "enum" | "trait" | "union" | "type" | "class" | "impl" | "for") {
+            let name: String = pair[1].trim_start_matches(|c| c == '<' || c == '>').chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                out.insert(name);
+            }
+        }
+    }
+    out
+}
+
+/// The crate directory of a path (`crates/a/src/x.rs` -> `crates/a`), `""` for a root crate.
+fn crate_dir(path: &str) -> &str {
+    for marker in ["/src/", "/tests/", "/benches/", "/examples/"] {
+        if let Some(p) = path.find(marker) {
+            return &path[..p];
+        }
+    }
+    if ["src/", "tests/", "benches/", "examples/"].iter().any(|m| path.starts_with(m)) {
+        return "";
+    }
+    path.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
+}
+
+/// Path segments of a file, as Rust names them (`-` becomes `_`, `.rs` dropped).
+fn path_segments(path: &str) -> Vec<String> {
+    path.trim_end_matches(".rs").split('/').map(|s| s.replace('-', "_")).collect()
+}
+
+/// Of the files defining a called name, keep those the call site points at.
+fn narrow_by_call_site(
+    test_file: &str,
+    name: &str,
+    matched: Vec<String>,
+    site: Option<&extract::calls::CallSite>,
+    uses: &HashMap<String, Vec<Vec<String>>>,
+    id_file: &HashMap<&str, &str>,
+    type_files: &HashMap<String, BTreeSet<String>>,
+    declares: &mut dyn FnMut(&str, &str) -> bool,
+) -> Vec<String> {
+    let files: BTreeSet<&str> = matched.iter().filter_map(|c| id_file.get(c.as_str()).copied()).collect();
+    let (Some(site), true) = (site, files.len() > 1) else { return matched };
+    let mut keep: BTreeSet<&str> = BTreeSet::new();
+    let by_segments = |segs: &[String]| -> Vec<&str> {
+        let wanted: Vec<&String> = segs.iter().filter(|s| !matches!(s.as_str(), "crate" | "self" | "super") && s.as_str() != name).collect();
+        let score = |f: &str| {
+            let fs = path_segments(f);
+            wanted.iter().filter(|w| fs.iter().any(|s| s == w.as_str())).count()
+        };
+        let best = files.iter().map(|f| score(f)).max().unwrap_or(0);
+        if best == 0 {
+            return Vec::new();
+        }
+        files.iter().copied().filter(|f| score(f) == best).collect()
+    };
+    for q in &site.quals {
+        if q == "Self" || q == "self" || q == "super" {
+            keep.extend(files.iter().copied().filter(|f| *f == test_file));
+        } else if q.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            // Types the unit extractor saw, else a declaration in the candidate file's text.
+            match type_files.get(q) {
+                Some(defs) => keep.extend(files.iter().copied().filter(|f| defs.contains(*f))),
+                None => keep.extend(files.iter().copied().filter(|f| declares(f, q))),
+            }
+        } else {
+            keep.extend(by_segments(&[q.clone()]));
+        }
+    }
+    if site.free {
+        match uses.get(name) {
+            Some(paths) => {
+                for p in paths {
+                    keep.extend(by_segments(p));
+                }
+            }
+            None => {
+                if files.contains(test_file) {
+                    keep.insert(test_file);
+                } else {
+                    let own = crate_dir(test_file);
+                    keep.extend(files.iter().copied().filter(|f| crate_dir(f) == own));
+                    for p in uses.get("*").into_iter().flatten() {
+                        keep.extend(by_segments(p));
+                    }
+                }
+            }
+        }
+    }
+    // A name with only a few definitions is kept whole when nothing narrowed it.
+    if keep.is_empty() && files.len() <= 3 && (site.free || site.method) {
+        return matched;
+    }
+    matched.into_iter().filter(|c| id_file.get(c.as_str()).is_some_and(|f| keep.contains(f))).collect()
+}
+
+/// A test's own lines, then the bodies of same-file non-test functions it calls (one level).
+fn test_body_with_helpers(content: &str, test: &Value, units: &[CodeUnit]) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let slice = |start: usize, end: usize| -> String {
+        let start = start.max(1);
+        lines.iter().skip(start - 1).take(end.saturating_sub(start - 1)).copied().collect::<Vec<_>>().join("\n")
+    };
+    let start = test.get("line_start").and_then(|v| v.as_i64()).unwrap_or(1).max(1) as usize;
+    let end = test.get("line_end").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
+    let mut text = slice(start, end);
+    let called = extract::calls::call_sites(&text);
+    for u in units {
+        if is_test_unit_type(&u.unit_type) || (u.line_start >= start && u.line_end <= end) {
+            continue;
+        }
+        if called.get(&u.name).is_some_and(|s| s.free || s.quals.iter().any(|q| q == "Self" || q == "self")) {
+            text.push('\n');
+            text.push_str(&slice(u.line_start, u.line_end));
+        }
+    }
+    text
 }
 
 fn unit_churn_from(commits: &[crate::git::Commit], file: &str) -> (i64, i64, i64, i64, String, f64) {
