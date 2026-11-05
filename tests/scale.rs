@@ -16,6 +16,12 @@ fn scratch(name: &str) -> PathBuf {
     p
 }
 
+/// The snapshot as JSON text with every table expanded (some are compact on disk).
+fn plain_snapshot(file: &Path) -> String {
+    let snap = chisel::store::Store::open(file.parent().unwrap()).unwrap();
+    chisel::json::to_string(&snap.doc).unwrap()
+}
+
 fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git").args(args).current_dir(dir).status().unwrap();
     assert!(status.success(), "git {args:?}");
@@ -153,7 +159,7 @@ fn unit_churn_skipped_above_2000_files() {
     // the history stream existed), so a deep history is never read in full for it.
     assert!(spawns.iter().all(|s| !s.contains("log -p")), "history stream ran above 2000 files");
     assert_eq!(spawns.iter().filter(|s| s.starts_with("blame")).count(), 2001);
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("\"file_path\":\"src/f0.py\"") && snap.contains("\"unit_name\":\"\""), "file-level churn row missing: {snap}");
 }
 
@@ -249,7 +255,7 @@ fn typescript_test_file_produces_an_edge() {
     let store = dir.join("store");
     let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
     engine.analyze().unwrap();
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("calc.test.ts"), "{snap}");
     assert!(snap.contains("calc.spec.ts"), "{snap}");
     assert!(snap.contains("src/calc.ts:add:function"), "no edge target for add: {snap}");
@@ -294,7 +300,7 @@ fn cli_run_records_jest_stdout() {
         .args(["run", "--project-dir"]).arg(&dir).arg("--storage-dir").arg(&store).arg("--").arg(&jest)
         .output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("a.test.ts:ok"), "{snap}");
 }
 
@@ -339,11 +345,11 @@ fn cli_record_result_without_passed_exits_nonzero() {
     assert_eq!(fs::read(store.join("store")).unwrap(), before, "plain record-result wrote the store");
     let failed = Command::new(bin).args(["--json", "record-result", "t", "--failed", "--project-dir"]).arg(&dir).arg("--storage-dir").arg(&store).output().unwrap();
     assert_eq!(failed.status.code(), Some(0), "{} {}", String::from_utf8_lossy(&failed.stderr), String::from_utf8_lossy(&failed.stdout));
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("\"passed\":false") || snap.contains("\"passed\": false"), "{snap}");
     let passed = Command::new(bin).args(["--json", "record-result", "ok", "--passed", "--project-dir"]).arg(&dir).arg("--storage-dir").arg(&store).output().unwrap();
     assert_eq!(passed.status.code(), Some(0), "{}", String::from_utf8_lossy(&passed.stderr));
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("\"test_id\":\"ok\"") || snap.contains("\"test_id\": \"ok\""), "{snap}");
     assert!(snap.contains("\"passed\":true") || snap.contains("\"passed\": true"), "{snap}");
 }
@@ -445,7 +451,7 @@ fn bulk_commit_is_skipped_for_co_change_and_solo_author_halves_threshold() {
     let store = dir.join("store");
     let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
     engine.analyze().unwrap();
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("\"co_changes\":[]") || snap.contains("\"co_changes\": []"), "bulk commit produced co-change pairs");
     let min = chisel::impact::coupling_threshold(1);
     let expected = (min / 2).max(1);
@@ -465,7 +471,7 @@ fn gitignored_tree_is_skipped_unless_env_set() {
     let store = dir.join("store");
     let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
     engine.analyze().unwrap();
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("src/a.py"), "{snap}");
     assert!(!snap.contains("vendor/v.py"), "ignored file was scanned");
     std::env::set_var("CHISEL_INCLUDE_IGNORED", "1");
@@ -473,7 +479,7 @@ fn gitignored_tree_is_skipped_unless_env_set() {
     let mut engine = chisel::Engine::open(&dir, Some(&store2)).unwrap();
     std::env::remove_var("CHISEL_INCLUDE_IGNORED");
     engine.analyze().unwrap();
-    let snap2 = fs::read_to_string(store2.join("store")).unwrap();
+    let snap2 = plain_snapshot(&store2.join("store"));
     assert!(snap2.contains("vendor/v.py"), "include-ignored did not scan vendor");
 }
 
@@ -630,14 +636,14 @@ fn chisel_run_pytest_flushes_once() {
     let store = dir.join("store");
     let bin = env!("CARGO_BIN_EXE_chisel");
     let _ = Command::new(bin).args(["--json", "analyze", "--project-dir"]).arg(&dir).arg("--storage-dir").arg(&store).status();
-    let before = fs::read_to_string(store.join("store")).unwrap();
+    let before = plain_snapshot(&store.join("store"));
     let gen_before = before.split("\"generation\":").nth(1).and_then(|s| s.split([',', '}']).next()).unwrap_or("0").trim().parse::<i64>().unwrap_or(0);
     let pytest = dir.join("pytest");
     fs::write(&pytest, "#!/bin/sh\necho 'tests/test_a.py::test_ok PASSED'\necho 'tests/test_a.py::test_bad FAILED'\nexit 1\n").unwrap();
     let _ = Command::new("chmod").arg("+x").arg(&pytest).status();
     let out = Command::new(bin).args(["run", "--project-dir"]).arg(&dir).arg("--storage-dir").arg(&store).arg("--").arg(&pytest).output().unwrap();
     assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
-    let after = fs::read_to_string(store.join("store")).unwrap();
+    let after = plain_snapshot(&store.join("store"));
     let gen_after = after.split("\"generation\":").nth(1).and_then(|s| s.split([',', '}']).next()).unwrap_or("0").trim().parse::<i64>().unwrap_or(0);
     assert_eq!(gen_after, gen_before + 1, "before {gen_before} after {gen_after}");
     assert!(after.contains("test_ok") && after.contains("test_bad"), "{after}");
@@ -677,7 +683,7 @@ fn auto_update_under_50_refreshes() {
     let text = chisel::json::to_string(&result).unwrap();
     assert!(!text.contains("stale_db"), "auto_update returned the pre-update body: {text}");
     assert!(!text.contains("auto_update_skip_reason"), "{text}");
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("src/b.py"), "{snap}");
 }
 
@@ -694,7 +700,7 @@ fn source_only_update_keeps_untouched_test_edges() {
     let store = dir.join("store");
     let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
     engine.analyze().unwrap();
-    let before = fs::read_to_string(store.join("store")).unwrap();
+    let before = plain_snapshot(&store.join("store"));
     assert!(before.contains("tests/test_b.py:test_b"), "{before}");
     engine.source_reads = 0;
     fs::write(dir.join("src/a.py"), "def a():\n    return 3\n").unwrap();
@@ -702,7 +708,7 @@ fn source_only_update_keeps_untouched_test_edges() {
     let text = chisel::json::to_string(&update).unwrap();
     assert!(text.contains("\"edge_rebuild_skipped\":true") || text.contains("\"edge_rebuild_skipped\": true"), "{text}");
     assert_eq!(engine.source_reads, 0, "untouched test file was opened during update");
-    let after = fs::read_to_string(store.join("store")).unwrap();
+    let after = plain_snapshot(&store.join("store"));
     assert!(after.contains("tests/test_b.py:test_b"), "test edge disappeared: {after}");
 }
 
@@ -719,7 +725,7 @@ fn commit_after_dirty_analyze_replaces_blame() {
     let store = dir.join("store");
     let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
     engine.analyze().unwrap();
-    let before = fs::read_to_string(store.join("store")).unwrap();
+    let before = plain_snapshot(&store.join("store"));
     assert!(before.contains("Not Committed Yet"), "dirty analyze did not record uncommitted blame: {before}");
     commit_all(&dir, "commit dirty");
     let log = Arc::new(Mutex::new(Vec::new()));
@@ -736,7 +742,7 @@ fn commit_after_dirty_analyze_replaces_blame() {
     assert_eq!(line_count, line_len, "{owned:?}");
     let text = chisel::json::to_string(&owned).unwrap();
     assert!(!text.contains("Not Committed Yet"), "{text}");
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(!snap.contains("Not Committed Yet"), "{snap}");
 }
 
@@ -767,24 +773,24 @@ fn renamed_source_drops_stale_edges_and_replaces_unit_churn() {
     let store = dir.join("store");
     let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
     engine.analyze().unwrap();
-    let analyzed = fs::read_to_string(store.join("store")).unwrap();
+    let analyzed = plain_snapshot(&store.join("store"));
     assert!(analyzed.contains("\"code_id\":\"src/a.py:a:function\""), "{analyzed}");
     let before_units = unit_churn_count(&analyzed, "src/a.py");
     assert!(before_units >= 1, "{analyzed}");
     fs::write(dir.join("src/a.py"), "def a():\n    return 3\n").unwrap();
     engine.update().unwrap();
-    let same_name = fs::read_to_string(store.join("store")).unwrap();
+    let same_name = plain_snapshot(&store.join("store"));
     assert_eq!(unit_churn_count(&same_name, "src/a.py"), before_units, "unit churn rows stacked: {same_name}");
     fs::write(dir.join("src/a.py"), "def a():\n    return 4\n").unwrap();
     engine.update().unwrap();
-    let second = fs::read_to_string(store.join("store")).unwrap();
+    let second = plain_snapshot(&store.join("store"));
     assert_eq!(unit_churn_count(&second, "src/a.py"), before_units, "second update stacked unit churn: {second}");
     engine.source_reads = 0;
     fs::write(dir.join("src/a.py"), "def renamed():\n    return 1\n").unwrap();
     let update = engine.update().unwrap();
     let text = chisel::json::to_string(&update).unwrap();
     assert!(!text.contains("\"edge_rebuild_skipped\":true") && !text.contains("\"edge_rebuild_skipped\": true"), "{text}");
-    let after = fs::read_to_string(store.join("store")).unwrap();
+    let after = plain_snapshot(&store.join("store"));
     assert!(!after.contains("src/a.py:a:function"), "stale edge target survived: {after}");
     assert!(after.contains("src/a.py:renamed:function"), "{after}");
     assert!(after.contains("\"code_id\":\"src/b.py:b:function\""), "unrelated edge was dropped: {after}");
@@ -793,7 +799,7 @@ fn renamed_source_drops_stale_edges_and_replaces_unit_churn() {
     engine.source_reads = 0;
     fs::write(dir.join("src/b.py"), "def b():\n    return 9\n").unwrap();
     engine.update().unwrap();
-    let touched_b = fs::read_to_string(store.join("store")).unwrap();
+    let touched_b = plain_snapshot(&store.join("store"));
     assert!(touched_b.contains("\"code_id\":\"src/b.py:b:function\""), "{touched_b}");
     assert!(engine.source_reads > 0 && engine.source_reads <= covering_reads, "untouched test_a was reread: {}", engine.source_reads);
 }
@@ -812,7 +818,7 @@ fn update_recomputes_co_changes_after_new_commit() {
     fs::write(dir.join("src/a.py"), "def a():\n    return 3\n").unwrap();
     commit_all(&dir, "pair");
     engine.update().unwrap();
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("src/a.py") && snap.contains("src/b.py"), "{snap}");
     assert!(snap.contains("\"co_commit_count\""), "new commit did not recompute co_changes: {snap}");
 }
@@ -946,8 +952,8 @@ fn unscoped_reads_aggregate_and_update_uses_longest_prefix() {
     let update = engine.update().unwrap();
     let update_text = chisel::json::to_string(&update).unwrap();
     assert!(update_text.contains("\"files_updated\":1") || update_text.contains("\"files_updated\": 1"), "{update_text}");
-    let web = fs::read_to_string(store.join("shards/frontend/web/store")).unwrap();
-    let front = fs::read_to_string(store.join("shards/frontend/store")).unwrap();
+    let web = plain_snapshot(&store.join("shards/frontend/web/store"));
+    let front = plain_snapshot(&store.join("shards/frontend/store"));
     let root = fs::read_to_string(store.join("store")).unwrap_or_default();
     let new_hash = chisel::hash::sha256_hex(b"def w():\n    return 9\n");
     assert!(web.contains("\"file_path\":\"frontend/web/w.py\"") && web.contains(&new_hash), "longest prefix did not store the updated file: {web}");
@@ -983,16 +989,16 @@ fn git_pool_overlaps_at_most_eight_and_merges_in_path_order() {
     let blamed = spawns.iter().filter(|s| s.contains("blame")).count();
     assert_eq!(logged, 12, "{spawns:?}");
     assert_eq!(blamed, 12, "{spawns:?}");
-    let first = churn_signature(&fs::read_to_string(store.join("store")).unwrap());
+    let first = churn_signature(&plain_snapshot(&store.join("store")));
     let file_rows = first.iter().filter(|row| row.contains("||") || row.split('|').nth(1).unwrap_or("x").is_empty()).count();
     let unit_at = first.iter().position(|row| !row.split('|').nth(1).unwrap_or("").is_empty()).unwrap();
     assert!(file_rows >= 12, "{first:?}");
     assert!(first[..unit_at].iter().all(|row| row.split('|').nth(1).unwrap_or("x").is_empty()));
     max_seen.store(0, Ordering::SeqCst);
     engine.analyze().unwrap();
-    let second = churn_signature(&fs::read_to_string(store.join("store")).unwrap());
+    let second = churn_signature(&plain_snapshot(&store.join("store")));
     assert_eq!(first, second);
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("\"branch_co_changes\":[]") || snap.contains("\"branch_co_changes\": []"), "{snap}");
     assert!(snap.contains("branch_coupling_commits") && snap.contains("\"0\""), "{snap}");
 }
@@ -1043,7 +1049,7 @@ fn feature_branch_co_change_feeds_risk_and_matches_python() {
         .output()
         .unwrap();
     assert!(analyze.status.success(), "{}", String::from_utf8_lossy(&analyze.stderr));
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("\"file_a\":\"src/a.py\"") && snap.contains("\"file_b\":\"src/b.py\""), "{snap}");
     let risk = Command::new(bin)
         .args(["risk-map", "--project-dir"])
@@ -1172,18 +1178,18 @@ fn extractor_failure_falls_back_and_success_replaces_units() {
     assert!(failed.status.success(), "{}", String::from_utf8_lossy(&failed.stderr));
     assert!(failed_out.contains("extractor_warnings"), "{failed_out}");
     assert!(failed_out.contains("CHISEL_EXTRACTOR failed"), "{failed_out}");
-    let snap = fs::read_to_string(dir.join("bad-store/store")).unwrap();
+    let snap = plain_snapshot(&dir.join("bad-store/store"));
     assert!(snap.contains("\"name\":\"a\""), "builtin fallback missing: {snap}");
     let junk = run(&nope, &dir.join("nope-store"));
     let junk_out = String::from_utf8_lossy(&junk.stdout);
     assert!(junk.status.success() && junk_out.contains("bad JSON"), "{junk_out}");
-    let snap = fs::read_to_string(dir.join("nope-store/store")).unwrap();
+    let snap = plain_snapshot(&dir.join("nope-store/store"));
     assert!(snap.contains("\"name\":\"a\""), "{snap}");
     let custom = run(&ok, &dir.join("ok-store"));
     assert!(custom.status.success(), "{}", String::from_utf8_lossy(&custom.stderr));
     let custom_out = String::from_utf8_lossy(&custom.stdout);
     assert!(!custom_out.contains("extractor_warnings"), "{custom_out}");
-    let snap = fs::read_to_string(dir.join("ok-store/store")).unwrap();
+    let snap = plain_snapshot(&dir.join("ok-store/store"));
     assert!(snap.contains("from_extractor"), "{snap}");
     assert!(!snap.contains("\"name\":\"a\""), "builtin unit leaked: {snap}");
 }
@@ -1216,7 +1222,7 @@ fn extensions_toml_runs_an_external_program_without_an_env_var() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(!text.contains("extractor_warnings"), "{text}");
-    let snap = fs::read_to_string(dir.join("store/store")).unwrap();
+    let snap = plain_snapshot(&dir.join("store/store"));
     assert!(snap.contains("from_toml"), "{snap}");
     assert!(!snap.contains("\"name\":\"a\""), "{snap}");
 }
@@ -1247,7 +1253,7 @@ fn repo_extractor_is_skipped_unless_allowed() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("repo extractor skipped"), "{text}");
     assert!(!marker.exists(), "default analyze ran the repo program");
-    let snap = fs::read_to_string(dir.join("store/store")).unwrap();
+    let snap = plain_snapshot(&dir.join("store/store"));
     assert!(snap.contains("\"name\":\"a\""), "{snap}");
 }
 
@@ -1290,7 +1296,7 @@ fn update_drops_deleted_and_renamed_files() {
     let summary = engine.update().unwrap();
     let text = chisel::json::to_string(&summary).unwrap();
     assert!(!text.contains("\"edge_rebuild_skipped\": true") && !text.contains("\"edge_rebuild_skipped\":true"), "{text}");
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("a2.py"), "{snap}");
     assert!(!snap.contains("\"file_path\":\"a.py\""), "{text} {snap}");
     assert!(!snap.contains("\"file_path\":\"b.py\""), "{snap}");
@@ -1299,7 +1305,7 @@ fn update_drops_deleted_and_renamed_files() {
     assert_eq!(units.len(), 2, "{snap}");
     let mut fresh = chisel::Engine::open(&dir, Some(&dir.join("fresh"))).unwrap();
     fresh.analyze().unwrap();
-    let fresh_snap = chisel::json::parse(&fs::read_to_string(dir.join("fresh/store")).unwrap()).unwrap();
+    let fresh_snap = chisel::json::parse(&plain_snapshot(&dir.join("fresh/store"))).unwrap();
     let edge_set = |doc: &chisel::json::Value| {
         let mut ids: Vec<String> = doc.get("test_edges").and_then(|v| v.as_array()).unwrap().iter().map(|e| {
             format!("{}|{}", e.get("test_id").and_then(|v| v.as_str()).unwrap_or(""), e.get("code_id").and_then(|v| v.as_str()).unwrap_or(""))
@@ -1487,7 +1493,7 @@ fn stale_generation_returns_status_error_and_retry_keeps_other_writer() {
     ])).unwrap();
     let text = chisel::json::to_string(&recorded).unwrap();
     assert!(text.contains("\"recorded\":true") || text.contains("\"recorded\": true"), "{text}");
-    let snap = fs::read_to_string(store.join("store")).unwrap();
+    let snap = plain_snapshot(&store.join("store"));
     assert!(snap.contains("winner"), "retry clobbered the other writer: {snap}");
     assert!(snap.contains("tests/test_a.py:test_a"), "{snap}");
     engine.store.fail_stale_remaining = 3;
@@ -1641,12 +1647,12 @@ fn cross_shard_direct_edge_is_replaced_not_stacked() {
     engine.analyze().unwrap();
     let ids = impact_ids(&mut engine, "backend/b.py");
     assert!(ids.iter().any(|id| id == "frontend/test_b.py:test_b"), "{ids:?}");
-    let parent = fs::read_to_string(dir.join("store/store")).unwrap();
+    let parent = plain_snapshot(&dir.join("store/store"));
     let doc = chisel::json::parse(&parent).unwrap();
     let count = doc.get("test_edges").and_then(|v| v.as_array()).unwrap().len();
     assert!(count >= 1, "{parent}");
     engine.analyze().unwrap();
-    let again = chisel::json::parse(&fs::read_to_string(dir.join("store/store")).unwrap()).unwrap();
+    let again = chisel::json::parse(&plain_snapshot(&dir.join("store/store"))).unwrap();
     assert_eq!(again.get("test_edges").and_then(|v| v.as_array()).unwrap().len(), count, "second analyze stacked cross edges");
     let stats = engine.stats().unwrap();
     assert_eq!(stats.get("cross_shard_test_edges").and_then(|v| v.as_i64()), Some(count as i64));
@@ -1751,7 +1757,7 @@ fn flakiness_trend_uses_week_buckets_and_pytest_ids_join() {
             .output()
             .unwrap();
         assert_eq!(run.status.code(), Some(1), "{}", String::from_utf8_lossy(&run.stderr));
-        let snap = fs::read_to_string(store.join("store")).unwrap();
+        let snap = plain_snapshot(&store.join("store"));
         assert!(snap.contains("tests/test_calc.py:test_add"), "{snap}");
         assert!(!snap.contains("tests/test_calc.py::test_add"), "{snap}");
         let after = chisel_at(&dir, &store, &["suggest-tests", "src/calc.py"], &now.to_string());
@@ -1797,7 +1803,7 @@ fn files_outside_shard_prefixes_are_analyzed() {
     fs::write(dir.join("backend/b.py"), "def b():\n    return 2\n").unwrap();
     let mut engine = shard_pair(&dir);
     engine.analyze().unwrap();
-    let snap = fs::read_to_string(dir.join("store/shards/_unassigned/store")).unwrap();
+    let snap = plain_snapshot(&dir.join("store/shards/_unassigned/store"));
     assert!(snap.contains("root.py"), "{snap}");
     let stats = engine.stats().unwrap();
     assert!(stats.get("code_units").and_then(|v| v.as_i64()).unwrap_or(0) >= 3, "{stats:?}");
@@ -2053,8 +2059,10 @@ fn risk_rows_are_compact_and_skip_test_support_code() {
 }
 
 fn snapshot_rows(store: &Path, key: &str) -> Vec<String> {
-    let doc = chisel::json::parse(&fs::read_to_string(store.join("store")).unwrap()).unwrap();
-    let mut rows: Vec<String> = doc.get(key).and_then(|v| v.as_array()).unwrap_or(&[]).iter().map(|r| chisel::json::to_string(r).unwrap()).collect();
+    // Through the store: some tables are compact on disk.
+    let snap = chisel::store::Store::open(store).unwrap();
+    let mut rows: Vec<String> = snap.rows(key).iter().map(|r| chisel::json::to_string(r).unwrap()).collect();
+    assert!(!rows.is_empty(), "no {key} rows");
     rows.sort();
     rows
 }

@@ -248,3 +248,61 @@ fn chisel_run_writes_results_and_issues_in_one_flush() {
     assert_eq!(generation(&dir), before + 1, "one snapshot flush for results and issues");
     assert!(out.contains("[chisel] Recorded 2 test result(s)") && out.contains("new I1 tests/test_calc.py:test_sub"), "{out}");
 }
+
+#[test]
+fn an_unreadable_snapshot_is_reported_in_one_line_not_silently() {
+    let dir = repo(&[("calc.py", CALC), ("fmtx.py", FMTX), ("tests/test_calc.py", TESTS)]);
+    std::fs::write(dir.join(".chisel/store"), "{ this is not a snapshot").unwrap();
+    let payload = json::to_string(&Value::object(vec![
+        ("tool_name".into(), Value::String("Bash".into())),
+        ("cwd".into(), Value::String(dir.to_string_lossy().into_owned())),
+        ("tool_input".into(), Value::object(vec![("command".into(), Value::String("pytest".into()))])),
+        ("tool_response".into(), Value::object(vec![("stdout".into(), Value::String(failing("8"))), ("stderr".into(), Value::String(String::new()))])),
+    ]))
+    .unwrap();
+    let (code, out, _) = chisel(&dir, &["capture", "--hook"], &payload);
+    assert_eq!(code, 0);
+    let ctx = json::parse(out.trim()).unwrap().get("hookSpecificOutput").and_then(|h| h.get("additionalContext")).and_then(|v| v.as_str()).unwrap().to_string();
+    assert!(ctx.starts_with("chisel: snapshot unreadable (") && ctx.ends_with("run `chisel analyze` to rebuild it"), "{ctx}");
+    let (code, out, _) = chisel(&dir, &["capture", "--command", "pytest"], &failing("8"));
+    assert_eq!((code, out.lines().count()), (0, 1), "{out}");
+    let (code, out, _) = chisel(&dir, &["issues", "--brief"], "");
+    assert_eq!(code, 0);
+    assert!(out.starts_with("chisel: snapshot unreadable (") && out.lines().count() == 1, "{out}");
+}
+
+#[test]
+fn the_suspect_is_the_function_that_changed_not_the_one_the_test_calls() {
+    let geom = "pub struct Geo;\n\nimpl Geo {\n    pub fn aligned(a: f32, b: f32) -> bool {\n        (Geo::yaw_toward(a) - b).abs() < 0.01\n    }\n\n    pub fn yaw_toward(a: f32) -> f32 {\n        a * 2.0\n    }\n}\n";
+    let dir = repo(&[
+        ("Cargo.toml", "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        ("src/lib.rs", "pub mod geom;\n"),
+        ("src/geom.rs", geom),
+        ("tests/geo.rs", "use sample::geom::Geo;\n\n#[test]\nfn faces_away() {\n    assert!(Geo::aligned(1.0, 2.0));\n}\n"),
+    ]);
+    let run = |status: &str| format!("     Running tests\\geo.rs (target\\debug\\deps\\geo-1.exe)\n\nrunning 1 test\ntest faces_away ... {status}\n");
+    capture(&dir, "cargo test", &(run("ok") + "\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"));
+    // Inside the impl block, git's hunk header names "impl Geo {", not the method.
+    std::fs::write(dir.join("src/geom.rs"), geom.replace("a * 2.0", "a * 2.0 + 1.0")).unwrap();
+    let failure = run("FAILED") + "\nfailures:\n\n---- faces_away stdout ----\n\nthread 'faces_away' (7) panicked at tests\\geo.rs:5:5:\nassertion failed: Geo::aligned(1.0, 2.0)\n\nfailures:\n    faces_away\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
+    let line = capture(&dir, "cargo test", &failure);
+    assert!(line.contains("suspect src/geom.rs:yaw_toward"), "{line}");
+    let i1 = issue(&dir, "I1");
+    let suspect = &i1.get("suspects").and_then(|v| v.as_array()).unwrap()[0];
+    let reason = suspect.get("reason").and_then(|v| v.as_str()).unwrap();
+    assert!(reason.contains("changed yaw_toward (the test calls aligned, not it directly)"), "{reason}");
+}
+
+#[test]
+fn reverting_an_uncommitted_break_closes_the_issue_as_a_revert() {
+    let dir = repo(&[("calc.py", CALC), ("fmtx.py", FMTX), ("tests/test_calc.py", TESTS)]);
+    capture(&dir, "python -m pytest -v", ALL_PASS_V);
+    std::fs::write(dir.join("calc.py"), CALC.replace("return a - b", "return a + b")).unwrap();
+    capture(&dir, "python -m pytest", &failing("8"));
+    git(&dir, &["checkout", "--", "calc.py"]);
+    let line = capture(&dir, "python -m pytest -v", ALL_PASS_V);
+    assert!(line.contains("fixed I1"), "{line}");
+    let fix = issue(&dir, "I1").get("fixed").cloned().unwrap();
+    assert_eq!(fix.get("commit").and_then(|v| v.as_str()), Some("reverted uncommitted change"));
+    assert_eq!(json::to_string(fix.get("files").unwrap()).unwrap(), r#"["calc.py +1 -1"]"#);
+}

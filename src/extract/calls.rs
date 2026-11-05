@@ -1,0 +1,196 @@
+//! How a name is called, for languages whose dependencies are bare call names (Rust, C, C++).
+//!
+//! A test that calls `Vec::new()` and `x.len()` must not be linked to every `new` and `len` in
+//! the workspace. `call_sites` records, per called name, the `Type::` / `module::` qualifiers it
+//! was called through and whether it was called as a method or as a free function; `use_paths`
+//! records where `use` lines import names from. The edge builder narrows ambiguous names with
+//! them.
+
+use std::collections::{BTreeSet, HashMap};
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CallSite {
+    /// `T` in `T::name(` (also `T::<..>::name(`).
+    pub quals: BTreeSet<String>,
+    /// Called as `x.name(` or `x->name(`.
+    pub method: bool,
+    /// Called as `name(`.
+    pub free: bool,
+}
+
+const NOT_CALLS: [&str; 12] = ["if", "while", "for", "match", "return", "fn", "loop", "in", "as", "move", "unsafe", "where"];
+
+fn ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Index of the first byte of the identifier that ends just before `end`, if any.
+fn ident_before(bytes: &[u8], end: usize) -> Option<usize> {
+    let mut i = end;
+    while i > 0 && ident_char(bytes[i - 1]) {
+        i -= 1;
+    }
+    (i < end && !bytes[i].is_ascii_digit()).then_some(i)
+}
+
+fn skip_ws_back(bytes: &[u8], mut i: usize) -> usize {
+    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    i
+}
+
+pub fn call_sites(text: &str) -> HashMap<String, CallSite> {
+    let bytes = text.as_bytes();
+    let mut out: HashMap<String, CallSite> = HashMap::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') || (i > 0 && ident_char(bytes[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && ident_char(bytes[i]) {
+            i += 1;
+        }
+        let name = &text[start..i];
+        let mut j = i;
+        // turbofish on the call itself: name::<T>(
+        if text[j..].starts_with("::<") {
+            let mut depth = 0;
+            while j < bytes.len() {
+                match bytes[j] {
+                    b'<' => depth += 1,
+                    b'>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            j += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+        }
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j >= bytes.len() || bytes[j] != b'(' || NOT_CALLS.contains(&name) {
+            continue;
+        }
+        let before = skip_ws_back(bytes, start);
+        // `fn name(` is a definition.
+        if let Some(w) = ident_before(bytes, before) {
+            if &text[w..before] == "fn" {
+                continue;
+            }
+        }
+        let site = out.entry(name.to_string()).or_default();
+        if before >= 1 && bytes[before - 1] == b'.' || before >= 2 && &bytes[before - 2..before] == b"->" {
+            site.method = true;
+        } else if before >= 2 && &bytes[before - 2..before] == b"::" {
+            let mut k = skip_ws_back(bytes, before - 2);
+            if k > 0 && bytes[k - 1] == b'>' {
+                let mut depth = 0;
+                while k > 0 {
+                    k -= 1;
+                    match bytes[k] {
+                        b'>' => depth += 1,
+                        b'<' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if k >= 2 && &bytes[k - 2..k] == b"::" {
+                    k -= 2;
+                }
+            }
+            match ident_before(bytes, k) {
+                Some(q) => {
+                    site.quals.insert(text[q..k].to_string());
+                }
+                None => site.free = true,
+            }
+        } else {
+            site.free = true;
+        }
+    }
+    out
+}
+
+/// Imported name (or `*` for a glob) -> the path segments before it, from Rust `use` lines.
+pub fn use_paths(text: &str) -> HashMap<String, Vec<Vec<String>>> {
+    let mut out: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+    let mut add = |name: &str, path: &[String]| {
+        out.entry(name.to_string()).or_default().push(path.to_vec());
+    };
+    for line in text.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("use ").or_else(|| t.strip_prefix("pub use ")) else { continue };
+        let rest = rest.trim_end_matches(';').trim();
+        let (prefix, group) = match rest.find('{') {
+            Some(p) => (&rest[..p], Some(rest[p + 1..].trim_end_matches('}'))),
+            None => (rest, None),
+        };
+        let mut base: Vec<String> = prefix.split("::").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let items: Vec<String> = match group {
+            Some(g) => g.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            None => vec![base.pop().unwrap_or_default()],
+        };
+        for item in items {
+            let (path_part, alias) = match item.split_once(" as ") {
+                Some((p, a)) => (p.trim().to_string(), Some(a.trim().to_string())),
+                None => (item.clone(), None),
+            };
+            let mut segs = base.clone();
+            let mut parts: Vec<String> = path_part.split("::").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let leaf = parts.pop().unwrap_or_default();
+            segs.extend(parts);
+            let name = alias.unwrap_or_else(|| leaf.clone());
+            if leaf == "*" {
+                add("*", &segs);
+            } else if leaf == "self" {
+                if let Some(last) = segs.last().cloned() {
+                    add(&last, &segs);
+                }
+            } else {
+                segs.push(leaf);
+                add(&name, &segs);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qualifiers_methods_and_free_calls() {
+        let text = "fn helper() {}\nlet v = Vec::new();\nlet b = Box3::new(1);\nlet r = geom::yaw_toward(a, b);\nv.len();\np->step();\nlet m = HashMap::<u8, u8>::with_capacity(4);\nfree_fn(1);\nif (x) {}\nSelf::make();";
+        let sites = call_sites(text);
+        assert_eq!(sites["new"].quals, ["Box3".to_string(), "Vec".to_string()].into_iter().collect());
+        assert_eq!(sites["yaw_toward"].quals.iter().collect::<Vec<_>>(), vec!["geom"]);
+        assert!(sites["len"].method && !sites["len"].free && sites["step"].method);
+        assert_eq!(sites["with_capacity"].quals.iter().collect::<Vec<_>>(), vec!["HashMap"]);
+        assert!(sites["free_fn"].free && sites["make"].quals.contains("Self"));
+        assert!(!sites.contains_key("helper") && !sites.contains_key("if"));
+    }
+
+    #[test]
+    fn use_lines() {
+        let text = "use specula_locus::geom::yaw_toward;\nuse crate::solve::{solve, Plan as P};\nuse super::*;\nuse a::b::{self, c::d};";
+        let u = use_paths(text);
+        assert_eq!(u["yaw_toward"], vec![vec!["specula_locus".to_string(), "geom".into(), "yaw_toward".into()]]);
+        assert_eq!(u["P"], vec![vec!["crate".to_string(), "solve".into(), "Plan".into()]]);
+        assert_eq!(u["*"], vec![vec!["super".to_string()]]);
+        assert_eq!(u["b"], vec![vec!["a".to_string(), "b".into()]]);
+        assert_eq!(u["d"], vec![vec!["a".to_string(), "b".into(), "c".into(), "d".into()]]);
+    }
+}

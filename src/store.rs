@@ -123,8 +123,14 @@ impl Store {
         }
         {
             let _guard = self.lock.exclusive().map_err(|e| StoreError(e.to_string()))?;
-            let disk = read_snapshot(&self.snapshot_path())?;
-            let disk_gen = disk.get("generation").and_then(|v| v.as_i64()).unwrap_or(0);
+            // The file this process loaded is still the one on disk (same mtime and size):
+            // its generation is ours, with no need to parse it again.
+            let path = self.snapshot_path();
+            let disk_gen = if self.snapshot_stamp.is_some() && file_stamp(&path) == self.snapshot_stamp {
+                self.loaded_generation
+            } else {
+                read_snapshot(&path)?.get("generation").and_then(|v| v.as_i64()).unwrap_or(0)
+            };
             if disk_gen != self.loaded_generation {
                 return Err(StoreError("stale generation".into()));
             }
@@ -330,8 +336,105 @@ fn empty_doc() -> Value {
     ])
 }
 
+/// Arrays written as compact tables: they are most of a large snapshot, and every row repeats
+/// the same keys and long ids. `read_snapshot` expands them, so readers see plain rows.
+const COMPACT_TABLES: [&str; 2] = ["test_edges", "blame"];
+
+/// `{"table":1,"cols":[..],"dict":[..],"strings":[..],"rows":[[..],..]}`: string columns hold
+/// indexes into `strings`. `None` when the rows do not all have the same keys in the same order.
+fn compact_table(rows: &[Value]) -> Option<Value> {
+    let first = rows.first()?.as_object()?;
+    let cols: Vec<&str> = first.iter().map(|(k, _)| k.as_ref()).collect();
+    let mut is_text = vec![true; cols.len()];
+    for row in rows {
+        let pairs = row.as_object()?;
+        if pairs.len() != cols.len() || pairs.iter().zip(&cols).any(|((k, _), c)| *k != **c) {
+            return None;
+        }
+        for (i, (_, v)) in pairs.iter().enumerate() {
+            if v.as_str().is_none() {
+                is_text[i] = false;
+            }
+        }
+    }
+    let mut strings: Vec<Value> = Vec::new();
+    let mut index: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+    let mut out_rows = Vec::with_capacity(rows.len());
+    for row in rows {
+        let pairs = row.as_object()?;
+        let cells = pairs
+            .iter()
+            .zip(&is_text)
+            .map(|((_, v), text)| match (text, v.as_str()) {
+                (true, Some(s)) => {
+                    let next = index.len() as i64;
+                    let id = *index.entry(s).or_insert_with(|| {
+                        strings.push(Value::String(s.to_string()));
+                        next
+                    });
+                    Value::Int(id)
+                }
+                _ => v.clone(),
+            })
+            .collect();
+        out_rows.push(Value::Array(cells));
+    }
+    Some(Value::object(vec![
+        ("table".into(), Value::Int(1)),
+        ("cols".into(), Value::Array(cols.iter().map(|c| Value::String(c.to_string())).collect())),
+        ("dict".into(), Value::Array(is_text.iter().map(|t| Value::Bool(*t)).collect())),
+        ("strings".into(), Value::Array(strings)),
+        ("rows".into(), Value::Array(out_rows)),
+    ]))
+}
+
+fn expand_table(table: &Value) -> Option<Vec<Value>> {
+    if table.get("table").and_then(|v| v.as_i64()) != Some(1) {
+        return None;
+    }
+    let cols: Vec<json::SharedStr> = table.get("cols")?.as_array()?.iter().map(|c| c.as_str().map(json::SharedStr::from)).collect::<Option<_>>()?;
+    let dict: Vec<bool> = table.get("dict")?.as_array()?.iter().map(|d| d.as_bool().unwrap_or(false)).collect();
+    let strings = table.get("strings")?.as_array()?;
+    let rows = table.get("rows")?.as_array()?;
+    rows.iter()
+        .map(|row| {
+            let cells = row.as_array()?;
+            let pairs = cols
+                .iter()
+                .zip(cells)
+                .zip(&dict)
+                .map(|((c, v), text)| {
+                    let value = if *text { strings.get(v.as_i64()? as usize)?.clone() } else { v.clone() };
+                    Some((c.clone(), value))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(Value::Object(pairs))
+        })
+        .collect()
+}
+
+/// The snapshot text: compact tables for `COMPACT_TABLES`, plain JSON for the rest.
+fn snapshot_text(doc: &Value) -> Result<String, StoreError> {
+    let Some(pairs) = doc.as_object() else { return json::to_string(doc).map_err(|e| StoreError(e.message)) };
+    let mut text = String::from("{");
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        if i > 0 {
+            text.push(',');
+        }
+        text.push_str(&json::to_string(&Value::String(k.to_string())).map_err(|e| StoreError(e.message))?);
+        text.push(':');
+        let compact = if COMPACT_TABLES.contains(&k.as_ref()) { v.as_array().and_then(compact_table) } else { None };
+        text.push_str(&json::to_string(compact.as_ref().unwrap_or(v)).map_err(|e| StoreError(e.message))?);
+    }
+    text.push('}');
+    if text.len() > json::MAX_INPUT {
+        return Err(StoreError(format!("snapshot would be {} MiB, over the {} MiB limit Chisel can read back; analyze a directory or configure shards", text.len() >> 20, json::MAX_INPUT >> 20)));
+    }
+    Ok(text)
+}
+
 fn write_snapshot_file(path: &Path, doc: &Value) -> Result<(), StoreError> {
-    let text = json::to_string(doc).map_err(|e| StoreError(e.message))?;
+    let text = snapshot_text(doc)?;
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -353,9 +456,14 @@ fn read_snapshot(path: &Path) -> Result<Value, StoreError> {
         return Err(StoreError("refusing to read a SQLite database".into()));
     }
     let text = String::from_utf8_lossy(&bytes);
-    let doc = json::parse(&text).map_err(|e| StoreError(e.message))?;
+    let mut doc = json::parse(&text).map_err(|e| StoreError(e.message))?;
     if doc.get("magic").and_then(|v| v.as_str()) != Some("chisel-store") {
         return Err(StoreError("snapshot magic mismatch".into()));
+    }
+    for key in COMPACT_TABLES {
+        if let Some(rows) = doc.get(key).and_then(expand_table) {
+            doc.insert(key, Value::Array(rows));
+        }
     }
     Ok(doc)
 }
@@ -386,6 +494,43 @@ mod tests {
         let p = std::env::temp_dir().join(format!("chisel-store-{n}"));
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn edges_and_blame_are_compact_on_disk_and_plain_in_memory() {
+        let dir = scratch().join("compact");
+        let mut store = Store::open(&dir).unwrap();
+        let edge = |t: &str, c: &str, w: f64| Value::object(vec![
+            ("test_id".into(), Value::String(t.into())),
+            ("code_id".into(), Value::String(c.into())),
+            ("edge_type".into(), Value::String("call".into())),
+            ("weight".into(), Value::Float(w)),
+        ]);
+        let edges = vec![edge("tests/a.rs:t1", "src/a.rs:f:function", 1.0), edge("tests/a.rs:t2", "src/a.rs:f:function", 0.5), edge("tests/a.rs:t1", "src/b.rs:g:function", 0.8)];
+        store.doc.insert("test_edges", Value::Array(edges.clone()));
+        let blame = vec![Value::object(vec![
+            ("file_path".into(), Value::String("src/a.rs".into())),
+            ("line_start".into(), Value::Int(1)),
+            ("author".into(), Value::String("Ann".into())),
+        ])];
+        store.doc.insert("blame", Value::Array(blame.clone()));
+        store.save().unwrap();
+        let raw = fs::read_to_string(store.snapshot_path()).unwrap();
+        assert!(raw.contains(r#""test_edges":{"table":1,"cols":["test_id","code_id","edge_type","weight"]"#), "{raw}");
+        assert_eq!(raw.matches("src/a.rs:f:function").count(), 1, "strings are stored once: {raw}");
+        let again = Store::open(&dir).unwrap();
+        assert_eq!(again.rows("test_edges"), edges.as_slice());
+        assert_eq!(again.rows("blame"), blame.as_slice());
+    }
+
+    #[test]
+    fn a_snapshot_over_the_old_32_mib_limit_reads_back() {
+        let dir = scratch().join("big");
+        let mut store = Store::open(&dir).unwrap();
+        store.doc.insert("padding", Value::String("x".repeat(40 << 20)));
+        store.save().unwrap();
+        let again = Store::open(&dir).unwrap();
+        assert_eq!(again.doc.get("padding").and_then(|v| v.as_str()).map(str::len), Some(40 << 20));
     }
 
     #[test]

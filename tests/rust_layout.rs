@@ -104,7 +104,9 @@ fn cargo_layout_links_tests_and_skips_them_as_code() {
         .find(|row| row.get("test_id").and_then(|v| v.as_str()) == Some("src/a.rs:checks_add_values"))
         .unwrap_or_else(|| panic!("inline #[test] in src/a.rs not suggested: {suggested_text}"));
     assert_ne!(inline.get("source").and_then(|v| v.as_str()), Some("fallback"), "{suggested_text}");
-    let edges = snap.get("test_edges").and_then(|v| v.as_array()).unwrap();
+    // Edges are a compact table on disk; the store expands them.
+    let loaded = chisel::store::Store::open(&store).unwrap();
+    let edges = loaded.rows("test_edges");
     let inline_targets: Vec<&str> = edges
         .iter()
         .filter(|e| e.get("test_id").and_then(|v| v.as_str()) == Some("src/a.rs:checks_add_values"))
@@ -196,4 +198,47 @@ fn this_repo_suggests_a_rust_test_for_analyze() {
         let path = row.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
         assert!(!path.starts_with("tests/"), "test-gaps listed a test path as code: {path}");
     }
+}
+
+#[test]
+fn ambiguous_rust_calls_link_only_where_the_call_points() {
+    let dir = scratch("narrow");
+    let files: [(&str, &str); 9] = [
+        ("Cargo.toml", "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        ("src/lib.rs", "pub mod a;\npub mod b;\npub mod c;\npub mod d;\npub mod e;\npub mod geom;\npub mod other;\n"),
+        ("src/a.rs", "pub struct A;\n\nimpl A {\n    pub fn new() -> A {\n        A\n    }\n\n    pub fn len(&self) -> usize {\n        0\n    }\n}\n"),
+        ("src/b.rs", "pub struct B;\n\nimpl B {\n    pub fn new() -> B {\n        B\n    }\n\n    pub fn len(&self) -> usize {\n        1\n    }\n}\n"),
+        ("src/c.rs", "pub struct C;\n\nimpl C {\n    pub fn len(&self) -> usize {\n        2\n    }\n}\n"),
+        ("src/d.rs", "pub struct D;\n\nimpl D {\n    pub fn len(&self) -> usize {\n        3\n    }\n}\n"),
+        ("src/e.rs", "pub struct E;\n\nimpl E {\n    pub fn len(&self) -> usize {\n        4\n    }\n}\n"),
+        ("src/geom.rs", "pub fn yaw(x: f32) -> f32 {\n    x\n}\n"),
+        ("src/other.rs", "pub fn yaw(x: f32) -> f32 {\n    -x\n}\n"),
+    ];
+    for (p, t) in files {
+        let path = dir.join(p);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, t).unwrap();
+    }
+    fs::create_dir_all(dir.join("tests")).unwrap();
+    fs::write(
+        dir.join("tests/t.rs"),
+        "use sample::a::A;\nuse sample::geom::yaw;\n\n#[test]\nfn makes_an_a() {\n    let a = A::new();\n    let v: Vec<u8> = Vec::new();\n    assert_eq!(a.len() + v.len(), 0);\n    assert_eq!(yaw(1.0), 1.0);\n}\n",
+    )
+    .unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    let snap = chisel::store::Store::open(&store).unwrap();
+    let mut targets: Vec<&str> = snap
+        .rows("test_edges")
+        .iter()
+        .filter(|e| e.get("test_id").and_then(|v| v.as_str()) == Some("tests/t.rs:makes_an_a"))
+        .filter_map(|e| e.get("code_id").and_then(|v| v.as_str()))
+        .collect();
+    targets.sort();
+    // A::new -> a.rs only (not b.rs); Vec::new -> nothing; .len() has five definitions and no
+    // receiver type -> dropped; yaw is imported from geom -> geom.rs, not other.rs.
+    assert_eq!(targets, vec!["src/a.rs:new:function", "src/geom.rs:yaw:function"]);
 }
