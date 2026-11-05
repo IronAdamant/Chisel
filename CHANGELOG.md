@@ -7,6 +7,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-11-05
+
+Automatic issue logging and traceability. Test runs the agent already makes become issues linked to the code and history behind them, with no model tokens spent on capture.
+
+### Added
+
+- `chisel capture` parses test output from cargo test, pytest (verbose, default and `-q`), Jest (text and `--json`), Vitest, go test (text, `-v`, `-json`) and node:test (TAP and spec) into failing tests with a one-line error and `file:line`. It records every result in `test_results`. `--hook` reads a Claude Code PostToolUse payload. It prints nothing unless an issue is new, reopened or fixed (then one line, returned to the agent as `additionalContext`), always exits 0, skips non-test commands before any work, and does nothing without a snapshot.
+- Issues are deduplicated by test id plus the error with numbers, paths, hex addresses and times removed, with first and last seen (time and commit), a count and a capped excerpt. New issues get up to three suspects: code the test covers (test edges) that changed since the test last passed, from one `git diff`, ranked by change size, uncommitted edits, recency and churn, each with a one-line reason.
+- When the test passes again the issue closes with the fixing commit (or `uncommitted`) and the files changed since the failure; the same failure later reopens it. A pass counts only on evidence: the test is listed as passing, its file or package passed, the command named its file, or its runner ran the whole suite.
+- MCP group `issues` with `issues` (compact rows, about 150 bytes), `issue` and `trace`. CLI: `chisel issues [--all] [--since] [--brief]`, `chisel issue <id>`, `chisel trace <file> [--unit fn]`.
+- `chisel hook-install [--write]` prints the PostToolUse and SessionStart hooks, or merges them into `.claude/settings.local.json` idempotently. `chisel issues --brief` prints at most two lines for SessionStart, nothing when no issue is open.
+- `chisel run` logs issues the same way and now records cargo, go, node and Vitest results too.
+
+### Changed
+
+- `tools/list` with every group on is 12.8 KB (three new tools); the golden default-output test now uses this release's output.
+
 ## [0.19.0] — 2026-11-05
 
 Tool groups, chosen by agents. An `agent-tools` block in a project's `AGENTS.md` (or `CHISEL_TOOLS` / `CHISEL_DISABLE`) switches off the parts of Chisel an agent does not use, so their schemas stop costing context. The rules follow the suite-wide convention. With no block and no env var the MCP output is byte-identical to 0.18.0, except that `initialize` now always advertises `capabilities.tools.listChanged: true`.

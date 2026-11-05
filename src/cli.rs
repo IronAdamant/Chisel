@@ -45,6 +45,15 @@ pub struct Args {
     pub agent_id: Option<String>,
     pub duration_ms: Option<i64>,
     pub help: bool,
+    /// `chisel capture --command`: the shell command whose output is on stdin.
+    pub capture_command: Option<String>,
+    /// `chisel capture --hook`: stdin is a Claude Code PostToolUse payload.
+    pub hook: bool,
+    /// `chisel issues --all`, `--since`, `--brief`; `chisel hook-install --write`.
+    pub all: bool,
+    pub since: Option<String>,
+    pub brief: bool,
+    pub write: bool,
 }
 
 pub fn parse(argv: &[String]) -> Result<Args, String> {
@@ -82,6 +91,12 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     let mut agent_id = None;
     let mut duration_ms = None;
     let mut help = false;
+    let mut capture_command = None;
+    let mut hook = false;
+    let mut all = false;
+    let mut since = None;
+    let mut brief = false;
+    let mut write = false;
     let mut i = 0;
     let mut after_dd = false;
     while i < argv.len() {
@@ -203,6 +218,20 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
         } else if a == "--duration" {
             i += 1;
             duration_ms = Some(argv.get(i).ok_or("missing --duration")?.parse().map_err(|_| "bad duration")?);
+        } else if a == "--command" {
+            i += 1;
+            capture_command = Some(argv.get(i).ok_or("missing --command")?.clone());
+        } else if a == "--hook" {
+            hook = true;
+        } else if a == "--all" {
+            all = true;
+        } else if a == "--since" {
+            i += 1;
+            since = Some(argv.get(i).ok_or("missing --since")?.clone());
+        } else if a == "--brief" {
+            brief = true;
+        } else if a == "--write" {
+            write = true;
         } else if a == "--help" || a == "-h" {
             help = true;
         } else if a.starts_with("--") {
@@ -222,6 +251,7 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
         force, working_tree, auto_update, limit, shard, directory, git_ref, kind, passed,
         coverage_mode, proximity_adjustment, exclude_new_file_boost, allow_repo_extractor, once, interval_secs,
         functions, fallback, unit, min_count, no_exclude_tests, top_n, agent_id, duration_ms, help,
+        capture_command, hook, all, since, brief, write,
     })
 }
 
@@ -258,6 +288,9 @@ pub fn run(args: &Args) -> Result<i32, String> {
             return Ok(0);
         }
         "run" => return crate::run_cmd::run_tests(args),
+        "capture" => return Ok(crate::capture::capture_cmd(args)),
+        "hook-install" => return crate::capture::hook_install(args),
+        "issues" if args.brief => return Ok(crate::capture::brief(args)),
         "migrate" => return migrate(args),
         "watch" => return watch(args),
         _ => {}
@@ -316,8 +349,11 @@ fn call_args(args: &Args) -> Value {
                     pairs.push(("agent_id".into(), Value::String(agent.clone())));
                 }
             }
-            "check-lock" => {
+            "check-lock" | "trace" => {
                 pairs.push(("file_path".into(), Value::String(first.clone())));
+            }
+            "issue" => {
+                pairs.push(("id".into(), Value::String(first.clone())));
             }
             "check-locks" => {
                 pairs.push(("file_paths".into(), Value::Array(args.positionals.iter().cloned().map(Value::String).collect())));
@@ -333,6 +369,12 @@ fn call_args(args: &Args) -> Value {
     }
     if args.force {
         pairs.push(("force".into(), Value::Bool(true)));
+    }
+    if args.all {
+        pairs.push(("all".into(), Value::Bool(true)));
+    }
+    if let Some(since) = &args.since {
+        pairs.push(("since".into(), Value::String(since.clone())));
     }
     if args.working_tree {
         pairs.push(("working_tree".into(), Value::Bool(true)));
@@ -595,5 +637,7 @@ pub fn help() {
     println!("  stale-tests, history, who-reviews, diff-impact, update, test-gaps, record-result,");
     println!("  run, watch, stats, start-job, job-status, cancel-job, triage, serve, serve-mcp,");
     println!("  migrate, acquire-lock, release-lock, refresh-lock, check-lock, check-locks, list-locks");
+    println!("  issues [--all] [--since 7d] [--brief], issue <id>, trace <file> [--unit fn],");
+    println!("  capture [--hook] [--command CMD] < output, hook-install [--write]");
     println!("Run `chisel <command> --help` for one command.");
 }

@@ -16,10 +16,6 @@ pub fn run_tests(args: &Args) -> Result<i32, String> {
     let mut cmd_args = args.test_command.clone();
     let program = cmd_args.remove(0);
     let framework = detect_framework(&program, &cmd_args);
-    if framework.is_empty() {
-        println!("Warning: could not detect test framework; results will not be recorded.");
-        println!("Running: {} {}", program, cmd_args.join(" "));
-    }
     augment(&mut cmd_args, framework);
     let mut jest_file = None;
     if framework == "jest" && !cmd_args.iter().any(|a| a == "--outputFile" || a == "-o") {
@@ -55,23 +51,35 @@ pub fn run_tests(args: &Args) -> Result<i32, String> {
     let _ = out_thread.join();
     let _ = err_thread.join();
     let code = status.code().unwrap_or(1);
-    if framework == "pytest" || framework == "jest" {
-        let stdout_text = String::from_utf8_lossy(&out_buf.lock().unwrap_or_else(|e| e.into_inner())).into_owned();
-        let stderr_text = String::from_utf8_lossy(&err_buf.lock().unwrap_or_else(|e| e.into_inner())).into_owned();
-        let combined = format!("{stdout_text}{stderr_text}");
+    let stdout_text = String::from_utf8_lossy(&out_buf.lock().unwrap_or_else(|e| e.into_inner())).into_owned();
+    let stderr_text = String::from_utf8_lossy(&err_buf.lock().unwrap_or_else(|e| e.into_inner())).into_owned();
+    let combined = format!("{stdout_text}{stderr_text}");
+    let jest_text = jest_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).filter(|t| !t.is_empty());
+    // Results and issues are written together, as the PostToolUse hook writes them: one
+    // snapshot flush per run.
+    let parsed = crate::test_output::parse(jest_text.as_deref().unwrap_or(&combined), Some(&args.project_dir));
+    if !parsed.outcomes.is_empty() {
+        let mut engine = Engine::open(&args.project_dir, args.storage_dir.as_deref())?;
+        let summary = engine.capture(&parsed, &args.test_command.join(" "), true)?;
+        println!("\n[chisel] Recorded {} test result(s)", summary.recorded);
+        if let Some(line) = summary.line() {
+            println!("[chisel] {line}");
+        }
+    } else if framework != "pytest" && framework != "jest" {
+        println!("
+[chisel] No test results parsed from output");
+    } else {
+        // Output the issue parser does not read (an unusual pytest plugin, say): results only.
         let rows = if framework == "jest" {
-            let from_file = jest_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
-            let text = if from_file.is_empty() { combined } else { from_file };
-            parse_jest_json(&text, Some(&args.project_dir))
+            parse_jest_json(jest_text.as_deref().unwrap_or(&combined), Some(&args.project_dir))
         } else {
             combined.lines().filter_map(parse_pytest_line).collect()
         };
-        let mut engine = Engine::open(&args.project_dir, args.storage_dir.as_deref())?;
-        if !rows.is_empty() {
-            engine.record_results_batch(&rows)?;
-            println!("\n[chisel] Recorded {} test result(s)", rows.len());
-        } else {
+        if rows.is_empty() {
             println!("\n[chisel] No test results parsed from output");
+        } else {
+            Engine::open(&args.project_dir, args.storage_dir.as_deref())?.record_results_batch(&rows)?;
+            println!("\n[chisel] Recorded {} test result(s)", rows.len());
         }
     }
     if let Some(path) = jest_file {

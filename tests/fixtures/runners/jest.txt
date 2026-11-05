@@ -1,0 +1,35 @@
+FAIL jtest/calc.test.js
+  ● calc › subtracts
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 2
+    Received: 8
+
+    [0m [90m 2 |[39m describe([32m'calc'[39m[33m,[39m () [33m=>[39m {
+     [90m 3 |[39m   test([32m'adds'[39m[33m,[39m () [33m=>[39m { expect(add([35m1[39m[33m,[39m [35m2[39m))[33m.[39mtoBe([35m3[39m)[33m;[39m })[33m;[39m
+    [31m[1m>[22m[39m[90m 4 |[39m   test([32m'subtracts'[39m[33m,[39m () [33m=>[39m { expect(sub([35m5[39m[33m,[39m [35m3[39m))[33m.[39mtoBe([35m2[39m)[33m;[39m })[33m;[39m
+     [90m   |[39m                                               [31m[1m^[22m[39m
+     [90m 5 |[39m })[33m;[39m
+     [90m 6 |[39m test([32m'throws'[39m[33m,[39m () [33m=>[39m { [36mnull[39m[33m.[39mx[33m;[39m })[33m;[39m
+     [90m 7 |[39m[0m
+
+      at Object.toBe (jtest/calc.test.js:4:47)
+
+  ● throws
+
+    TypeError: Cannot read properties of null (reading 'x')
+
+    [0m [90m 4 |[39m   test([32m'subtracts'[39m[33m,[39m () [33m=>[39m { expect(sub([35m5[39m[33m,[39m [35m3[39m))[33m.[39mtoBe([35m2[39m)[33m;[39m })[33m;[39m
+     [90m 5 |[39m })[33m;[39m
+    [31m[1m>[22m[39m[90m 6 |[39m test([32m'throws'[39m[33m,[39m () [33m=>[39m { [36mnull[39m[33m.[39mx[33m;[39m })[33m;[39m
+     [90m   |[39m                             [31m[1m^[22m[39m
+     [90m 7 |[39m[0m
+
+      at Object.x (jtest/calc.test.js:6:29)
+
+Test Suites: 1 failed, 1 passed, 2 total
+Tests:       2 failed, 2 passed, 4 total
+Snapshots:   0 total
+Time:        2.182 s
+Ran all test suites matching jtest.

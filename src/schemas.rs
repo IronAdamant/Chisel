@@ -1,9 +1,9 @@
-//! The 26 tool names and their input schemas (`schemas_data.json`, embedded in the binary).
+//! The 29 tool names and their input schemas (`schemas_data.json`, embedded in the binary).
 //! Descriptions are short on purpose: every MCP session loads them into the agent's context.
 
 use crate::json::{self, Value};
 
-pub const TOOL_NAMES: [&str; 26] = [
+pub const TOOL_NAMES: [&str; 29] = [
     "analyze",
     "impact",
     "suggest_tests",
@@ -30,6 +30,9 @@ pub const TOOL_NAMES: [&str; 26] = [
     "check_file_lock",
     "check_locks",
     "list_file_locks",
+    "issues",
+    "issue",
+    "trace",
 ];
 
 pub fn tool_list_json() -> Value {

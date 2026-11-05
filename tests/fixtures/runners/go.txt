@@ -1,0 +1,6 @@
+--- FAIL: TestSub (0.00s)
+    calc_test.go:12: Sub(5, 3) = 8, want 2
+FAIL
+FAIL	example.com/calc	0.004s
+ok  	example.com/calc/util	0.003s
+FAIL

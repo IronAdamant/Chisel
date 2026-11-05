@@ -2,6 +2,8 @@
 //! The snapshot is `.chisel/store`. `chisel.db` is never opened.
 
 mod analyze;
+mod issues;
+pub use issues::CaptureSummary;
 mod history_churn;
 mod query;
 mod locks;

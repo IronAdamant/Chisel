@@ -1,0 +1,46 @@
+
+ RUN  v5.1.0 C:/work/proj
+
+ ❯ vtest/calc.test.mjs (3 tests | 2 failed) 15ms
+   ❯ calc (2)
+     × subtracts 9ms
+   × throws 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  vtest/calc.test.mjs > calc > subtracts
+AssertionError: expected 8 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 8
+
+ ❯ vtest/calc.test.mjs:5:47
+      3| describe('calc', () => {
+      4|   test('adds', () => { expect(add(1, 2)).toBe(3); });
+      5|   test('subtracts', () => { expect(sub(5, 3)).toBe(2); });
+       |                                               ^
+      6| });
+      7| test('throws', () => { null.x; });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  vtest/calc.test.mjs > throws
+TypeError: Cannot read properties of null (reading 'x')
+ ❯ vtest/calc.test.mjs:7:29
+      5|   test('subtracts', () => { expect(sub(5, 3)).toBe(2); });
+      6| });
+      7| test('throws', () => { null.x; });
+       |                             ^
+      8|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 1 passed (3)
+   Start at  17:40:02
+   Duration  388ms (transform 41%, import 32%, tests 15%, worker 11%)
+
