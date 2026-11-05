@@ -333,7 +333,7 @@ impl Engine {
         let (branch, untracked, likely) = std::thread::scope(|s| {
             let untracked = s.spawn(|| git.untracked());
             let files = s.spawn(|| git.changed_files(&likely_ref));
-            let functions = s.spawn(|| git.changed_functions_all(&likely_ref));
+            let functions = s.spawn(|| git.changed_sections(&likely_ref));
             let branch = git.current_branch();
             let likely = (files.join().unwrap_or_else(|_| Ok(Vec::new())), functions.join().unwrap_or_else(|_| Ok(BTreeMap::new())));
             (branch, untracked.join().unwrap_or_else(|_| Ok(Vec::new())), likely)
@@ -361,7 +361,7 @@ impl Engine {
             likely
         } else {
             std::thread::scope(|s| {
-                let functions = s.spawn(|| git.changed_functions_all(&diff_ref));
+                let functions = s.spawn(|| git.changed_sections(&diff_ref));
                 (git.changed_files(&diff_ref), functions.join().unwrap_or_else(|_| Ok(BTreeMap::new())))
             })
         };
@@ -393,7 +393,17 @@ impl Engine {
                 ("hint".into(), Value::String("Run 'chisel update' first to include new or changed files.".into())),
             ]));
         }
-        let functions: BTreeMap<String, Vec<String>> = all_functions.into_iter().filter(|(f, names)| !names.is_empty() && changed.contains(f)).collect();
+        // Each hunk names the snapshot unit whose lines it touches (git's hunk header names the
+        // line before the hunk, which inside an impl block is `impl X {`, not the method).
+        let functions: BTreeMap<String, Vec<String>> = all_functions
+            .into_iter()
+            .filter(|(f, _)| changed.contains(f))
+            .map(|(f, section)| {
+                let names = self.changed_units(&f, &section);
+                (f, names)
+            })
+            .filter(|(_, names)| !names.is_empty())
+            .collect();
         let mut rows = self.impacted(&changed, &functions, &untracked_code);
         self.attach_working_tree_hits(&mut rows, &changed, &untracked_code);
         Ok(Value::Array(rows))
@@ -681,6 +691,26 @@ impl Engine {
                 }
             }
         }
+        // Tests of the changed functions' callers, a call or two away; ranked after direct hits.
+        let seeds: Vec<(String, String)> = functions.iter().filter(|(f, _)| files.contains(f)).flat_map(|(f, names)| names.iter().map(move |n| (f.clone(), n.clone()))).collect();
+        for c in self.callers(&seeds, self.impact_depth) {
+            for e in self.store.edges_for_code(&c.id) {
+                let tid = e.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
+                let Some(test) = tests.get(tid) else { continue };
+                let weight = e.get("weight").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let score = weight * 0.5f64.powi(c.hops as i32);
+                let path = if c.via == c.reaches { String::new() } else { format!(" via {}", c.via) };
+                let row = Value::object(vec![
+                    ("test_id".into(), Value::String(tid.into())),
+                    ("file_path".into(), test.get("file_path").cloned().unwrap_or(Value::String(String::new()))),
+                    ("name".into(), test.get("name").cloned().unwrap_or(Value::String(String::new()))),
+                    ("reason".into(), Value::String(format!("calls {}, which reaches the changed {}{path} ({} {} away)", c.name, c.reaches, c.hops, if c.hops == 1 { "call" } else { "calls" }))),
+                    ("score".into(), Value::Float((score * 1000.0).round() / 1000.0)),
+                    ("source".into(), Value::String("call_graph".into())),
+                ]);
+                Self::remember_hit(&mut best, tid, score, row);
+            }
+        }
         let query_min: i64 = store::meta_get(&self.store.doc, "co_change_query_min").and_then(|s| s.parse().ok()).unwrap_or(1);
         for file in files {
             for cc in self.store.co_for_file(file) {
@@ -755,10 +785,11 @@ impl Engine {
             }
         }
         let mut out: Vec<Value> = best.into_values().map(|(_, v)| v).collect();
+        let transitive = |v: &Value| v.get("source").and_then(|s| s.as_str()) == Some("call_graph");
         out.sort_by(|a, b| {
             let sa = a.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let sb = b.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal).then_with(|| {
+            transitive(a).cmp(&transitive(b)).then_with(|| sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)).then_with(|| {
                 a.get("test_id").and_then(|v| v.as_str()).unwrap_or("").cmp(b.get("test_id").and_then(|v| v.as_str()).unwrap_or(""))
             })
         });
@@ -1456,6 +1487,7 @@ impl Engine {
             self.exclude_new_file_boost = exclude;
         }
         self.diff_ref_override = args.get("ref").and_then(|v| v.as_str()).map(|s| s.to_string());
+        self.impact_depth = args.get("depth").and_then(|v| v.as_i64()).map(|d| d.clamp(1, 3) as usize).unwrap_or(DEFAULT_IMPACT_DEPTH);
         self.directory = args.get("directory").and_then(|v| v.as_str()).filter(|s| !s.is_empty() && *s != ".").map(|s| s.trim_end_matches('/').to_string());
         self.exclude_tests = args.get("exclude_tests").and_then(|v| v.as_bool()).unwrap_or(true);
         self.fallback_to_all = args.get("fallback_to_all").and_then(|v| v.as_bool()).unwrap_or(false);

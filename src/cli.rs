@@ -20,6 +20,7 @@ pub struct Args {
     pub test_command: Vec<String>,
     pub force: bool,
     pub working_tree: bool,
+    pub depth: Option<i64>,
     pub auto_update: bool,
     pub limit: Option<i64>,
     pub shard: Option<String>,
@@ -74,6 +75,7 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     let mut shard = None;
     let mut directory = None;
     let mut git_ref = None;
+    let mut depth: Option<i64> = None;
     let mut kind = None;
     let mut passed: Option<bool> = None;
     let mut coverage_mode = None;
@@ -157,6 +159,9 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
                 return Err("status=error ref must not start with '-'".into());
             }
             git_ref = Some(r);
+        } else if a == "--depth" {
+            i += 1;
+            depth = Some(argv.get(i).ok_or("missing --depth")?.parse().map_err(|_| "bad depth: use 1, 2 or 3")?);
         } else if a == "--kind" {
             i += 1;
             kind = Some(argv.get(i).ok_or("missing --kind")?.clone());
@@ -248,7 +253,7 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     }
     Ok(Args {
         command, project_dir, storage_dir, json, positionals, host, port, ttl, purpose, test_command,
-        force, working_tree, auto_update, limit, shard, directory, git_ref, kind, passed,
+        force, working_tree, auto_update, limit, shard, directory, git_ref, depth, kind, passed,
         coverage_mode, proximity_adjustment, exclude_new_file_boost, allow_repo_extractor, once, interval_secs,
         functions, fallback, unit, min_count, no_exclude_tests, top_n, agent_id, duration_ms, help,
         capture_command, hook, all, since, brief, write,
@@ -393,6 +398,9 @@ fn call_args(args: &Args) -> Value {
     }
     if let Some(git_ref) = &args.git_ref {
         pairs.push(("ref".into(), Value::String(git_ref.clone())));
+    }
+    if let Some(depth) = args.depth {
+        pairs.push(("depth".into(), Value::Int(depth)));
     }
 
     if let Some(kind) = &args.kind {

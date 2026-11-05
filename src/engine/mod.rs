@@ -2,6 +2,7 @@
 //! The snapshot is `.chisel/store`. `chisel.db` is never opened.
 
 mod analyze;
+mod callers;
 mod issues;
 pub use issues::CaptureSummary;
 mod history_churn;
@@ -208,6 +209,9 @@ pub struct Engine {
     only_files: Option<BTreeSet<String>>,
     active_job: Option<String>,
     diff_ref_override: Option<String>,
+    /// `impact`/`diff_impact` depth: 1 is direct edges only; 2 and 3 add tests of the changed
+    /// functions' callers, and their callers.
+    pub impact_depth: usize,
     directory: Option<String>,
     pub source_reads: u64,
     pub bare_index_builds: u64,
@@ -251,6 +255,7 @@ impl Engine {
             only_files: None,
             active_job: None,
             diff_ref_override: None,
+            impact_depth: DEFAULT_IMPACT_DEPTH,
             directory: None,
             source_reads: 0,
             bare_index_builds: 0,
@@ -524,6 +529,9 @@ pub(crate) fn is_test_support_path(path: &str) -> bool {
     parts.pop();
     parts.iter().any(|d| DIRS.iter().any(|t| d.eq_ignore_ascii_case(t)))
 }
+
+/// Default `depth` for `impact` and `diff_impact`.
+pub const DEFAULT_IMPACT_DEPTH: usize = 2;
 
 pub(crate) fn is_test_unit_type(unit_type: &str) -> bool {
     unit_type == "test_case" || unit_type == "test_suite"

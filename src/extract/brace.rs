@@ -65,7 +65,8 @@ pub(super) fn extract_brace(file_path: &str, content: &str, lang: &str) -> Vec<C
             if lang == "rust" && kind == "function" && rust_test_above(&cleaned, i) {
                 kind = "test_case".into();
             }
-            let end = brace_end(&cleaned, i);
+            // `struct Unit;` and `struct Pair(u8, u8);` have no body: they end at the `;`.
+            let end = if kind != "function" && kind != "test_case" && body_less(&cleaned, i) { i + 1 } else { brace_end(&cleaned, i) };
             units.push(CodeUnit {
                 file_path: file_path.into(),
                 name,
@@ -84,17 +85,17 @@ fn decl_on_line(t: &str, lang: &str) -> Option<(String, String)> {
     if t.starts_with('@') || t.starts_with('[') {
         return None;
     }
-    if let Some(name) = keyword_name(t, &["class ", "struct ", "interface ", "enum ", "trait ", "protocol ", "actor ", "object ", "mixin ", "extension "]) {
-        let kind = if t.starts_with("struct ") {
-            "struct"
-        } else if t.starts_with("interface ") || t.starts_with("protocol ") {
-            "interface"
-        } else if t.starts_with("enum ") {
-            "enum"
-        } else {
-            "class"
-        };
-        return Some((name, kind.into()));
+    for key in ["class ", "struct ", "interface ", "enum ", "trait ", "protocol ", "actor ", "object ", "mixin ", "extension "] {
+        if let Some(name) = keyword_name(t, &[key]) {
+            // The keyword decides the kind, after any modifiers (`pub struct`, `public enum`).
+            let kind = match key {
+                "struct " => "struct",
+                "interface " | "protocol " => "interface",
+                "enum " => "enum",
+                _ => "class",
+            };
+            return Some((name, kind.into()));
+        }
     }
     if lang == "go" {
         if let Some(name) = go_func_name(t) {
@@ -193,8 +194,8 @@ fn is_modifier(w: &str) -> bool {
         "public" | "private" | "protected" | "internal" | "static" | "final"
             | "abstract" | "sealed" | "open" | "data" | "override" | "virtual"
             | "async" | "partial" | "readonly" | "extern" | "unsafe" | "export"
-            | "default" | "synchronized" | "native" | "strictfp" | "inline"
-    )
+            | "default" | "synchronized" | "native" | "strictfp" | "inline" | "pub"
+    ) || (w.starts_with("pub(") && w.ends_with(')'))
 }
 
 fn ident(rest: &str) -> Option<String> {
@@ -351,6 +352,20 @@ fn method_name(t: &str) -> Option<String> {
         return None;
     }
     Some(name.to_string())
+}
+
+/// Whether a declaration ends with `;` before any `{` (a unit or tuple struct, a forward declaration).
+fn body_less(lines: &[String], start: usize) -> bool {
+    for line in lines.iter().skip(start).take(20) {
+        for c in line.chars() {
+            match c {
+                '{' => return false,
+                ';' => return true,
+                _ => {}
+            }
+        }
+    }
+    false
 }
 
 fn brace_end(lines: &[String], start: usize) -> usize {

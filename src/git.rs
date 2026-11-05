@@ -152,6 +152,13 @@ impl GitAnalyzer {
         Ok(split_diff_by_file(&raw).into_iter().map(|(path, section)| (path, parse_diff_functions(&section))).collect())
     }
 
+    /// The `-U0` diff against `ref`, split per file, for mapping hunks to the snapshot's units.
+    pub fn changed_sections(&self, r#ref: &str) -> Result<BTreeMap<String, String>, GitError> {
+        guard_ref(r#ref)?;
+        let raw = self.run(&["diff", "-U0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--end-of-options", r#ref])?;
+        Ok(split_diff_by_file(&raw).into_iter().collect())
+    }
+
     pub fn function_log(&self, file: &str, func: &str) -> Result<Vec<Commit>, GitError> {
         let spec = format!("-L:{func}:{file}");
         let raw = self.run(&["log", "--format=COMMIT_START%n%H|%an|%ae|%aI|%s", &spec])?;

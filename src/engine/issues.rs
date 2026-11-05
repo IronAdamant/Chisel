@@ -228,6 +228,11 @@ impl Engine {
                 }
             }
         }
+        // Only code the test's crate can reach (snapshots from before 0.22 linked across crates).
+        if let Some(tf) = test_file(test_id) {
+            let mut crates = crate::cargo::Crates::new(&self.project_dir);
+            files.retain(|f, _| crates.allows(tf, f));
+        }
         if files.is_empty() {
             return Vec::new();
         }
@@ -314,7 +319,7 @@ impl Engine {
     /// Functions a diff section changed: each hunk maps to the innermost code unit whose lines
     /// cover it (the snapshot's ranges), then names on changed definition lines. git's hunk
     /// header names the line *before* a hunk, which inside an `impl` block is not the method.
-    fn changed_units(&self, file: &str, section: &str) -> Vec<String> {
+    pub(super) fn changed_units(&self, file: &str, section: &str) -> Vec<String> {
         let units: Vec<(usize, usize, &str)> = self
             .store
             .units_by_file(file)

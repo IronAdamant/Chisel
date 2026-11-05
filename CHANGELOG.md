@@ -7,6 +7,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-11-05
+
+From the Specula re-check: suspects from crates the failing test cannot reach, and `diff_impact` missing tests that reach a changed function through a caller.
+
+### Fixed
+
+- **A Rust test links only to code it can reach.** In a Cargo workspace a test's edges, heuristic edges and cross-shard edges now go only to its own crate, its `[dependencies]` (transitively) and its `[dev-dependencies]`, read from the `Cargo.toml` files (`path` and `workspace = true` deps; `[build-dependencies]` excluded). Issue suspects apply the same rule, so snapshots written by older versions benefit too. Specula: 15,491 of 73,273 edges (21%) pointed into crates the test cannot reach; now none, and 54,991 edges in all.
+- **Suspects from unreachable crates (Specula I1/I2).** `specula-lux/src/bvh.rs:new` came from `Vec3::new`: the extractor skipped `pub struct Vec3` (it read `struct` only at the start of a line), so the type fallback treated `impl MulEach for Vec3` in `bvh.rs` as a declaration and kept that file's `new`. `specula/src/streaming.rs:front` came from the assertion message `"front (+Z) away from the wall"`, read as a call, and its `new` from `Cell::new` with `use std::cell::Cell`, matched to a `struct Cell` in `streaming.rs`. It scored 1.0 because unchanged suspects score by summed edge weight (two edges, 1.2), file churn (2.9, capped at 2) and recency (edited that day). Now: the crate filter; `call_sites` skips strings, raw strings, char literals and comments; a `Type::` or `module::` qualifier imported from `std`, `core` or `alloc` matches no workspace file; and Rust `pub`/`pub(crate)` structs, enums and traits are extracted, with the kind taken from the keyword (`public enum` in Java is now `enum`, not `class`) and a body-less `struct X;` ending on its own line.
+
+### Added
+
+- **`diff_impact` and `impact` follow callers (`depth`, default 2).** Test edges link a test to what it calls itself, and when a changed function had a direct test, its callers' tests were dropped. Depth 2 adds tests of the changed functions' callers, depth 3 their callers' callers; `depth: 1` restores direct hits only. Callers are read from the source at query time through the same call-site narrowing as edges, limited by Rust visibility (private: its module; `pub(crate)`: its crate; trait methods: anywhere) and the crate graph. A function with more than 40 callers is not walked past. Rows have `source: "call_graph"`, a reason such as `calls aligned, which reaches the changed yaw_toward (1 call away)`, half the edge weight per hop, and come after direct hits. CLI: `--depth N`.
+  Measured on a Specula copy with 40 panic mutants in four crates (a mutant panics on entry, so the tests that fail are the ones that run it), counting reported tests in the mutated crate: depth 1 found 312 of 475 failing tests at 42% precision, depth 2 353 (+41 true, +14 false), depth 3 363 (+51, +19). 0.21.0 found 354 at 38% precision. A warm MCP `diff_impact` call takes 85-96 ms at depth 1 and 107-128 ms at depth 2.
+- `diff_impact` names changed functions by the snapshot unit each hunk falls in, as issue suspects do, instead of git's hunk header. Inside an impl block the header is `impl X {`, which matched nothing and silently widened the answer to every test of the file.
+
 ## [0.21.0] — 2026-11-05
 
 Fixes from a live test on Specula (587 code files, 2,384 tests, about 317k lines).
