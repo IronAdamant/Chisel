@@ -153,6 +153,43 @@ fn unit_churn_skipped_above_2000_files() {
     assert!(snap.contains("\"file_path\":\"src/f0.py\"") && snap.contains("\"unit_name\":\"\""), "file-level churn row missing: {snap}");
 }
 
+fn diff_test_ids(engine: &mut chisel::Engine) -> Vec<String> {
+    let diff = engine.diff_impact().unwrap();
+    diff.as_array()
+        .unwrap_or_else(|| panic!("{}", chisel::json::to_string(&diff).unwrap()))
+        .iter()
+        .filter_map(|row| row.get("test_id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect()
+}
+
+#[test]
+fn diff_impact_on_an_untested_helper_names_the_tests_of_its_file() {
+    let dir = scratch("helper");
+    fs::create_dir_all(dir.join("tests")).unwrap();
+    let calc = "def add(a, b):\n    return _norm(a) + _norm(b)\n\n\ndef scale(x):\n    return _norm(x) * 2\n\n\ndef _norm(x):\n    return x\n";
+    fs::write(dir.join("calc.py"), calc).unwrap();
+    fs::write(dir.join("tests/test_add.py"), "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n").unwrap();
+    fs::write(dir.join("tests/test_scale.py"), "from calc import scale\n\n\ndef test_scale():\n    assert scale(2) == 4\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    engine.analyze().unwrap();
+    let both = vec!["tests/test_add.py:test_add".to_string(), "tests/test_scale.py:test_scale".to_string()];
+
+    // Body edit: the hunk names `_norm`, which no test calls directly. Its file's tests still run it.
+    fs::write(dir.join("calc.py"), calc.replace("    return x\n", "    return int(x)\n")).unwrap();
+    let mut ids = diff_test_ids(&mut engine);
+    ids.sort();
+    assert_eq!(ids, both);
+
+    // Signature edit: git's hunk header names the function *before* the hunk (`add`).
+    // The changed line itself defines `scale`, so its test must be reported too.
+    fs::write(dir.join("calc.py"), calc.replace("def scale(x):", "def scale(x, k=2):")).unwrap();
+    let ids = diff_test_ids(&mut engine);
+    assert!(ids.contains(&"tests/test_scale.py:test_scale".to_string()), "{ids:?}");
+}
+
 #[test]
 fn typescript_test_file_produces_an_edge() {
     let dir = scratch("ts");

@@ -625,26 +625,40 @@ impl Engine {
         }).collect();
         let mut best: BTreeMap<String, (f64, Value)> = BTreeMap::new();
         for file in files {
-            let fns = functions.get(file);
-            for unit in self.store.units_by_file(file) {
+            let units = self.store.units_by_file(file);
+            let named = |unit: &Value, list: &[String]| {
                 let uname = unit.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let bare = uname.rsplit('.').next().unwrap_or(uname);
-                if let Some(list) = fns {
-                    if !list.iter().any(|n| n == uname || n == bare) {
-                        continue;
-                    }
+                list.iter().any(|n| n == uname || n == bare)
+            };
+            let fns = functions.get(file).map(|v| v.as_slice());
+            // Narrow to the changed functions only when one of them has a direct test. A changed
+            // private helper is still exercised by the tests of its siblings in the same file.
+            let narrowed = fns.filter(|list| {
+                units.iter().any(|u| named(u, list) && !self.store.edges_for_code(u.get("id").and_then(|v| v.as_str()).unwrap_or("")).is_empty())
+            });
+            let widened = fns.is_some() && narrowed.is_none();
+            for unit in &units {
+                if narrowed.is_some_and(|list| !named(unit, list)) {
+                    continue;
                 }
+                let uname = unit.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let id = unit.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 for e in self.store.edges_for_code(id) {
                     let tid = e.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
                     let weight = e.get("weight").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let test = tests.get(tid);
                     let edge_type = e.get("edge_type").and_then(|v| v.as_str()).unwrap_or("import");
+                    let reason = if widened {
+                        format!("direct edge to {uname} ({edge_type}); no test calls the changed {} directly", fns.unwrap_or(&[]).join(", "))
+                    } else {
+                        format!("direct edge to {uname} ({edge_type})")
+                    };
                     let row = Value::object(vec![
                         ("test_id".into(), Value::String(tid.into())),
                         ("file_path".into(), test.and_then(|t| t.get("file_path")).cloned().unwrap_or(Value::String(String::new()))),
                         ("name".into(), test.and_then(|t| t.get("name")).cloned().unwrap_or(Value::String(String::new()))),
-                        ("reason".into(), Value::String(format!("direct edge to {uname} ({edge_type})"))),
+                        ("reason".into(), Value::String(reason)),
                         ("score".into(), Value::Float(weight)),
                         ("source".into(), Value::String("direct".into())),
                     ]);

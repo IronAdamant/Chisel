@@ -243,6 +243,18 @@ pub fn parse_log_output(raw: &str) -> Vec<Commit> {
 pub fn parse_diff_functions(raw: &str) -> Vec<String> {
     let mut functions = Vec::new();
     for line in raw.lines() {
+        // A hunk header names the function *before* the hunk, so an edit that starts on a
+        // signature line is credited to the previous function. Also read the changed lines.
+        if !line.starts_with("+++") && !line.starts_with("---") {
+            if let Some(changed) = line.strip_prefix('+').or_else(|| line.strip_prefix('-')) {
+                if let Some(name) = defined_name(changed) {
+                    if !functions.contains(&name) {
+                        functions.push(name);
+                    }
+                }
+                continue;
+            }
+        }
         let Some(rest) = line.strip_prefix("@@") else { continue };
         let Some(idx) = rest.find("@@") else { continue };
         let context = rest[idx + 2..].trim();
@@ -256,6 +268,32 @@ pub fn parse_diff_functions(raw: &str) -> Vec<String> {
         }
     }
     functions
+}
+
+/// The name a line defines, when the line itself starts a function definition
+/// (`pub async fn x(`, `def x(`, `func (r *T) X(`, `export function x(`). Calls never match.
+fn defined_name(line: &str) -> Option<String> {
+    const MODIFIERS: [&str; 10] = ["pub", "async", "export", "default", "static", "unsafe", "const", "private", "public", "extern"];
+    let mut rest = line.trim_start();
+    loop {
+        let word_end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+        let word = &rest[..word_end];
+        let modifier = MODIFIERS.contains(&word) || (word.starts_with("pub(") && word.ends_with(')')) || (word.len() > 1 && word.starts_with('"') && word.ends_with('"'));
+        rest = rest[word_end..].trim_start();
+        if modifier {
+            continue;
+        }
+        if !matches!(word, "fn" | "def" | "func" | "fun" | "function") {
+            return None;
+        }
+        break;
+    }
+    if rest.starts_with('(') {
+        // Go method receiver `(r *T)` comes before the name.
+        rest = rest[rest.find(')')? + 1..].trim_start();
+    }
+    let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+    if name.is_empty() { None } else { Some(name) }
 }
 
 fn func_name_from_context(context: &str) -> Option<String> {
@@ -362,4 +400,21 @@ pub fn git_tool_error(project_dir: &str, message: &str) -> crate::json::Value {
             "Use the repository root as the project directory: `chisel ... --project-dir /path/to/repo` or start the MCP server with cwd set to the git checkout.".into(),
         )),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_diff_functions;
+
+    #[test]
+    fn changed_signature_lines_name_their_function() {
+        let raw = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -5 +5 @@ fn before() {\n-fn after(x: i32) {\n+pub(crate) async fn after(x: i64) {\n@@ -9 +9 @@ fn before() {\n-    let y = call(x);\n+    let y = call(x + 1);\n";
+        assert_eq!(parse_diff_functions(raw), vec!["before", "after"]);
+    }
+
+    #[test]
+    fn definition_keywords_across_languages() {
+        let raw = "@@ -1 +1 @@\n+func (r *Repo) Load() error {\n+    def method(self):\n+export default function render() {\n+extern \"C\" fn ffi() {}\n+// this function does nothing\n+x = fn(1)\n";
+        assert_eq!(parse_diff_functions(raw), vec!["Load", "method", "render", "ffi"]);
+    }
 }
