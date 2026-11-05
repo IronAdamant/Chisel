@@ -74,6 +74,8 @@ struct Tally {
     function_skipped: usize,
     files: usize,
     blame_mismatch: Vec<String>,
+    /// Files the replay declined (`None`); the engine spawns `git blame` for those.
+    blame_skipped: usize,
 }
 
 fn compare(dir: &Path, limit: usize) -> Tally {
@@ -96,7 +98,10 @@ fn compare(dir: &Path, limit: usize) -> Tally {
         tally.files += 1;
         let real_blame = chisel::git::parse_blame(&git(dir, &["blame", "--porcelain", "--", path]));
         let ours = blame_history.blame(path, lines.len());
-        let same = ours.as_ref().is_some_and(|b| {
+        if ours.is_none() {
+            tally.blame_skipped += 1;
+        }
+        let same = ours.is_none() || ours.as_ref().is_some_and(|b| {
             b.len() == real_blame.len()
                 && b.iter().zip(&real_blame).all(|(x, y)| (x.line_start, x.line_end, &x.commit_hash, &x.author, &x.author_email) == (y.line_start, y.line_end, &y.commit_hash, &y.author, &y.author_email))
         });
@@ -191,7 +196,70 @@ fn replays_line_log_and_blame_like_git() {
     let tally = compare(&dir, usize::MAX);
     assert_eq!(tally.files, 1, "{tally:?}");
     assert_eq!(tally.functions, 3, "{tally:?}");
-    assert!(tally.function_mismatch.is_empty() && tally.blame_mismatch.is_empty() && tally.function_skipped == 0, "{tally:#?}");
+    assert!(tally.function_mismatch.is_empty() && tally.blame_mismatch.is_empty() && tally.function_skipped == 0 && tally.blame_skipped == 0, "{tally:#?}");
+}
+
+fn snapshot_rows(store: &Path, key: &str) -> Vec<String> {
+    let doc = chisel::json::parse(&std::fs::read_to_string(store.join("store")).unwrap()).unwrap();
+    let mut rows: Vec<String> = doc.get(key).and_then(|v| v.as_array()).unwrap_or(&[]).iter().map(|r| chisel::json::to_string(r).unwrap()).collect();
+    rows.sort();
+    rows
+}
+
+/// Octopus merges: one whose parent diffs are all printed is replayed; one that matches a
+/// parent's tree (an empty section git does not print) cannot be attributed and must fall back.
+/// Both must give what real git gives.
+#[test]
+fn octopus_merges_replay_or_fall_back_like_git() {
+    let dir = scratch();
+    run(&dir, &["init", "-q", "-b", "main"]);
+    for (k, v) in [("user.email", "a@example.com"), ("user.name", "Ann"), ("commit.gpgsign", "false"), ("core.autocrlf", "false")] {
+        run(&dir, &["config", k, v]);
+    }
+    let body = |a: &str, b: &str, c: &str| format!("def alpha():\n    return {a}\n\n\n\n\ndef beta():\n    return {b}\n\n\n\n\ndef gamma():\n    return {c}\n");
+    commit(&dir, &[("o.py", &body("1", "1", "1")), ("q.py", &body("1", "1", "1"))], "base");
+    for (branch, file) in [("x", body("2", "1", "1")), ("y", body("1", "2", "1")), ("z", body("1", "1", "2"))] {
+        run(&dir, &["checkout", "-q", "-b", branch, "main"]);
+        commit(&dir, &[("o.py", &file)], branch);
+    }
+    run(&dir, &["checkout", "-q", "main"]);
+    run(&dir, &["merge", "-q", "--no-edit", "x", "y", "z"]);
+    // p and q both change q.py; the octopus keeps q's tree, so its diff against q is empty.
+    run(&dir, &["checkout", "-q", "-b", "p", "main"]);
+    commit(&dir, &[("q.py", &body("3", "1", "1"))], "p");
+    run(&dir, &["checkout", "-q", "-b", "q"]);
+    commit(&dir, &[("q.py", &body("3", "3", "1"))], "q");
+    run(&dir, &["checkout", "-q", "main"]);
+    let tree = git(&dir, &["rev-parse", "q^{tree}"]);
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    let out = Command::new("git")
+        .args(["commit-tree", tree.trim(), "-p", head.trim(), "-p", "p", "-p", "q", "-m", "octopus keeps q"])
+        .current_dir(&dir)
+        .env("GIT_AUTHOR_DATE", "2024-03-02T00:00:00+00:00")
+        .env("GIT_COMMITTER_DATE", "2024-03-02T00:00:00+00:00")
+        .output()
+        .unwrap();
+    let octopus = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    run(&dir, &["reset", "-q", "--hard", &octopus]);
+    assert_eq!(git(&dir, &["rev-list", "--min-parents=3", "--count", "HEAD"]).trim(), "2");
+
+    let tally = compare(&dir, usize::MAX);
+    assert_eq!((tally.files, tally.functions), (2, 6), "{tally:?}");
+    assert!(tally.function_mismatch.is_empty() && tally.blame_mismatch.is_empty(), "{tally:#?}");
+    assert!(tally.function_skipped > 0 && tally.blame_skipped > 0, "the ambiguous octopus was not declined: {tally:?}");
+
+    // The engine fills the declined files with real git, so analyze stores the same rows
+    // whether or not it uses the stream.
+    let stream_store = dir.join(".stream");
+    let spawn_store = dir.join(".spawn");
+    let mut fast = chisel::Engine::open(&dir, Some(&stream_store)).unwrap();
+    fast.analyze().unwrap();
+    let mut slow = chisel::Engine::open(&dir, Some(&spawn_store)).unwrap();
+    slow.history_stream = false;
+    slow.analyze().unwrap();
+    for key in ["churn", "blame"] {
+        assert_eq!(snapshot_rows(&stream_store, key), snapshot_rows(&spawn_store, key), "{key} differs");
+    }
 }
 
 #[test]
