@@ -24,7 +24,7 @@ const ORDER: [&str; 12] = [
     "startup", "cold_analyze", "warm_analyze", "warm_update", "impact", "suggest_tests",
     "risk_map", "test_gaps", "triage", "churn", "coupling", "stats",
 ];
-const USAGE: &str = "usage: benchmark_parity [-h] --rust RUST --python PYTHON --small SMALL --large LARGE\n                        [--small-file SMALL_FILE] [--large-file LARGE_FILE] [--out OUT]";
+const USAGE: &str = "usage: benchmark_parity --rust BIN --python BIN --small DIR --large DIR [--small-file PATH] [--large-file PATH] [--out FILE]";
 
 #[derive(Debug, PartialEq)]
 struct Args {
@@ -37,7 +37,7 @@ struct Args {
     out: String,
 }
 
-/// Parsed like Python's argparse: `--name value` or `--name=value`. Errors exit 2.
+/// `--name value` or `--name=value`. Errors exit 2 with the usage line.
 fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut found: BTreeMap<&str, String> = BTreeMap::new();
     let names = ["rust", "python", "small", "large", "small-file", "large-file", "out"];
@@ -48,12 +48,12 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             Some((k, v)) if k.starts_with("--") => (k, Some(v.to_string())),
             _ => (arg.as_str(), None),
         };
-        let name = key.strip_prefix("--").and_then(|k| names.iter().find(|n| **n == k)).ok_or_else(|| format!("unrecognized arguments: {arg}"))?;
+        let name = key.strip_prefix("--").and_then(|k| names.iter().find(|n| **n == k)).ok_or_else(|| format!("unknown argument {arg}; expected one of --{}", names.join(", --")))?;
         let value = match inline {
             Some(v) => v,
             None => {
                 i += 1;
-                argv.get(i).filter(|v| !v.starts_with("--")).cloned().ok_or_else(|| format!("argument --{name}: expected one argument"))?
+                argv.get(i).filter(|v| !v.starts_with("--")).cloned().ok_or_else(|| format!("--{name} needs a value"))?
             }
         };
         found.insert(name, value);
@@ -61,7 +61,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     }
     let missing: Vec<String> = ["rust", "python", "small", "large"].iter().filter(|n| !found.contains_key(**n)).map(|n| format!("--{n}")).collect();
     if !missing.is_empty() {
-        return Err(format!("the following arguments are required: {}", missing.join(", ")));
+        return Err(format!("missing {}", missing.join(", ")));
     }
     let mut take = |name: &str, default: &str| found.remove(name).unwrap_or_else(|| default.to_string());
     Ok(Args {
@@ -368,7 +368,7 @@ fn main() {
         return;
     }
     let args = parse_args(&argv).unwrap_or_else(|e| {
-        eprintln!("{USAGE}\nbenchmark_parity: error: {e}");
+        eprintln!("benchmark_parity: {e}\n{USAGE}");
         std::process::exit(2);
     });
     let (small, large) = (PathBuf::from(&args.small), PathBuf::from(&args.large));
@@ -420,13 +420,13 @@ mod tests {
     }
 
     #[test]
-    fn arguments_match_argparse() {
+    fn argument_errors_name_the_fix() {
         let a = parse_args(&argv(&["--rust", "r", "--python=p", "--small", "s", "--large", "l"])).unwrap();
         assert_eq!((a.small_file.as_str(), a.large_file.as_str(), a.out.as_str()), ("src/calc.py", "django/http/request.py", "scripts/benchmark_results.md"));
         assert_eq!(a.python, "p");
-        assert_eq!(parse_args(&argv(&["--rust", "r"])).unwrap_err(), "the following arguments are required: --python, --small, --large");
-        assert_eq!(parse_args(&argv(&["--rust"])).unwrap_err(), "argument --rust: expected one argument");
-        assert_eq!(parse_args(&argv(&["--bogus", "x"])).unwrap_err(), "unrecognized arguments: --bogus");
+        assert_eq!(parse_args(&argv(&["--rust", "r"])).unwrap_err(), "missing --python, --small, --large");
+        assert_eq!(parse_args(&argv(&["--rust"])).unwrap_err(), "--rust needs a value");
+        assert_eq!(parse_args(&argv(&["--bogus", "x"])).unwrap_err(), "unknown argument --bogus; expected one of --rust, --python, --small, --large, --small-file, --large-file, --out");
     }
 
     #[test]
