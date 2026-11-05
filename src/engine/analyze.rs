@@ -750,6 +750,8 @@ impl Engine {
         let mut use_cache: HashMap<String, HashMap<String, Vec<Vec<String>>>> = HashMap::new();
         let mut declared_cache: HashMap<String, BTreeSet<String>> = HashMap::new();
         let project_dir = self.project_dir.clone();
+        // A Rust test only reaches its own crate and the crates it depends on.
+        let mut crates = crate::cargo::Crates::new(&self.project_dir);
         let mut dep_cache: BTreeMap<String, (String, Vec<extract::Dep>, BTreeSet<String>)> = BTreeMap::new();
         for tu in &test_units {
             let file = tu.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
@@ -800,7 +802,7 @@ impl Engine {
                 }
                 for cid in matched {
                     let code_file = id_file.get(cid.as_str()).copied().unwrap_or("");
-                    if code_file.is_empty() || (code_file == file && !inline) {
+                    if code_file.is_empty() || (code_file == file && !inline) || !crates.allows(file, code_file) {
                         continue;
                     }
                     if inline && cid.rsplit_once(':').is_some_and(|(unit, _)| test_ids.contains(unit)) {
@@ -820,7 +822,7 @@ impl Engine {
                 }
             }
         }
-        backfill_heuristic(&test_units, &mut edges, &code_units);
+        backfill_heuristic(&test_units, &mut edges, &code_units, &mut crates);
         (test_units, edges, static_rows)
     }
 
@@ -951,6 +953,7 @@ impl Engine {
             tests_by_file.entry(file.clone()).or_default().push((id.to_string(), test_name.to_string()));
             let _ = shard;
         }
+        let mut crates = crate::cargo::Crates::new(&self.project_dir);
         for (file, tests) in &tests_by_file {
             let content = content_cache.entry(file.clone()).or_insert_with(|| {
                 fs::read_to_string(self.project_dir.join(file)).unwrap_or_default()
@@ -976,7 +979,7 @@ impl Engine {
                     for cid in match_dep(file, dep, &all_units, &resolved, &index) {
                         let code_file = all_units.iter().find(|u| u.get("id").and_then(|v| v.as_str()) == Some(cid.as_str())).and_then(|u| u.get("file_path").and_then(|v| v.as_str())).unwrap_or("");
                         let code_shard = shard_owner(code_file, &shards);
-                        if code_file.is_empty() || code_shard == test_shard {
+                        if code_file.is_empty() || code_shard == test_shard || !crates.allows(file, code_file) {
                             continue;
                         }
                         let key = format!("{id}|{cid}|{}", dep.dep_type);
@@ -1391,7 +1394,7 @@ fn rename_targets<'a>(rows: impl Iterator<Item = (&'a str, &'a str)>) -> HashSet
 }
 
 /// Type name -> files that define it (struct, enum, class, trait).
-fn type_files(code_units: &[Value]) -> HashMap<String, BTreeSet<String>> {
+pub(super) fn type_files(code_units: &[Value]) -> HashMap<String, BTreeSet<String>> {
     let mut out: HashMap<String, BTreeSet<String>> = HashMap::new();
     for u in code_units {
         let kind = u.get("unit_type").and_then(|v| v.as_str()).unwrap_or("");
@@ -1407,7 +1410,7 @@ fn type_files(code_units: &[Value]) -> HashMap<String, BTreeSet<String>> {
 
 /// Types a file declares or implements: the name after `struct`, `enum`, `trait`, `union`,
 /// `type`, `class`, `impl` (skipping generics) and `for`. One pass per file.
-fn declared_types(text: &str) -> BTreeSet<String> {
+pub(super) fn declared_types(text: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let words: Vec<&str> = text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '<' || c == '>')).filter(|w| !w.is_empty()).collect();
     for pair in words.windows(2) {
@@ -1441,7 +1444,7 @@ fn path_segments(path: &str) -> Vec<String> {
 }
 
 /// Of the files defining a called name, keep those the call site points at.
-fn narrow_by_call_site(
+pub(super) fn narrow_by_call_site(
     test_file: &str,
     name: &str,
     matched: Vec<String>,
@@ -1466,7 +1469,12 @@ fn narrow_by_call_site(
         }
         files.iter().copied().filter(|f| score(f) == best).collect()
     };
+    // `use std::cell::Cell;` makes `Cell::new` the standard library's, whatever the workspace defines.
+    let from_std = |q: &str| uses.get(q).is_some_and(|paths| paths.iter().all(|p| p.first().is_some_and(|s| matches!(s.as_str(), "std" | "core" | "alloc"))));
     for q in &site.quals {
+        if from_std(q) {
+            continue;
+        }
         if q == "Self" || q == "self" || q == "super" {
             keep.extend(files.iter().copied().filter(|f| *f == test_file));
         } else if q.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
@@ -1556,7 +1564,7 @@ fn unit_churn_from(commits: &[crate::git::Commit], file: &str) -> (i64, i64, i64
     (dates.len() as i64, authors.len() as i64, ins, del, last, score)
 }
 
-fn backfill_heuristic(test_units: &[Value], edges: &mut Vec<Value>, code_units: &[Value]) {
+fn backfill_heuristic(test_units: &[Value], edges: &mut Vec<Value>, code_units: &[Value], crates: &mut crate::cargo::Crates) {
     let mut file_of: BTreeMap<String, String> = BTreeMap::new();
     for unit in test_units {
         let id = unit.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -1596,7 +1604,7 @@ fn backfill_heuristic(test_units: &[Value], edges: &mut Vec<Value>, code_units: 
         let stem = source_stem(file).to_ascii_lowercase();
         let Some(cands) = by_stem.get(&stem) else { continue };
         for (path, cid) in cands {
-            if path == file {
+            if path == file || !crates.allows(file, path) {
                 continue;
             }
             let key = format!("{tid}|{cid}|heuristic");

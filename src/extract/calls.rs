@@ -40,11 +40,59 @@ fn skip_ws_back(bytes: &[u8], mut i: usize) -> usize {
     i
 }
 
+/// If a string, raw string, char literal or comment starts at `i`, the index just past it.
+fn skip_non_code(text: &str, i: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let rest = &bytes[i..];
+    let at_word_start = i == 0 || !ident_char(bytes[i - 1]);
+    if rest.starts_with(b"//") {
+        return Some(text[i..].find('\n').map(|n| i + n).unwrap_or(bytes.len()));
+    }
+    if rest.starts_with(b"/*") {
+        return Some(text[i + 2..].find("*/").map(|n| i + 2 + n + 2).unwrap_or(bytes.len()));
+    }
+    // r"..", r#".."#, br#".."#
+    if at_word_start && (rest.starts_with(b"r") || rest.starts_with(b"br")) {
+        let start = if rest[0] == b'b' { i + 2 } else { i + 1 };
+        let hashes = bytes[start..].iter().take_while(|b| **b == b'#').count();
+        if bytes.get(start + hashes) == Some(&b'"') {
+            let close = format!("\"{}", "#".repeat(hashes));
+            let body = start + hashes + 1;
+            return Some(text[body..].find(&close).map(|n| body + n + close.len()).unwrap_or(bytes.len()));
+        }
+        return None;
+    }
+    match rest.first() {
+        Some(b'"') => {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'"' {
+                j += if bytes[j] == b'\\' { 2 } else { 1 };
+            }
+            Some((j + 1).min(bytes.len()))
+        }
+        Some(b'\'') => {
+            // A char literal ('x', '\n', '\u{..}', 'é'); otherwise a lifetime or label.
+            if rest.get(1) == Some(&b'\\') {
+                return Some(text.get(i + 3..).and_then(|t| t.find('\'')).map(|n| i + 3 + n + 1).unwrap_or(bytes.len()));
+            }
+            let c = text[i + 1..].chars().next()?;
+            let after = i + 1 + c.len_utf8();
+            (bytes.get(after) == Some(&b'\'')).then_some(after + 1)
+        }
+        _ => None,
+    }
+}
+
 pub fn call_sites(text: &str) -> HashMap<String, CallSite> {
     let bytes = text.as_bytes();
     let mut out: HashMap<String, CallSite> = HashMap::new();
     let mut i = 0;
     while i < bytes.len() {
+        // Text in strings, chars and comments is not code: `"front (+Z)"` calls nothing.
+        if let Some(next) = skip_non_code(text, i) {
+            i = next;
+            continue;
+        }
         if !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') || (i > 0 && ident_char(bytes[i - 1])) {
             i += 1;
             continue;
@@ -181,6 +229,23 @@ mod tests {
         assert_eq!(sites["with_capacity"].quals.iter().collect::<Vec<_>>(), vec!["HashMap"]);
         assert!(sites["free_fn"].free && sites["make"].quals.contains("Self"));
         assert!(!sites.contains_key("helper") && !sites.contains_key("if"));
+    }
+
+    #[test]
+    fn strings_chars_and_comments_call_nothing() {
+        let text = r##"assert!(x < 1.0, "front (+Z) away: {}", y);
+let s = r#"back(1)"#;
+// left(2)
+/* right(3) */
+let c = '(';
+let q = '\'';
+fn f<'a>(v: &'a str) { real(v); }
+let e = "esc \" up(4)";"##;
+        let sites = call_sites(text);
+        for name in ["front", "back", "left", "right", "up"] {
+            assert!(!sites.contains_key(name), "{name} is in a literal or comment: {sites:?}");
+        }
+        assert!(sites["real"].free, "code after a lifetime is still read: {sites:?}");
     }
 
     #[test]

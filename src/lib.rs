@@ -1,6 +1,7 @@
 //! Chisel: test impact analysis for coding agents. Zero crates.
 
 pub mod capture;
+pub mod cargo;
 pub mod cli;
 pub mod cli_text;
 pub mod engine;
