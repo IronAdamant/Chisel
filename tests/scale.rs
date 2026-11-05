@@ -149,6 +149,10 @@ fn unit_churn_skipped_above_2000_files() {
     assert!(text.contains("\"unit_churn_skipped\":true") || text.contains("\"unit_churn_skipped\": true"), "{text}");
     let spawns = log.lock().unwrap().clone();
     assert!(spawns.iter().all(|s| !s.contains("-L:")), "function log ran: {spawns:?}");
+    // With no function churn to compute, blame-only work keeps per-file `git blame` (as before
+    // the history stream existed), so a deep history is never read in full for it.
+    assert!(spawns.iter().all(|s| !s.contains("log -p")), "history stream ran above 2000 files");
+    assert_eq!(spawns.iter().filter(|s| s.starts_with("blame")).count(), 2001);
     let snap = fs::read_to_string(store.join("store")).unwrap();
     assert!(snap.contains("\"file_path\":\"src/f0.py\"") && snap.contains("\"unit_name\":\"\""), "file-level churn row missing: {snap}");
 }

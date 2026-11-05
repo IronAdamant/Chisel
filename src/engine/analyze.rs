@@ -113,7 +113,9 @@ impl Engine {
             return Ok(summary);
         }
         // The history streams need only the file list, so they run while units are extracted.
-        let prefetch = self.history_stream.then(|| {
+        // Above 2000 files there is no function churn, and blame alone stays per file: reading a
+        // deep history in full would not be cheaper than that.
+        let prefetch = (self.history_stream && files.len() <= 2000).then(|| {
             let (git, files) = (git.fork(), files.clone());
             thread::spawn(move || history_churn::prefetch(&git, &files, true))
         });

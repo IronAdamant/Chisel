@@ -107,7 +107,9 @@ pub(crate) fn churn_and_blame(
     stream: bool,
     whole_repo: bool,
 ) -> ChurnAndBlame {
-    if !stream || (blame_files.is_empty() && tasks.is_empty()) {
+    // Blame alone for many files would read the whole code history; per-file blame is the cheaper
+    // bound there. With function churn to compute the stream always wins.
+    if !stream || (blame_files.is_empty() && tasks.is_empty()) || (tasks.is_empty() && blame_files.len() > 200) {
         return spawned(git, blame_files, tasks);
     }
     let scope: BTreeSet<&str> = blame_files.iter().map(|s| s.as_str()).chain(tasks.iter().map(|t| t.0.as_str())).collect();
