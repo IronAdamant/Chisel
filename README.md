@@ -66,7 +66,7 @@ chisel run -- pytest tests/                # run tests and record pass/fail
 
 ## Tool groups
 
-Every MCP tool belongs to one group. When Chisel runs next to other tools that already cover a feature, switch that group off so its schemas stop taking context. `CHISEL_TOOLS` lists what to keep (groups or tool names, `all` allowed); `CHISEL_DISABLE` lists what to hide and is applied after it. `core` is always on. With neither set, nothing changes. The CLI is not affected.
+Every MCP tool belongs to one group. When Chisel runs next to other tools that already cover a feature, switch that group off so its schemas stop taking context. `CHISEL_TOOLS` lists what to keep (groups or tool names, `all` allowed); `CHISEL_DISABLE` lists what to hide and is applied after it. `core` is always on. Empty values count as unset; with neither set, nothing changes. The CLI is not affected.
 
 | Group | Tools | Overlaps with |
 |---|---|---|
@@ -80,7 +80,19 @@ Every MCP tool belongs to one group. When Chisel runs next to other tools that a
 "env": {"CHISEL_DISABLE": "locks,history"}
 ```
 
-An unknown name stops the server with exit code 2 and a one-line message listing the valid groups and tools. Calling a hidden tool returns an error that says which variable to change.
+An unknown name, or `core` (or a core tool) in `CHISEL_DISABLE`, stops the server with exit code 2 and a one-line message listing the valid groups and tools. Calling a hidden tool returns an error that says which variable to change.
+
+### Choosing groups (for agents)
+
+Write the choice into the project's root `AGENTS.md`; Chisel re-reads it on each request and tells the client when its tool list changes:
+
+````markdown
+```agent-tools
+chisel: disable locks, history
+```
+````
+
+Turn off `locks` when one agent works on the project or CoordinationHub/Trammel manages claims, `history` when you read git history yourself, `risk` when you only need which tests to run, and `maintenance` when `analyze` is quick. Bad names become warnings in the `initialize` instructions, never errors. Env vars override the file key by key. See [AGENTS.md](AGENTS.md#choosing-groups).
 
 ## How it works
 

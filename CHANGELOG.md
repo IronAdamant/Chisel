@@ -9,14 +9,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.19.0] — 2026-11-05
 
-Tool groups. An agent that runs several IronAdamant tools can switch off the parts of Chisel it does not use, so their schemas stop costing context. The switches follow the suite-wide convention, and with none set the MCP output is byte-identical to 0.18.0.
+Tool groups, chosen by agents. An `agent-tools` block in a project's `AGENTS.md` (or `CHISEL_TOOLS` / `CHISEL_DISABLE`) switches off the parts of Chisel an agent does not use, so their schemas stop costing context. The rules follow the suite-wide convention. With no block and no env var the MCP output is byte-identical to 0.18.0.
 
 ### Added
 
-- `CHISEL_TOOLS` (allowlist) and `CHISEL_DISABLE` (denylist) shape the stdio MCP surface by group or tool name. Groups: `core` (always on: `analyze`, `update`, `diff_impact`, `impact`, `suggest_tests`, `record_result`, `stats`), `risk`, `history`, `maintenance`, `locks`. `locks` and `history` are names shared across the suite. Case and whitespace are ignored; `all` is accepted in `CHISEL_TOOLS`.
+- An `agent-tools` fenced block in the project root's `AGENTS.md` takes `chisel: tools <list>` and `chisel: disable <list>` lines; lines for other tools are ignored. A bad name or an attempt to switch off `core` is ignored and reported as a warning line in the `initialize` instructions and `stats`, never fatal. The file is re-read when its mtime or size changes, and `notifications/tools/list_changed` is sent before the response when the visible tools change; `capabilities.tools.listChanged` is true whenever a block or env var is present.
+- `CHISEL_TOOLS` (allowlist) and `CHISEL_DISABLE` (denylist) override the file's `tools` and `disable` lines key by key and shape the stdio MCP surface by group or tool name. Groups: `core` (always on: `analyze`, `update`, `diff_impact`, `impact`, `suggest_tests`, `record_result`, `stats`), `risk`, `history`, `maintenance`, `locks`. `locks` and `history` are names shared across the suite. Case and whitespace are ignored; an empty or whitespace-only value counts as unset; `all` is accepted in `CHISEL_TOOLS`.
 - A hidden tool is absent from `tools/list`. Calling it returns `isError` with one line naming the group and the variable to change.
-- An unknown name stops `chisel serve-mcp` at startup with one line on stderr and exit code 2, so the client shows the server as failed.
-- When a switch is set, the `initialize` instructions and `stats` report the active groups in one line.
+- An unknown name, or `core` or a core tool in `CHISEL_DISABLE`, stops `chisel serve-mcp` at startup with one line on stderr and exit code 2, so the client shows the server as failed.
+- When a switch is set, the `initialize` instructions end with one line naming the groups on and off, and `stats` reports the same line. A test checks the default `initialize` and `tools/list` against the 0.18.0 release byte for byte.
 
 `tools/list` is 11,596 bytes with every group on, 9,312 with `locks` off, 9,721 with `history` off, 7,437 with both off, and 3,347 with only `core`. The CLI and the HTTP API are unchanged.
 
