@@ -48,6 +48,15 @@ fn session_in(dir: &std::path::Path, vars: &[(&str, &str)], requests: &[&str]) -
     lines
 }
 
+/// initialize + tools/list as the 0.18.0 release answered them, with this version and the one
+/// allowed change: `capabilities.tools.listChanged` is always advertised.
+fn release_output() -> Vec<String> {
+    include_str!("fixtures/mcp/default_0.18.0.jsonl")
+        .lines()
+        .map(|l| l.replace("@VERSION@", env!("CARGO_PKG_VERSION")).replace(r#""listChanged":false"#, r#""listChanged":true"#))
+        .collect()
+}
+
 const INIT: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#;
 const LIST: &str = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
 
@@ -63,8 +72,7 @@ fn call(name: &str) -> String {
 #[test]
 fn default_listing_and_instructions_are_unchanged() {
     let lines = session(&[], &[INIT, LIST]);
-    // initialize + tools/list as the 0.18.0 release answered them, apart from serverInfo.version.
-    let release: Vec<String> = include_str!("fixtures/mcp/default_0.18.0.jsonl").lines().map(|l| l.replace("@VERSION@", env!("CARGO_PKG_VERSION"))).collect();
+    let release = release_output();
     assert_eq!(lines, release, "default initialize/tools/list differ from the last release");
     assert_eq!(names(&lines[1]).len(), 26);
     let init = json::parse(&lines[0]).unwrap();
@@ -206,7 +214,7 @@ fn file_errors_are_warnings_and_never_stop_the_server() {
 
 #[test]
 fn no_block_means_the_release_output() {
-    let release: Vec<String> = include_str!("fixtures/mcp/default_0.18.0.jsonl").lines().map(|l| l.replace("@VERSION@", env!("CARGO_PKG_VERSION"))).collect();
+    let release = release_output();
     let dir = project_with("# A project\n\n```bash\nchisel: disable locks\n```\n");
     assert_eq!(session_in(&dir, &[], &[INIT, LIST]), release);
     // A block with lines only for other tools changes nothing Chisel lists.
@@ -242,4 +250,15 @@ fn editing_the_block_mid_session_notifies_and_applies() {
     assert_eq!(names(&read()).len(), 20);
     drop(stdin);
     let _ = child.wait();
+}
+
+#[test]
+fn examples_in_this_repos_docs_switch_nothing() {
+    // AGENTS.md and README show agent-tools blocks inside ````markdown fences: text, not config.
+    for doc in [include_str!("../AGENTS.md"), include_str!("../README.md")] {
+        assert!(doc.contains("```agent-tools"), "the docs should carry an example");
+        assert_eq!(chisel::tool_groups::parse_agents_md(doc), chisel::tool_groups::AgentLines::default());
+    }
+    let dir = project_with(include_str!("../AGENTS.md"));
+    assert_eq!(session_in(&dir, &[], &[INIT, LIST]), release_output());
 }

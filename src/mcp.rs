@@ -77,7 +77,7 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
             "initialize" => Value::object(vec![
                 ("protocolVersion".into(), Value::String("2024-11-05".into())),
                 ("capabilities".into(), Value::object(vec![
-                    ("tools".into(), Value::object(vec![("listChanged".into(), Value::Bool(surface.configured()))])),
+                    ("tools".into(), Value::object(vec![("listChanged".into(), Value::Bool(true))])),
                 ])),
                 ("serverInfo".into(), Value::object(vec![
                     ("name".into(), Value::String("chisel".into())),

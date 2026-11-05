@@ -215,25 +215,48 @@ pub struct AgentLines {
     pub warnings: Vec<String>,
 }
 
-pub fn parse_agents_md(text: &str) -> AgentLines {
-    let mut out = AgentLines::default();
-    let mut lines = text.lines();
-    let mut fence = None;
-    for line in lines.by_ref() {
-        let t = line.trim_start();
-        let marker = if t.starts_with("```") { "```" } else if t.starts_with("~~~") { "~~~" } else { continue };
-        if t.trim_start_matches(marker.chars().next().unwrap()).trim() == "agent-tools" {
-            fence = Some(marker);
-            break;
+/// A fence line: its character, its length, and the info string after it.
+fn fence(line: &str) -> Option<(char, usize, &str)> {
+    let t = line.trim_start();
+    let c = t.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let n = t.chars().take_while(|x| *x == c).count();
+    (n >= 3).then(|| (c, n, t[n..].trim()))
+}
+
+/// Lines of the first top-level ```` ```agent-tools ```` block. A block inside another fence
+/// (a documentation example) is text, not configuration.
+fn agent_tools_block(text: &str) -> Option<Vec<&str>> {
+    let mut open: Option<(char, usize, bool)> = None;
+    let mut body = Vec::new();
+    for line in text.lines() {
+        match open {
+            None => {
+                if let Some((c, n, info)) = fence(line) {
+                    open = Some((c, n, info == "agent-tools"));
+                }
+            }
+            Some((c, n, is_block)) => {
+                if fence(line).is_some_and(|(fc, fn_, info)| fc == c && fn_ >= n && info.is_empty()) {
+                    if is_block {
+                        return Some(body);
+                    }
+                    open = None;
+                } else if is_block {
+                    body.push(line);
+                }
+            }
         }
     }
-    let Some(marker) = fence else { return out };
+    // An unclosed block runs to the end of the file, as in CommonMark.
+    open.filter(|(_, _, is_block)| *is_block).map(|_| body)
+}
+
+pub fn parse_agents_md(text: &str) -> AgentLines {
+    let mut out = AgentLines::default();
+    let Some(lines) = agent_tools_block(text) else { return out };
     out.block = true;
     let warn = |msg: String| format!("AGENTS.md agent-tools: {msg} for {AGENT_NAME}; groups: {}", group_names());
     for line in lines {
-        if line.trim_start().starts_with(marker) {
-            break;
-        }
         let line = line.split('#').next().unwrap_or("").trim();
         let Some((tool, rest)) = line.split_once(':') else { continue };
         if tool.trim().to_ascii_lowercase() != AGENT_NAME {
@@ -394,6 +417,18 @@ mod tests {
         assert_eq!(parse_agents_md("no block here\n"), AgentLines::default());
         let other = parse_agents_md("```agent-tools\ntrammel: disable locks\n```\n");
         assert!(other.block && other.tools.is_none() && other.disable.is_none());
+    }
+
+    #[test]
+    fn a_block_inside_another_fence_is_documentation() {
+        let nested = "Example:\n\n````markdown\n```agent-tools\nchisel: disable locks\n```\n````\n\n~~~text\n```agent-tools\nchisel: disable history\n```\n~~~\n";
+        assert_eq!(parse_agents_md(nested), AgentLines::default());
+        // After the example, a real block still counts.
+        let real = format!("{nested}\n```agent-tools\nchisel: disable risk\n```\n");
+        assert_eq!(parse_agents_md(&real).disable.as_deref(), Some("risk"));
+        // A longer closing fence closes; a shorter one is content.
+        let long = "````agent-tools\nchisel: disable locks\n```\nchisel: disable history\n`````\n";
+        assert_eq!(parse_agents_md(long).disable.as_deref(), Some("locks,history"));
     }
 
     #[test]
