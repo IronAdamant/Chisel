@@ -349,10 +349,16 @@ impl Engine {
         } else {
             "HEAD".into()
         };
-        let diff_files = match git.changed_files(&diff_ref) {
+        // The changed-file list and the changed functions come from two git calls run together.
+        let (diff_files, all_functions) = std::thread::scope(|s| {
+            let functions = s.spawn(|| git.changed_functions_all(&diff_ref));
+            (git.changed_files(&diff_ref), functions.join().unwrap_or_else(|_| Ok(BTreeMap::new())))
+        });
+        let diff_files = match diff_files {
             Ok(v) => v,
             Err(e) => return Ok(git::git_tool_error(&self.project_dir.to_string_lossy(), &e.0)),
         };
+        let all_functions = all_functions.unwrap_or_default();
         let untracked_code: BTreeSet<String> = untracked.unwrap_or_default().into_iter().filter(|p| extract::path_has_code_extension(p)).collect();
         let mut changed: Vec<String> = diff_files.into_iter().filter(|p| extract::path_has_code_extension(p)).chain(untracked_code.iter().cloned()).collect();
         changed.sort();
@@ -376,15 +382,7 @@ impl Engine {
                 ("hint".into(), Value::String("Run 'chisel update' first to include new or changed files.".into())),
             ]));
         }
-        let mut functions: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let per_file = pool_map(&changed, |f| git.changed_functions(f, &diff_ref));
-        for (f, names) in changed.iter().zip(per_file) {
-            if let Ok(names) = names {
-                if !names.is_empty() {
-                    functions.insert(f.clone(), names);
-                }
-            }
-        }
+        let functions: BTreeMap<String, Vec<String>> = all_functions.into_iter().filter(|(f, names)| !names.is_empty() && changed.contains(f)).collect();
         let mut rows = self.impacted(&changed, &functions, &untracked_code);
         self.attach_working_tree_hits(&mut rows, &changed, &untracked_code);
         Ok(Value::Array(rows))
@@ -1234,6 +1232,7 @@ impl Engine {
                 ("hint".into(), Value::String("Run 'chisel update' first to include new or changed files.".into())),
             ]));
         }
+        let all_functions = git.changed_functions_all(&diff_ref).unwrap_or_default();
         let mut rows = Vec::new();
         let mut any = false;
         for (name, group) in &groups {
@@ -1242,17 +1241,11 @@ impl Engine {
                 continue;
             }
             any = true;
-            let mut functions: BTreeMap<String, Vec<String>> = BTreeMap::new();
-            for file in group {
-                if untracked_code.contains(file) {
-                    continue;
-                }
-                if let Ok(names) = git.changed_functions(file, &diff_ref) {
-                    if !names.is_empty() {
-                        functions.insert(file.clone(), names);
-                    }
-                }
-            }
+            let functions: BTreeMap<String, Vec<String>> = group
+                .iter()
+                .filter(|f| !untracked_code.contains(*f))
+                .filter_map(|f| all_functions.get(f).filter(|names| !names.is_empty()).map(|names| (f.clone(), names.clone())))
+                .collect();
             let owned: BTreeSet<String> = group.iter().filter(|f| untracked_code.contains(*f)).cloned().collect();
             let mut part = sub.impacted(group, &functions, &owned);
             sub.attach_working_tree_hits(&mut part, group, &owned);

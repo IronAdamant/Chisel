@@ -2,6 +2,7 @@
 //! The snapshot is `.chisel/store`. `chisel.db` is never opened.
 
 mod analyze;
+mod history_churn;
 mod query;
 mod locks;
 
@@ -222,6 +223,9 @@ pub struct Engine {
     /// `(shard name, full shard config)` for overlaying cross edges. `shards` stays empty on a view.
     shard_view: Option<(String, Vec<(String, String)>)>,
     overlay_applied: bool,
+    /// Per-function churn and blame from batched `git log -p` streams (`crate::history`).
+    /// Off: one `git log -L` per function and one `git blame` per file.
+    pub history_stream: bool,
 }
 
 impl Engine {
@@ -257,6 +261,7 @@ impl Engine {
             result_log: None,
             shard_view: None,
             overlay_applied: false,
+            history_stream: true,
         };
         engine.shards = load_shard_config(&engine.project_dir);
         Ok(engine)

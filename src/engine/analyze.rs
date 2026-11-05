@@ -112,6 +112,11 @@ impl Engine {
         if let Some(summary) = self.cached_analyze(&git, &files) {
             return Ok(summary);
         }
+        // The history streams need only the file list, so they run while units are extracted.
+        let prefetch = self.history_stream.then(|| {
+            let (git, files) = (git.fork(), files.clone());
+            thread::spawn(move || history_churn::prefetch(&git, &files, true))
+        });
         let commits = git.parse_log().unwrap_or_default();
         let mut units_by_file: BTreeMap<String, Vec<CodeUnit>> = BTreeMap::new();
         let mut all_units = Vec::new();
@@ -200,17 +205,17 @@ impl Engine {
             let (count, authors, ins, del, last) = acc.map(|a| (a.count, a.authors.len() as i64, a.ins, a.del, a.last.clone())).unwrap_or((0, 0, 0, 0, String::new()));
             churn_rows.push(churn_row(rel, "", ChurnCounts { commits: count, authors, insertions: ins, deletions: del }, &last, score));
         }
-        if files.len() <= 2000 {
-            let tasks = unit_log_tasks(&files, &units_by_file);
-            let logs = pool_map(&tasks, |task| git.function_log(&task.0, &task.2).ok());
-            for (task, func_commits) in tasks.iter().zip(logs) {
-                let Some(func_commits) = func_commits else { continue };
-                if func_commits.is_empty() {
-                    continue;
-                }
-                let (func_count, author_n, ins, del, last, func_score) = unit_churn_from(&func_commits, &task.0);
-                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: author_n, insertions: ins, deletions: del }, &last, func_score));
+        let tasks = if files.len() <= 2000 { unit_log_tasks(&files, &units_by_file) } else { Vec::new() };
+        let renames = rename_targets(commits.iter().flat_map(|c| c.files.iter().map(move |f| (c.hash.as_str(), f.path.as_str()))));
+        let prefetched = prefetch.and_then(|p| p.join().ok().flatten());
+        let history = history_churn::replay(&git, &self.project_dir, &files, &tasks, &renames, prefetched);
+        for (task, func_commits) in tasks.iter().zip(history.logs) {
+            let Some(func_commits) = func_commits else { continue };
+            if func_commits.is_empty() {
+                continue;
             }
+            let (func_count, author_n, ins, del, last, func_score) = unit_churn_from(&func_commits, &task.0);
+            churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: author_n, insertions: ins, deletions: del }, &last, func_score));
         }
         self.store.doc.insert("churn", Value::Array(churn_rows));
 
@@ -229,8 +234,7 @@ impl Engine {
         for (rel, hashed_file) in files.iter().zip(&hashed) {
             hash_rows.push(hashed_file.row(rel));
         }
-        let blame_blocks = pool_map(&files, |rel| git.blame(rel).unwrap_or_default());
-        for ((rel, blocks), hashed_file) in files.iter().zip(blame_blocks).zip(&hashed) {
+        for ((rel, blocks), hashed_file) in files.iter().zip(history.blames).zip(&hashed) {
             for b in blocks {
                 blame_rows.push(Value::object(vec![
                     ("file_path".into(), Value::String(rel.clone())),
@@ -427,6 +431,7 @@ impl Engine {
         }
 
         let skip_unit = files.len() > 2000;
+        let mut unit_tasks: Vec<history_churn::Task> = Vec::new();
         let mut scope = changed.to_vec();
         for path in _commit_touch {
             if files.iter().any(|f| f == path) && !scope.iter().any(|f| f == path) {
@@ -476,16 +481,17 @@ impl Engine {
                 let extracted = stored_units.iter().filter(|u| u.get("file_path").and_then(|v| v.as_str()) == Some(rel.as_str())).map(code_unit_from_row).collect();
                 units_by_file.insert(rel.clone(), extracted);
             }
-            let tasks = unit_log_tasks(&scope, &units_by_file);
-            let logs = pool_map(&tasks, |task| git.function_log(&task.0, &task.2).ok());
-            for (task, func_commits) in tasks.iter().zip(logs) {
-                let Some(func_commits) = func_commits else { continue };
-                if func_commits.is_empty() {
-                    continue;
-                }
-                let (func_count, author_n, ins, del, last, func_score) = unit_churn_from(&func_commits, &task.0);
-                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: author_n, insertions: ins, deletions: del }, &last, func_score));
+            unit_tasks = unit_log_tasks(&scope, &units_by_file);
+        }
+        let renames = rename_targets(commit_files.iter().filter_map(|r| Some((r.get("hash")?.as_str()?, r.get("path")?.as_str()?))));
+        let history = history_churn::churn_and_blame(git, &self.project_dir, &scope, &unit_tasks, &renames, self.history_stream, false);
+        for (task, func_commits) in unit_tasks.iter().zip(history.logs) {
+            let Some(func_commits) = func_commits else { continue };
+            if func_commits.is_empty() {
+                continue;
             }
+            let (func_count, author_n, ins, del, last, func_score) = unit_churn_from(&func_commits, &task.0);
+            churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: author_n, insertions: ins, deletions: del }, &last, func_score));
         }
         self.store.doc.insert("churn", Value::Array(churn_rows));
 
@@ -501,8 +507,7 @@ impl Engine {
             let content = fs::read(&abs).unwrap_or_default();
             hash_rows.push(HashedFile::from_path(&abs, &content).row(rel));
         }
-        let blame_blocks = pool_map(&scope, |rel| git.blame(rel).unwrap_or_default());
-        for (rel, blocks) in scope.iter().zip(blame_blocks) {
+        for (rel, blocks) in scope.iter().zip(history.blames) {
             let hash = hash_rows.iter().rev().find(|h| h.get("file_path").and_then(|v| v.as_str()) == Some(rel.as_str())).and_then(|h| h.get("hash").and_then(|v| v.as_str())).unwrap_or("");
             for b in blocks {
                 blame_rows.push(Value::object(vec![
@@ -1356,6 +1361,11 @@ impl Engine {
         ]))
     }
 
+}
+
+/// `(commit, new path)` of every rename in numstat rows (`a/{x => y}/b`).
+fn rename_targets<'a>(rows: impl Iterator<Item = (&'a str, &'a str)>) -> HashSet<(String, String)> {
+    rows.filter_map(|(hash, path)| Some((hash.to_string(), history_churn::numstat_rename_target(path)?))).collect()
 }
 
 fn unit_churn_from(commits: &[crate::git::Commit], file: &str) -> (i64, i64, i64, i64, String, f64) {
