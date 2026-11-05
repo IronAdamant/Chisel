@@ -7,6 +7,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A Rust `#[test]` inside a `#[cfg(test)]` module now links to the code in its own file, and takes its calls from its own lines rather than the whole file. `impact` and `suggest_tests` on such a file no longer come back empty or fall back to every test in the repo.
+- `diff_impact` no longer returns `[]` when the changed function has no direct test. It falls back to the tests of that file and says so in `reason`. An edit that starts on a signature line is credited to that function, not to the one before it.
+- `cargo test --release` passes. The durability tests ran helper subcommands that only existed in debug builds; the helpers now live in the test binary.
+
+### Changed
+
+- `diff_impact` runs its git calls concurrently (untracked files beside the branch lookup, per-file diffs on the 8-thread pool).
+- `scripts/benchmark_parity.py` is now `examples/benchmark_parity.rs` (std-only, same report and exit codes). On Windows it keeps snapshots in the absolute temp directory; `/tmp` there is drive-relative.
+
 ## [0.17.0] — 2026-11-03
 
 The Rust binary picks up the Python 0.15.1 behaviour that 0.16.1 still missed: stdio MCP framing, the flags and directory scopes that did not reach the engine, test detection for Java, Kotlin, C#, Swift, and C++, `chisel migrate`, and `CHISEL_DEP_EXTRACTOR`. The crate still links only the standard library. Figures below are copied from `scripts/benchmark_results.md`. None are estimated.
