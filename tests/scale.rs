@@ -1989,6 +1989,38 @@ fn watch_keeps_running_after_a_git_index_lock() {
 }
 
 #[test]
+fn lock_refusals_and_unknown_tools_say_what_to_do() {
+    let dir = scratch("lockmsg");
+    fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
+    init_repo(&dir);
+    commit_all(&dir, "init");
+    let store = dir.join("store");
+    let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
+    let call = |engine: &mut chisel::Engine, name: &str, pairs: &[(&str, &str)]| {
+        let args = chisel::json::Value::object(pairs.iter().map(|(k, v)| (k.to_string().into(), chisel::json::Value::String(v.to_string()))).collect());
+        engine.dispatch(name, &args)
+    };
+    call(&mut engine, "acquire_file_lock", &[("file_path", "a.py"), ("agent_id", "planner"), ("purpose", "step 2 of 3: rename f")]).unwrap();
+    let refused = call(&mut engine, "acquire_file_lock", &[("file_path", "a.py"), ("agent_id", "coder")]).unwrap();
+    assert_eq!(refused.get("acquired").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(refused.get("holder").and_then(|v| v.as_str()), Some("planner"));
+    assert_eq!(refused.get("purpose").and_then(|v| v.as_str()), Some("step 2 of 3: rename f"));
+    assert!(refused.get("ttl_remaining").and_then(|v| v.as_f64()).unwrap() > 0.0);
+    assert!(refused.get("reason").and_then(|v| v.as_str()).unwrap().contains("planner holds this lock"));
+
+    let wrong = call(&mut engine, "release_file_lock", &[("file_path", "a.py"), ("agent_id", "coder")]).unwrap();
+    assert_eq!(wrong.get("released").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(wrong.get("holder").and_then(|v| v.as_str()), Some("planner"));
+    assert!(wrong.get("reason").and_then(|v| v.as_str()).unwrap().contains("Only the holder"));
+    let none = call(&mut engine, "refresh_file_lock", &[("file_path", "b.py"), ("agent_id", "coder")]).unwrap();
+    assert_eq!(none.get("refreshed").and_then(|v| v.as_bool()), Some(false));
+    assert!(none.get("reason").and_then(|v| v.as_str()).unwrap().contains("No active lock on b.py"));
+
+    let err = call(&mut engine, "suggest_test", &[]).unwrap_err();
+    assert!(err.starts_with("unknown tool: suggest_test. Valid tools: analyze, impact, suggest_tests"), "{err}");
+}
+
+#[test]
 fn risk_rows_are_compact_and_skip_test_support_code() {
     let dir = scratch("riskrows");
     fs::create_dir_all(dir.join("src")).unwrap();

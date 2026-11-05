@@ -171,7 +171,7 @@ fn version_flag_prints_the_package_version() {
     let unknown = Command::new(env!("CARGO_BIN_EXE_chisel")).arg("--not-a-real-flag").output().unwrap();
     assert!(!unknown.status.success());
     let err = String::from_utf8_lossy(&unknown.stderr);
-    assert!(err.contains("unknown or unimplemented flag"), "{err}");
+    assert!(err.contains("unknown flag --not-a-real-flag") && err.contains("--help` lists the flags"), "{err}");
 }
 
 #[test]

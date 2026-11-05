@@ -23,11 +23,19 @@ impl Engine {
                 if let Some(lock) = existing {
                     let holder = lock.get("agent_id").and_then(|v| v.as_str()).unwrap_or("");
                     if holder != agent {
-                        return Ok(Value::object(vec![
+                        let status = self.lock_status(&file);
+                        let ttl = status.get("ttl_remaining").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let mut refused = vec![
                             ("acquired".into(), Value::Bool(false)),
                             ("holder".into(), Value::String(holder.into())),
                             ("expires_at".into(), lock.get("expires_at").cloned().unwrap_or(Value::Null)),
-                        ]));
+                            ("ttl_remaining".into(), Value::Float(ttl)),
+                        ];
+                        if let Some(p) = lock.get("purpose").filter(|v| !matches!(v, Value::Null)) {
+                            refused.push(("purpose".into(), p.clone()));
+                        }
+                        refused.push(("reason".into(), Value::String(format!("{holder} holds this lock for {ttl}s more. Work on another file, or retry after it expires."))));
+                        return Ok(Value::object(refused));
                     }
                 }
                 let now = now_secs();
@@ -56,7 +64,10 @@ impl Engine {
                 }).collect();
                 self.store.doc.insert("file_locks", Value::Array(kept));
                 self.store.save()?;
-                Ok(Value::object(vec![("released".into(), Value::Bool(held))]))
+                if held {
+                    return Ok(Value::object(vec![("released".into(), Value::Bool(true))]));
+                }
+                Ok(self.not_held("released", &file, &agent))
             }
             "refresh_file_lock" => {
                 let now = now_secs();
@@ -69,9 +80,12 @@ impl Engine {
                     }
                 }
                 self.store.save()?;
+                if !ok {
+                    return Ok(self.not_held("refreshed", &file, &agent));
+                }
                 Ok(Value::object(vec![
-                    ("refreshed".into(), Value::Bool(ok)),
-                    ("expires_at".into(), if ok { Value::Float(expires) } else { Value::Null }),
+                    ("refreshed".into(), Value::Bool(true)),
+                    ("expires_at".into(), Value::Float(expires)),
                 ]))
             }
             "check_file_lock" => Ok(self.lock_status(&file)),
@@ -116,6 +130,20 @@ impl Engine {
             }
             _ => Err("unreachable".into()),
         }
+    }
+
+    /// `{<flag>: false, reason, holder?}` for a release or refresh by an agent that does not hold the lock.
+    fn not_held(&self, flag: &str, file: &str, agent: &str) -> Value {
+        let status = self.lock_status(file);
+        let mut out = vec![(flag.to_string().into(), Value::Bool(false))];
+        match status.get("holder").and_then(|v| v.as_str()) {
+            Some(holder) => {
+                out.push(("holder".into(), Value::String(holder.into())));
+                out.push(("reason".into(), Value::String(format!("{holder} holds the lock on {file}, not {agent}. Only the holder can change it."))));
+            }
+            None => out.push(("reason".into(), Value::String(format!("No active lock on {file}. It was never taken or has expired; acquire_file_lock to take it.")))),
+        }
+        Value::object(out)
     }
 
     pub(super) fn drop_expired_locks(&mut self) {

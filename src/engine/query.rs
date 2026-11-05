@@ -1530,7 +1530,7 @@ impl Engine {
             "acquire_file_lock" | "release_file_lock" | "refresh_file_lock" | "check_file_lock" | "check_locks" | "list_file_locks" => {
                 self.file_lock_tool(name, args)
             }
-            _ => Err(format!("unknown tool: {name}")),
+            _ => Err(format!("unknown tool: {name}. Valid tools: {}", crate::schemas::TOOL_NAMES.join(", "))),
         }?;
         let limited = self.apply_limit(name, args, result);
         Ok(self.finish_auto(auto, compact_risk_rows(name, limited)))
