@@ -734,7 +734,8 @@ impl Engine {
                 id_file.insert(id, path);
             }
         }
-        let mut dep_cache: BTreeMap<String, (Vec<extract::Dep>, BTreeSet<String>)> = BTreeMap::new();
+        let test_ids: BTreeSet<&str> = test_units.iter().filter_map(|t| t.get("id").and_then(|v| v.as_str())).collect();
+        let mut dep_cache: BTreeMap<String, (String, Vec<extract::Dep>, BTreeSet<String>)> = BTreeMap::new();
         for tu in &test_units {
             let file = tu.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             let tid = tu.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -743,9 +744,22 @@ impl Engine {
                 let content = fs::read_to_string(self.project_dir.join(file)).unwrap_or_default();
                 let deps = extract::extract_deps_in(file, &content, Some(&self.project_dir), self.allow_repo_extractor);
                 let resolved = resolve_deps(&deps, &import_index);
-                dep_cache.insert(file.to_string(), (deps, resolved));
+                dep_cache.insert(file.to_string(), (content, deps, resolved));
             }
-            let (deps, resolved) = dep_cache.get(file).expect("deps");
+            let (content, file_deps, resolved) = dep_cache.get(file).expect("deps");
+            // A Rust `#[test]` inside a code file tests that file. Read its calls from its own
+            // lines, not from the production code around it, and let it link to that same file.
+            let inline = tu.get("framework").and_then(|v| v.as_str()) == Some("rust") && !looks_like_test(file);
+            let body_deps;
+            let deps = if inline {
+                let start = tu.get("line_start").and_then(|v| v.as_i64()).unwrap_or(1).max(1) as usize;
+                let end = tu.get("line_end").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
+                let body: Vec<&str> = content.lines().skip(start - 1).take(end.saturating_sub(start - 1)).collect();
+                body_deps = extract::extract_deps_in(file, &body.join("\n"), Some(&self.project_dir), self.allow_repo_extractor);
+                &body_deps
+            } else {
+                file_deps
+            };
             for path in resolved {
                 let key = format!("{file}|{path}");
                 if static_seen.insert(key) {
@@ -759,7 +773,10 @@ impl Engine {
                 let matched = match_dep(file, dep, &code_units, resolved, index);
                 for cid in matched {
                     let code_file = id_file.get(cid.as_str()).copied().unwrap_or("");
-                    if code_file.is_empty() || code_file == file {
+                    if code_file.is_empty() || (code_file == file && !inline) {
+                        continue;
+                    }
+                    if inline && cid.rsplit_once(':').is_some_and(|(unit, _)| test_ids.contains(unit)) {
                         continue;
                     }
                     let key = format!("{tid}|{cid}|{}", dep.dep_type);

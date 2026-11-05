@@ -97,6 +97,20 @@ fn cargo_layout_links_tests_and_skips_them_as_code() {
     let suggested_text = chisel::json::to_string(&suggested).unwrap();
     assert!(suggested_text.contains("tests/a.rs"), "{suggested_text}");
     assert!(suggested_text.contains("checks_add_values"), "{suggested_text}");
+    let inline = suggested
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row.get("test_id").and_then(|v| v.as_str()) == Some("src/a.rs:checks_add_values"))
+        .unwrap_or_else(|| panic!("inline #[test] in src/a.rs not suggested: {suggested_text}"));
+    assert_ne!(inline.get("source").and_then(|v| v.as_str()), Some("fallback"), "{suggested_text}");
+    let edges = snap.get("test_edges").and_then(|v| v.as_array()).unwrap();
+    let inline_targets: Vec<&str> = edges
+        .iter()
+        .filter(|e| e.get("test_id").and_then(|v| v.as_str()) == Some("src/a.rs:checks_add_values"))
+        .filter_map(|e| e.get("code_id").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(inline_targets, vec!["src/a.rs:add_values:function"], "{inline_targets:?}");
 
     fs::write(
         dir.join("src/a.rs"),
