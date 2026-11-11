@@ -13,7 +13,9 @@ Storage is the snapshot `.chisel/store`. `chisel migrate` copies test results fr
 
 ```bash
 chisel --json analyze .
-chisel --json diff-impact
+chisel --json diff-impact                 # after each edit: which tests to run
+chisel --json diff-impact --since main    # committed work on a branch too
+chisel --json diff-impact --worktree /abs/path/to/worktree
 chisel --json suggest-tests src/calc.py
 chisel --json triage
 chisel --json update
@@ -22,7 +24,7 @@ chisel run -- pytest tests/
 
 Prefer MCP when `chisel-mcp` is connected (26 tools). The server speaks newline-delimited JSON and also Content-Length. HTTP `chisel serve` is `GET /health`, `GET /tools`, and `POST /call` only. It is not an MCP URL and it has no `/mcp` path.
 
-Always pass `--json` on the CLI and branch on `status` before treating a payload as a list. `no_data`, `stale_db`, and `no_changes` exit 0. `error` and `git_error` exit 1.
+Always pass `--json` on the CLI and branch on `status` before treating a payload as a list. `no_data`, `stale_db`, and `no_changes` exit 0. `error` and `git_error` exit 1. Usage errors exit 2.
 
 ## Status values
 

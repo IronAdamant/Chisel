@@ -19,6 +19,10 @@ pub(super) struct Caller {
     pub name: String,
     /// The changed function this caller reaches.
     pub reaches: String,
+    /// The file of the changed function it reaches.
+    pub reaches_file: String,
+    /// The caller's own type (its impl block), empty when it has none.
+    pub owner: String,
     /// The function it calls on the way (the changed one at hop 1).
     pub via: String,
     pub hops: usize,
@@ -35,7 +39,8 @@ pub(super) const MAX_CALLERS_PER_FUNCTION: usize = 40;
 
 /// A function on the walk: (file, name, its ids, the changed function it leads to, the owner
 /// types of the definitions meant, `None` for any).
-type Hop = (String, String, Vec<String>, String, Option<BTreeSet<String>>);
+/// The last field is the changed function's file.
+type Hop = (String, String, Vec<String>, String, Option<BTreeSet<String>>, String);
 
 struct Unit<'a> {
     id: &'a str,
@@ -144,16 +149,22 @@ impl Engine {
             .iter()
             .map(|(f, n)| {
                 let ids: Vec<String> = funcs.get(f.as_str()).into_iter().flatten().filter(|u| u.name == n).map(|u| u.id.to_string()).collect();
-                (f.clone(), n.clone(), ids, n.clone(), self.changed_owners.get(&(f.clone(), n.clone())).cloned())
+                let owners = self.changed_owners.get(&(f.clone(), n.clone())).cloned();
+                // `GlyphAtlas::new` when one type's definition changed, else the bare name.
+                let label = match owners.as_ref().filter(|o| o.len() == 1).and_then(|o| o.iter().next()).filter(|o| !o.is_empty()) {
+                    Some(owner) => format!("{owner}::{n}"),
+                    None => n.clone(),
+                };
+                (f.clone(), n.clone(), ids, label, owners, f.clone())
             })
-            .filter(|(_, _, ids, _, _)| !ids.is_empty())
+            .filter(|(_, _, ids, _, _, _)| !ids.is_empty())
             .collect();
-        for (_, _, ids, _, _) in &frontier {
+        for (_, _, ids, _, _, _) in &frontier {
             seen.extend(ids.iter().cloned());
         }
         for hops in 1..depth {
             let mut next = Vec::new();
-            for (file, name, ids, reaches, owners) in &frontier {
+            for (file, name, ids, reaches, owners, reaches_file) in &frontier {
                 let lang = extract::detect_language(file);
                 let narrowing = matches!(lang, Some("rust" | "c" | "cpp"));
                 let rust = lang == Some("rust");
@@ -252,13 +263,10 @@ impl Engine {
                     }
                     let cfile = id_file.get(id.as_str()).copied().unwrap_or("").to_string();
                     // The caller's own owner, so the next hop resolves through its type.
-                    let next_owners = if extract::detect_language(&cfile) == Some("rust") {
-                        Some([resolver.self_type_at(&cfile, start).unwrap_or_default()].into_iter().collect())
-                    } else {
-                        None
-                    };
-                    out.push(Caller { id: id.clone(), name: caller.clone(), reaches: reaches.clone(), via: name.clone(), hops });
-                    next.push((cfile, caller, vec![id], reaches.clone(), next_owners));
+                    let owner = if extract::detect_language(&cfile) == Some("rust") { resolver.self_type_at(&cfile, start).unwrap_or_default() } else { String::new() };
+                    let next_owners = (extract::detect_language(&cfile) == Some("rust")).then(|| [owner.clone()].into_iter().collect());
+                    out.push(Caller { id: id.clone(), name: caller.clone(), reaches: reaches.clone(), reaches_file: reaches_file.clone(), owner, via: name.clone(), hops });
+                    next.push((cfile, caller, vec![id], reaches.clone(), next_owners, reaches_file.clone()));
                 }
             }
             frontier = next;

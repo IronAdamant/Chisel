@@ -231,6 +231,25 @@ fn a_worktree_overlays_the_main_snapshot() {
 }
 
 #[test]
+fn analyze_rebuilds_a_snapshot_from_another_chisel_version() {
+    let dir = repo();
+    let read_version = || {
+        let store = chisel::store::Store::open(&dir.join(".chisel")).unwrap();
+        chisel::store::meta_get(&store.doc, "analyzer_version")
+    };
+    assert_eq!(read_version().as_deref(), Some(env!("CARGO_PKG_VERSION")));
+    {
+        let mut store = chisel::store::Store::open(&dir.join(".chisel")).unwrap();
+        chisel::store::meta_set(&mut store.doc, "analyzer_version", "0.22.0");
+        store.save().unwrap();
+    }
+    // Same HEAD, same files: only the version differs, and the edges are rebuilt.
+    let (code, _, err) = run(&dir, &["analyze"], false);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(read_version().as_deref(), Some(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
 fn every_command_has_help() {
     let dir = scratch("help");
     for (name, _, _) in chisel::cli_text::COMMANDS {

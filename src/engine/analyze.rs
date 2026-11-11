@@ -265,6 +265,7 @@ impl Engine {
         if let Ok(head) = git.head_sha() {
             store::meta_set(&mut self.store.doc, "analyzed_head", &head);
         }
+        store::meta_set(&mut self.store.doc, "analyzer_version", env!("CARGO_PKG_VERSION"));
         self.store.save()?;
         Ok(self.analyze_summary(files.len()))
     }
@@ -282,6 +283,10 @@ impl Engine {
         }
         let Ok(head) = git.head_sha() else { return None };
         if store::meta_get(&self.store.doc, "analyzed_head").as_deref() != Some(head.as_str()) {
+            return None;
+        }
+        // A snapshot written by another Chisel version is rebuilt: its edges follow that version's rules.
+        if store::meta_get(&self.store.doc, "analyzer_version").as_deref() != Some(env!("CARGO_PKG_VERSION")) {
             return None;
         }
         Some(self.analyze_summary(files.len()))

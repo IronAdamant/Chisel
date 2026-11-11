@@ -719,6 +719,8 @@ impl Engine {
             Some((t.get("id")?.as_str()?.to_string(), t))
         }).collect();
         let mut best: BTreeMap<String, (f64, Value)> = BTreeMap::new();
+        // Changed files with a test that calls into them: co-change history is only a fallback.
+        let mut called: BTreeSet<String> = BTreeSet::new();
         for file in files {
             let units = self.store.units_by_file(file);
             let named = |unit: &Value, list: &[String]| {
@@ -781,11 +783,14 @@ impl Engine {
                     let weight = e.get("weight").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let test = tests.get(tid);
                     let edge_type = e.get("edge_type").and_then(|v| v.as_str()).unwrap_or("import");
+                    let owner = e.get("owner").and_then(|v| v.as_str()).unwrap_or("");
+                    let target = if owner.is_empty() { uname.to_string() } else { format!("{owner}::{uname}") };
                     let reason = if widened {
-                        format!("direct edge to {uname} ({edge_type}); no test calls the changed {} directly", fns.unwrap_or(&[]).join(", "))
+                        format!("direct edge to {target} ({edge_type}); no test calls the changed {} directly", fns.unwrap_or(&[]).join(", "))
                     } else {
-                        format!("direct edge to {uname} ({edge_type})")
+                        format!("direct edge to {target} ({edge_type})")
                     };
+                    called.insert(file.clone());
                     // A sibling's test exercises the change only if the sibling calls it: half weight.
                     let score = if widened { weight * 0.5 } else { weight };
                     let row = Value::object(vec![
@@ -808,12 +813,14 @@ impl Engine {
                 let Some(test) = tests.get(tid) else { continue };
                 let weight = e.get("weight").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let score = weight * 0.5f64.powi(c.hops as i32);
-                let path = if c.via == c.reaches { String::new() } else { format!(" via {}", c.via) };
+                let path = if c.via == c.reaches || c.reaches.ends_with(&format!("::{}", c.via)) { String::new() } else { format!(" via {}", c.via) };
+                let caller = if c.owner.is_empty() { c.name.clone() } else { format!("{}::{}", c.owner, c.name) };
+                called.insert(c.reaches_file.clone());
                 let row = Value::object(vec![
                     ("test_id".into(), Value::String(tid.into())),
                     ("file_path".into(), test.get("file_path").cloned().unwrap_or(Value::String(String::new()))),
                     ("name".into(), test.get("name").cloned().unwrap_or(Value::String(String::new()))),
-                    ("reason".into(), Value::String(format!("calls {}, which reaches the changed {}{path} ({} {} away)", c.name, c.reaches, c.hops, if c.hops == 1 { "call" } else { "calls" }))),
+                    ("reason".into(), Value::String(format!("calls {caller}, which reaches the changed {}{path} ({} {} away)", c.reaches, c.hops, if c.hops == 1 { "call" } else { "calls" }))),
                     ("score".into(), Value::Float((score * 1000.0).round() / 1000.0)),
                     ("source".into(), Value::String("call_graph".into())),
                 ]);
@@ -822,6 +829,9 @@ impl Engine {
         }
         let query_min: i64 = store::meta_get(&self.store.doc, "co_change_query_min").and_then(|s| s.parse().ok()).unwrap_or(1);
         for file in files {
+            if called.contains(file) {
+                continue;
+            }
             for cc in self.store.co_for_file(file) {
                 let a = cc.get("file_a").and_then(|v| v.as_str()).unwrap_or("");
                 let b = cc.get("file_b").and_then(|v| v.as_str()).unwrap_or("");

@@ -7,6 +7,50 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-11-11
+
+From Specula's M5 lanes, where Chisel was the weakest tool: `diff_impact` was mostly name-matched noise, refused with "run chisel update" in worktrees, and scored only uncommitted work.
+
+### Fixed
+
+- **Rust calls resolve by type and path, not by name.** `Default::default()` linked every test to every `impl Default` (22,957 of Specula's 66,265 edges); `new`, `name`, `grow` and `clear` matched across unrelated types. Now:
+  - `Type::f` and `Self::f` reach only methods that type owns, read from its `impl` and `trait` blocks.
+  - `x.f()` resolves through `self`, `self.field` (the field's declared type), and locals or parameters whose type is written down.
+  - A std trait or type (`Default::default()`, `Vec::new()`) and a std method on an unknown receiver (`x.clear()`) link to nothing.
+  - A rare method on an unknown receiver links at weight ×0.75 when the test names the owner type, else ×0.5 when at most 3 files define it.
+  - A name that appears only in a string or comment is no call.
+
+  Edges carry the resolved `owner`, so same-named methods of one file (`GlyphKey::new`, `GlyphAtlas::new`) are told apart. Reasons name the type: `direct edge to GlyphAtlas::new`, `calls Ui::new, which reaches the changed GlyphAtlas::new`.
+
+  The caller walk resolves the same way. On Specula, edges fell from 66,265 to 31,859, and the store from 11.8 to 11.3 MB. `analyze` CPU time is unchanged within noise (median 10.4 s vs 10.7 s over 7 runs).
+- **`diff_impact` on a branch or a detached worktree diffs from the merge-base with main**, not from main's tip. Main's newer commits counted as changes, and files the branch lacks were "missing from the analysis database" forever, even after `update` and `analyze`. A file deleted since the base is no longer reported missing, and diffs use `--relative`.
+- **`analyze` after upgrading Chisel rebuilds the snapshot.** The unchanged-tree shortcut returned the old version's summary and kept its edges; `analyzer_version` is now part of the check.
+- **CLI `analyze --force` on more than 300 files runs inline.** It used to queue a job, then the process exited and took the job with it, so the job stayed `queued`. CLI `start-job` now waits for its job and prints the final status.
+- **`chisel <command> --help` works for every command** (`diff-impact --help` said "Unknown command"), and so does `chisel help <command>`.
+- `stale generation` (another process wrote the snapshot during the call) now says to run the command again.
+
+### Added
+
+- **`diff_impact` `since`** (CLI `--since REF`): every change from the merge-base of REF and HEAD to the working tree, committed or not. The reply is `{"items": [...], "since", "base"}`. `since` and `ref` together give `status: "error"`; an unknown ref gives `git_error` with a hint.
+- **Worktree overlays: `worktree_root`** (CLI `--worktree PATH`) on the 15 tools that read the snapshot. Each answers for that git worktree from main's snapshot:
+  - Main's snapshot is never written. A copy under `.chisel/overlays/<hash>/` re-indexes only files whose content differs (new, changed, deleted), with an mtime and size check on each call.
+  - The overlay is rebuilt when main's snapshot changes, and pruned once its worktree is gone.
+  - Replies add `worktree` and `overlay_files`.
+  - A missing path, or a checkout of another repository (git common dir differs), is a one-line error.
+  - The CLI and `serve-mcp` started inside a linked worktree, with no directory flags and no store of the worktree's own, use it automatically.
+  - Without `worktree_root`, replies are as before.
+
+  On Specula the first call took 17 s (79 files differ from main) and later CLI calls 2 s.
+- Row `source: "sibling"`, ranked last together with `co_change`. When no test calls a changed function, Chisel lists the tests of other methods of the same type (Rust), at half weight. Before, it listed the tests of every function in the file at full weight.
+
+### Changed
+
+- `diff_impact` and `impact` rank in tiers: direct and import rows, then `call_graph`, then `sibling` and `co_change`.
+- `co_change` rows are added only for a changed file that no test calls into.
+- Usage errors (unknown command, unknown flag, a flag without its value) exit 2 instead of 1.
+- Tool descriptions say when to call each tool (after an edit, to pick which tests to run), and the `initialize` instructions mention `since` and `worktree_root`.
+- `tools/list` is 14.8 KB with every group on, up from 13.0 KB, because of `worktree_root` and `since`. The golden default output is this release's.
+
 ## [0.22.0] — 2026-11-05
 
 From the Specula re-check: suspects from crates the failing test cannot reach, and `diff_impact` missing tests that reach a changed function through a caller.

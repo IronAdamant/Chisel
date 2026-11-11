@@ -6,4 +6,4 @@ Storage is the snapshot `.chisel/store`. Chisel does not open `chisel.db`. `:mem
 
 Status values: `no_data`, `no_changes`, `no_edges`, `git_error`, `stale_db`, `error`, `unsupported`, `auto_queued`.
 
-`no_data` and `stale_db` exit 0. `error` and `git_error` exit 1. Scores are heuristics. Read `_meta.uniform_components` before trusting a composite risk score.
+`no_data` and `stale_db` exit 0. `error` and `git_error` exit 1. Usage errors exit 2. Scores are heuristics. Read `_meta.uniform_components` before trusting a composite risk score.
