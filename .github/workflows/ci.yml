@@ -62,7 +62,7 @@ jobs:
           path: target/x86_64-unknown-linux-musl/release/chisel
 
   rust-macos-arm64:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -79,7 +79,7 @@ jobs:
           path: target/aarch64-apple-darwin/release/chisel
 
   rust-macos-x64:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust

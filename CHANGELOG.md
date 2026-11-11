@@ -49,6 +49,7 @@ From Specula's M5 lanes, where Chisel was the weakest tool: `diff_impact` was mo
 - `co_change` rows are added only for a changed file that no test calls into.
 - Usage errors (unknown command, unknown flag, a flag without its value) exit 2 instead of 1.
 - Tool descriptions say when to call each tool (after an edit, to pick which tests to run), and the `initialize` instructions mention `since` and `worktree_root`.
+- CI and release run macOS jobs on `macos-latest`: GitHub no longer runs the `macos-14` image.
 - `tools/list` is 14.8 KB with every group on, up from 13.0 KB, because of `worktree_root` and `since`. The golden default output is this release's.
 
 ## [0.22.0] — 2026-11-05
