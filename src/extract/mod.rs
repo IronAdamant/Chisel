@@ -4,6 +4,7 @@
 mod brace;
 mod deps;
 pub mod calls;
+pub mod rust_items;
 mod framework;
 mod python;
 

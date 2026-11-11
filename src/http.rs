@@ -12,8 +12,10 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-pub fn serve(project: &Path, storage: Option<&Path>, host: &str, port: u16) -> Result<(), String> {
-    let engine = Arc::new(Mutex::new(Engine::open(project, storage)?));
+pub fn serve(project: &Path, storage: Option<&Path>, worktree: Option<&Path>, host: &str, port: u16) -> Result<(), String> {
+    let mut opened = Engine::open(project, storage)?;
+    opened.default_worktree = worktree.map(|p| p.to_path_buf());
+    let engine = Arc::new(Mutex::new(opened));
     let listener = TcpListener::bind((host, port)).map_err(|e| e.to_string())?;
     let addr = listener.local_addr().map_err(|e| e.to_string())?;
     println!("Starting HTTP server on http://{addr}");

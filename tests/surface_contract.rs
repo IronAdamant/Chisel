@@ -73,7 +73,8 @@ fn no_data_suggests_analyze() {
 fn tools_list_is_short_and_every_description_is_distinct() {
     let list = chisel::schemas::tool_list_json();
     let text = chisel::json::to_string(&list).unwrap();
-    assert!(text.len() < 13_000, "tools/list is {} bytes", text.len());
+    // 0.23.0 added worktree_root to the 15 tools that answer for a worktree (about 1.8 KB).
+    assert!(text.len() < 15_000, "tools/list is {} bytes", text.len());
     let tools = list.get("tools").and_then(|v| v.as_array()).unwrap();
     let mut seen = std::collections::BTreeSet::new();
     for tool in tools {

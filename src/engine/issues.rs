@@ -320,6 +320,18 @@ impl Engine {
     /// cover it (the snapshot's ranges), then names on changed definition lines. git's hunk
     /// header names the line *before* a hunk, which inside an `impl` block is not the method.
     pub(super) fn changed_units(&self, file: &str, section: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (name, _) in self.changed_definitions(file, section) {
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        out
+    }
+
+    /// `changed_units` with the start line of each changed definition (0 when only git's hunk
+    /// header named it), so same-named methods of one file can be told apart.
+    pub(super) fn changed_definitions(&self, file: &str, section: &str) -> Vec<(String, usize)> {
         let units: Vec<(usize, usize, &str)> = self
             .store
             .units_by_file(file)
@@ -328,10 +340,10 @@ impl Engine {
             .filter(|u| matches!(u.get("unit_type").and_then(|v| v.as_str()), Some("function" | "async_function" | "method")))
             .filter_map(|u| Some((u.get("line_start")?.as_i64()? as usize, u.get("line_end")?.as_i64()? as usize, u.get("name")?.as_str()?)))
             .collect();
-        let mut out: Vec<String> = Vec::new();
-        let mut push = |name: &str| {
-            if !out.iter().any(|n| n == name) {
-                out.push(name.to_string());
+        let mut out: Vec<(String, usize)> = Vec::new();
+        let mut push = |name: &str, start: usize| {
+            if !out.iter().any(|(n, s)| n == name && *s == start) {
+                out.push((name.to_string(), start));
             }
         };
         for line in section.lines() {
@@ -349,15 +361,15 @@ impl Engine {
             let new = span(sides.next());
             // The snapshot may hold the file before or after the edit: try both sides.
             for (a, b) in [new, old].into_iter().flatten() {
-                if let Some(&(_, _, name)) = units.iter().filter(|(s, e, _)| *s <= b && a <= *e).min_by_key(|(s, e, _)| e - s) {
-                    push(name);
+                if let Some(&(start, _, name)) = units.iter().filter(|(s, e, _)| *s <= b && a <= *e).min_by_key(|(s, e, _)| e - s) {
+                    push(name, start);
                     break;
                 }
             }
         }
         for name in git::parse_diff_functions(section) {
-            if units.iter().any(|(_, _, n)| *n == name) {
-                push(&name);
+            if units.iter().any(|(_, _, n)| *n == name) && !out.iter().any(|(n, _)| *n == name) {
+                out.push((name, 0));
             }
         }
         out

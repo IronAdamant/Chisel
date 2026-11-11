@@ -8,6 +8,8 @@
 //! languages only callers in the changed file are followed.
 
 use super::analyze::{declared_types, narrow_by_call_site, type_files};
+use super::resolve::{type_idents, Ctx, RustResolver, TYPE_MENTIONED};
+use crate::extract::rust_items::local_types;
 use super::*;
 use crate::extract::calls::{call_sites, use_paths, CallSite};
 
@@ -17,6 +19,10 @@ pub(super) struct Caller {
     pub name: String,
     /// The changed function this caller reaches.
     pub reaches: String,
+    /// The file of the changed function it reaches.
+    pub reaches_file: String,
+    /// The caller's own type (its impl block), empty when it has none.
+    pub owner: String,
     /// The function it calls on the way (the changed one at hop 1).
     pub via: String,
     pub hops: usize,
@@ -30,6 +36,11 @@ fn file_key<'a>(funcs: &BTreeMap<&'a str, Vec<Unit<'a>>>, file: &str) -> &'a str
 }
 
 pub(super) const MAX_CALLERS_PER_FUNCTION: usize = 40;
+
+/// A function on the walk: (file, name, its ids, the changed function it leads to, the owner
+/// types of the definitions meant, `None` for any).
+/// The last field is the changed function's file.
+type Hop = (String, String, Vec<String>, String, Option<BTreeSet<String>>, String);
 
 struct Unit<'a> {
     id: &'a str,
@@ -116,38 +127,52 @@ impl Engine {
             funcs.entry(file).or_default().push(Unit { id, name, start, end });
             starts.insert(id, start);
         }
+        for ids in by_name.values_mut() {
+            ids.sort();
+            ids.dedup();
+        }
         let types = type_files(code_units);
+        let sources = self.sources();
+        let mut resolver = RustResolver::new(sources.clone(), code_units, types.clone());
         let mut crates = crate::cargo::Crates::new(&self.project_dir);
         let mut texts: HashMap<&str, String> = HashMap::new();
         let mut uses: HashMap<String, HashMap<String, Vec<Vec<String>>>> = HashMap::new();
+        let mut rust_uses: HashMap<String, HashMap<String, Vec<Vec<String>>>> = HashMap::new();
         let mut declared: HashMap<String, BTreeSet<String>> = HashMap::new();
         let mut file_sites: HashMap<&str, HashMap<String, CallSite>> = HashMap::new();
         let mut verdicts: HashMap<String, bool> = HashMap::new();
-        let project_dir = self.project_dir.clone();
         let mut out: Vec<Caller> = Vec::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
-        // (file, name, ids of that function, the changed function it leads to)
-        let mut frontier: Vec<(String, String, Vec<String>, String)> = seeds
+        // (file, name, ids of that function, the changed function it leads to, the owner types
+        // of the definitions meant — `None` for any).
+        let mut frontier: Vec<Hop> = seeds
             .iter()
             .map(|(f, n)| {
                 let ids: Vec<String> = funcs.get(f.as_str()).into_iter().flatten().filter(|u| u.name == n).map(|u| u.id.to_string()).collect();
-                (f.clone(), n.clone(), ids, n.clone())
+                let owners = self.changed_owners.get(&(f.clone(), n.clone())).cloned();
+                // `GlyphAtlas::new` when one type's definition changed, else the bare name.
+                let label = match owners.as_ref().filter(|o| o.len() == 1).and_then(|o| o.iter().next()).filter(|o| !o.is_empty()) {
+                    Some(owner) => format!("{owner}::{n}"),
+                    None => n.clone(),
+                };
+                (f.clone(), n.clone(), ids, label, owners, f.clone())
             })
-            .filter(|(_, _, ids, _)| !ids.is_empty())
+            .filter(|(_, _, ids, _, _, _)| !ids.is_empty())
             .collect();
-        for (_, _, ids, _) in &frontier {
+        for (_, _, ids, _, _, _) in &frontier {
             seen.extend(ids.iter().cloned());
         }
         for hops in 1..depth {
             let mut next = Vec::new();
-            for (file, name, ids, reaches) in &frontier {
+            for (file, name, ids, reaches, owners, reaches_file) in &frontier {
                 let lang = extract::detect_language(file);
                 let narrowing = matches!(lang, Some("rust" | "c" | "cpp"));
+                let rust = lang == Some("rust");
                 let candidates: Vec<&str> = if narrowing {
                     let own = crates.crate_of(file);
-                    let text = texts.entry(file_key(&funcs, file)).or_insert_with(|| fs::read_to_string(project_dir.join(file.as_str())).unwrap_or_default());
+                    let text = texts.entry(file_key(&funcs, file)).or_insert_with(|| fs::read_to_string(sources.path(file)).unwrap_or_default());
                     // A private Rust function is called only from its module; pub(crate) only from its crate.
-                    let reach = if lang == Some("rust") { ids.iter().filter_map(|i| starts.get(i.as_str())).map(|l| rust_reach(text, *l)).max_by_key(|r| *r as u8).unwrap_or(Reach::Anywhere) } else { Reach::Anywhere };
+                    let reach = if rust { ids.iter().filter_map(|i| starts.get(i.as_str())).map(|l| rust_reach(text, *l)).max_by_key(|r| *r as u8).unwrap_or(Reach::Anywhere) } else { Reach::Anywhere };
                     let mut c: Vec<&str> = funcs
                         .keys()
                         .copied()
@@ -162,10 +187,10 @@ impl Engine {
                 } else {
                     funcs.keys().copied().filter(|f| *f == file.as_str()).collect()
                 };
-                let mut found: Vec<(String, String)> = Vec::new();
+                let mut found: Vec<(String, String, usize)> = Vec::new();
                 let matched = by_name.get(name.as_str()).cloned().unwrap_or_default();
-                // Whether a call site in `cand` points at the changed function. In its own file a
-                // call by that name is to it (`self.f()` or `x.f()` there has nothing to narrow by).
+                // Whether a call site in `cand` points at the changed function (C and C++: by file).
+                // In its own file a call by that name is to it (`x.f()` there has nothing to narrow by).
                 let mut points_here = |cand: &str, site: &CallSite, text: &str| -> bool {
                     if !narrowing || cand == file.as_str() {
                         return true;
@@ -175,22 +200,22 @@ impl Engine {
                         return *hit;
                     }
                     let file_uses = uses.entry(cand.to_string()).or_insert_with(|| use_paths(text));
-                    let mut declares = |f: &str, ty: &str| declared.entry(f.to_string()).or_insert_with(|| declared_types(&fs::read_to_string(project_dir.join(f)).unwrap_or_default())).contains(ty);
+                    let mut declares = |f: &str, ty: &str| declared.entry(f.to_string()).or_insert_with(|| declared_types(&fs::read_to_string(sources.path(f)).unwrap_or_default())).contains(ty);
                     let kept = narrow_by_call_site(cand, name, matched.clone(), Some(site), file_uses, &id_file, &types, &mut declares);
                     let hit = kept.iter().any(|k| ids.contains(k));
                     verdicts.insert(key, hit);
                     hit
                 };
                 'files: for cand in candidates {
-                    let text = texts.entry(cand).or_insert_with(|| fs::read_to_string(project_dir.join(cand)).unwrap_or_default());
+                    let text = texts.entry(cand).or_insert_with(|| fs::read_to_string(sources.path(cand)).unwrap_or_default());
                     if !text.contains(name.as_str()) {
                         continue;
                     }
-                    // One pass over the file first: most files that mention a name never call it
-                    // in a way that can reach this definition.
+                    // One pass over the file first: most files that mention a name never call it.
                     let whole = file_sites.entry(cand).or_insert_with(|| call_sites(text));
                     let Some(any) = whole.get(name.as_str()) else { continue };
-                    if !points_here(cand, any, text) {
+                    // Rust is resolved per caller below, with its own `self` and locals.
+                    if !rust && !points_here(cand, any, text) {
                         continue;
                     }
                     let lines: Vec<&str> = text.lines().collect();
@@ -198,17 +223,32 @@ impl Engine {
                         if ids.iter().any(|i| i == u.id) || u.end < u.start {
                             continue;
                         }
-                        let body = lines.iter().skip(u.start - 1).take(u.end + 1 - u.start).copied().collect::<Vec<_>>().join("
-");
+                        let body = lines.iter().skip(u.start - 1).take(u.end + 1 - u.start).copied().collect::<Vec<_>>().join("\n");
                         if !body.contains(name.as_str()) {
                             continue;
                         }
                         let sites = call_sites(&body);
                         let Some(site) = sites.get(name.as_str()) else { continue };
-                        if !points_here(cand, site, text) {
+                        let hit = if rust {
+                            let file_uses = rust_uses.entry(cand.to_string()).or_insert_with(|| use_paths(text));
+                            let locals = local_types(&body);
+                            let idents = type_idents(&body, file_uses);
+                            let self_type = resolver.self_type_at(cand, u.start);
+                            let ctx = Ctx { file: cand, uses: file_uses, locals: &locals, self_type: self_type.as_deref(), idents: &idents };
+                            // Resolved through a type or path, or named in the caller; by name only
+                            // in the changed function's own file.
+                            resolver.resolve(&ctx, name, Some(site), &matched, &id_file).iter().any(|r| {
+                                ids.contains(&r.id)
+                                    && (r.owner.is_empty() || owners.as_ref().is_none_or(|o| o.contains(&r.owner)))
+                                    && (r.conf >= TYPE_MENTIONED || cand == file.as_str())
+                            })
+                        } else {
+                            points_here(cand, site, text)
+                        };
+                        if !hit {
                             continue;
                         }
-                        found.push((u.id.to_string(), u.name.to_string()));
+                        found.push((u.id.to_string(), u.name.to_string(), u.start));
                         if found.len() > MAX_CALLERS_PER_FUNCTION {
                             break 'files;
                         }
@@ -217,13 +257,16 @@ impl Engine {
                 if found.len() > MAX_CALLERS_PER_FUNCTION {
                     continue;
                 }
-                for (id, caller) in found {
+                for (id, caller, start) in found {
                     if !seen.insert(id.clone()) {
                         continue;
                     }
                     let cfile = id_file.get(id.as_str()).copied().unwrap_or("").to_string();
-                    out.push(Caller { id: id.clone(), name: caller.clone(), reaches: reaches.clone(), via: name.clone(), hops });
-                    next.push((cfile, caller, vec![id], reaches.clone()));
+                    // The caller's own owner, so the next hop resolves through its type.
+                    let owner = if extract::detect_language(&cfile) == Some("rust") { resolver.self_type_at(&cfile, start).unwrap_or_default() } else { String::new() };
+                    let next_owners = (extract::detect_language(&cfile) == Some("rust")).then(|| [owner.clone()].into_iter().collect());
+                    out.push(Caller { id: id.clone(), name: caller.clone(), reaches: reaches.clone(), reaches_file: reaches_file.clone(), owner, via: name.clone(), hops });
+                    next.push((cfile, caller, vec![id], reaches.clone(), next_owners, reaches_file.clone()));
                 }
             }
             frontier = next;

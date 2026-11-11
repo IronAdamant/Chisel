@@ -320,6 +320,46 @@ impl Engine {
         ]))
     }
 
+    /// The ref `diff_impact` diffs the working tree against, and the merge-base when one was used.
+    /// `since`: the merge-base of that ref and HEAD (all commits since, plus uncommitted work).
+    /// `ref`: that ref itself. Otherwise HEAD on main or master, and on any other branch or a
+    /// detached HEAD the merge-base with main (or master), so main's own newer commits are not
+    /// counted as this work.
+    pub(super) fn diff_base(&self, git: &GitAnalyzer, branch: &str) -> Result<(String, Option<String>), Value> {
+        let project = self.project_dir.to_string_lossy().to_string();
+        if let Some(since) = &self.diff_since {
+            if since.starts_with('-') {
+                return Err(Value::object(vec![
+                    ("status".into(), Value::String("error".into())),
+                    ("message".into(), Value::String("since must not start with '-'".into())),
+                ]));
+            }
+            return match git.merge_base(since) {
+                Ok(base) if !base.is_empty() => Ok((base.clone(), Some(base))),
+                _ => {
+                    let mut err = git::git_tool_error(&project, &format!("git merge-base HEAD {since} failed"));
+                    err.insert("hint", Value::String(format!("'{since}' is not a commit that shares history with HEAD here. Pass a branch, tag or sha that exists in this checkout, e.g. since=main.")));
+                    Err(err)
+                }
+            };
+        }
+        if let Some(r) = &self.diff_ref_override {
+            return Ok((r.clone(), None));
+        }
+        if branch == "main" || branch == "master" {
+            return Ok(("HEAD".into(), None));
+        }
+        for trunk in ["main", "master"] {
+            if git.branch_exists(trunk) {
+                return Ok(match git.merge_base(trunk) {
+                    Ok(base) if !base.is_empty() => (base.clone(), Some(base)),
+                    _ => (trunk.to_string(), None),
+                });
+            }
+        }
+        Ok(("HEAD".into(), None))
+    }
+
     pub fn diff_impact(&mut self) -> Result<Value, String> {
         if !self.shards.is_empty() {
             return self.aggregate_diff_impact();
@@ -329,14 +369,21 @@ impl Engine {
         // Each git spawn is a process start; on Windows that is ~100 ms. Overlap the independent
         // ones, and diff against the likely ref (HEAD, or the requested one) before the branch is
         // known. On main/master that finishes diff_impact's git work in one round.
-        let likely_ref = self.diff_ref_override.clone().unwrap_or_else(|| "HEAD".to_string());
-        let (branch, untracked, likely) = std::thread::scope(|s| {
+        let likely_ref = if self.diff_since.is_some() { None } else { Some(self.diff_ref_override.clone().unwrap_or_else(|| "HEAD".to_string())) };
+        let trunk_base = self.diff_since.is_none() && self.diff_ref_override.is_none();
+        let (branch, untracked, likely, trunk) = std::thread::scope(|s| {
             let untracked = s.spawn(|| git.untracked());
-            let files = s.spawn(|| git.changed_files(&likely_ref));
-            let functions = s.spawn(|| git.changed_sections(&likely_ref));
+            // On a branch the base is the merge-base with main (or master): ask now, in parallel.
+            let trunk = trunk_base.then(|| s.spawn(|| ["main", "master"].iter().find_map(|t| git.merge_base(t).ok().filter(|b| !b.is_empty()).map(|b| (t.to_string(), b)))));
+            let likely = likely_ref.as_deref().map(|r| {
+                let files = s.spawn(|| git.changed_files(r));
+                let functions = s.spawn(|| git.changed_sections(r));
+                (files, functions)
+            });
             let branch = git.current_branch();
-            let likely = (files.join().unwrap_or_else(|_| Ok(Vec::new())), functions.join().unwrap_or_else(|_| Ok(BTreeMap::new())));
-            (branch, untracked.join().unwrap_or_else(|_| Ok(Vec::new())), likely)
+            let likely = likely.map(|(files, functions)| (files.join().unwrap_or_else(|_| Ok(Vec::new())), functions.join().unwrap_or_else(|_| Ok(BTreeMap::new()))));
+            let trunk = trunk.and_then(|h| h.join().ok().flatten());
+            (branch, untracked.join().unwrap_or_else(|_| Ok(Vec::new())), likely, trunk)
         });
         let branch = match branch {
             Ok(b) => b,
@@ -345,25 +392,28 @@ impl Engine {
         if !self.has_data() {
             return Ok(Self::no_data());
         }
-        let diff_ref = if let Some(r) = &self.diff_ref_override {
-            r.clone()
-        } else if branch == "main" || branch == "master" {
-            "HEAD".to_string()
-        } else if git.branch_exists("main") {
-            "main".into()
-        } else if git.branch_exists("master") {
-            "master".into()
-        } else {
-            "HEAD".into()
+        let picked = match (&trunk, branch.as_str()) {
+            (_, "main" | "master") => self.diff_base(&git, &branch),
+            (Some((_, b)), _) => Ok((b.clone(), Some(b.clone()))),
+            (None, _) => self.diff_base(&git, &branch),
         };
+        let (diff_ref, base) = match picked {
+            Ok(v) => v,
+            Err(err) => return Ok(err),
+        };
+        if let Some(since) = &self.diff_since {
+            self.reply_meta.push(("since".into(), Value::String(since.clone())));
+        }
+        if let Some(base) = &base {
+            self.reply_meta.push(("base".into(), Value::String(base.clone())));
+        }
         // The changed-file list and the changed functions come from two git calls run together.
-        let (diff_files, all_functions) = if diff_ref == likely_ref {
-            likely
-        } else {
-            std::thread::scope(|s| {
+        let (diff_files, all_functions) = match likely {
+            Some(l) if likely_ref.as_deref() == Some(diff_ref.as_str()) => l,
+            _ => std::thread::scope(|s| {
                 let functions = s.spawn(|| git.changed_sections(&diff_ref));
                 (git.changed_files(&diff_ref), functions.join().unwrap_or_else(|_| Ok(BTreeMap::new())))
-            })
+            }),
         };
         let diff_files = match diff_files {
             Ok(v) => v,
@@ -371,7 +421,15 @@ impl Engine {
         };
         let all_functions = all_functions.unwrap_or_default();
         let untracked_code: BTreeSet<String> = untracked.unwrap_or_default().into_iter().filter(|p| extract::path_has_code_extension(p)).collect();
-        let mut changed: Vec<String> = diff_files.into_iter().filter(|p| extract::path_has_code_extension(p)).chain(untracked_code.iter().cloned()).collect();
+        let known: BTreeSet<String> = self.store.array("file_hashes").into_iter().filter_map(|h| h.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
+        // A file deleted since the base is gone from the tree: its tests are still worth listing
+        // while the snapshot has it, and it is never "missing" from the snapshot.
+        let mut changed: Vec<String> = diff_files
+            .into_iter()
+            .filter(|p| extract::path_has_code_extension(p))
+            .filter(|p| known.contains(p) || self.project_dir.join(p).exists())
+            .chain(untracked_code.iter().cloned())
+            .collect();
         changed.sort();
         changed.dedup();
         if changed.is_empty() {
@@ -382,7 +440,6 @@ impl Engine {
                 ("message".into(), Value::String(format!("No files differ against '{diff_ref}' and no untracked code files"))),
             ]));
         }
-        let known: BTreeSet<String> = self.store.array("file_hashes").into_iter().filter_map(|h| h.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
         let missing: Vec<String> = changed.iter().filter(|p| !known.contains(*p)).cloned().collect();
         if !missing.is_empty() {
             return Ok(Value::object(vec![
@@ -390,21 +447,43 @@ impl Engine {
                 ("changed_files".into(), Value::Array(changed.into_iter().map(Value::String).collect())),
                 ("missing_from_db".into(), Value::Array(missing.into_iter().map(Value::String).collect())),
                 ("message".into(), Value::String("Some changed files are missing from the analysis database.".into())),
-                ("hint".into(), Value::String("Run 'chisel update' first to include new or changed files.".into())),
+                ("hint".into(), Value::String("Run 'chisel update' first to include new or changed files, or pass auto_update=true.".into())),
             ]));
         }
         // Each hunk names the snapshot unit whose lines it touches (git's hunk header names the
         // line before the hunk, which inside an impl block is `impl X {`, not the method).
-        let functions: BTreeMap<String, Vec<String>> = all_functions
-            .into_iter()
-            .filter(|(f, _)| changed.contains(f))
-            .map(|(f, section)| {
-                let names = self.changed_units(&f, &section);
-                (f, names)
-            })
-            .filter(|(_, names)| !names.is_empty())
-            .collect();
+        let mut functions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        self.changed_owners.clear();
+        for (f, section) in all_functions {
+            if !changed.contains(&f) {
+                continue;
+            }
+            let defs = self.changed_definitions(&f, &section);
+            if defs.is_empty() {
+                continue;
+            }
+            if extract::detect_language(&f) == Some("rust") {
+                let text = fs::read_to_string(self.project_dir.join(&f)).unwrap_or_default();
+                let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+                for (name, start) in &defs {
+                    by_name.entry(name.clone()).or_default().push(*start);
+                }
+                for (name, starts) in by_name {
+                    if let Some(owners) = super::resolve::owner_types(&text, &starts) {
+                        self.changed_owners.insert((f.clone(), name), owners);
+                    }
+                }
+            }
+            let mut names: Vec<String> = Vec::new();
+            for (name, _) in defs {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+            functions.insert(f, names);
+        }
         let mut rows = self.impacted(&changed, &functions, &untracked_code);
+        self.changed_owners.clear();
         self.attach_working_tree_hits(&mut rows, &changed, &untracked_code);
         Ok(Value::Array(rows))
     }
@@ -649,6 +728,8 @@ impl Engine {
             Some((t.get("id")?.as_str()?.to_string(), t))
         }).collect();
         let mut best: BTreeMap<String, (f64, Value)> = BTreeMap::new();
+        // Changed files with a test that calls into them: co-change history is only a fallback.
+        let mut called: BTreeSet<String> = BTreeSet::new();
         for file in files {
             let units = self.store.units_by_file(file);
             let named = |unit: &Value, list: &[String]| {
@@ -657,37 +738,79 @@ impl Engine {
                 list.iter().any(|n| n == uname || n == bare)
             };
             let fns = functions.get(file).map(|v| v.as_slice());
+            // An edge resolved through another type's method of the same name (`GlyphKey::new`
+            // when `GlyphAtlas::new` changed) is not a hit on the changed definition.
+            let owners = &self.changed_owners;
+            let edge_ok = |unit: &Value, e: &Value| -> bool {
+                let owner = e.get("owner").and_then(|v| v.as_str()).unwrap_or("");
+                if owner.is_empty() {
+                    return true;
+                }
+                let uname = unit.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                owners.get(&(file.clone(), uname.to_string())).is_none_or(|set| set.contains(owner))
+            };
             // Narrow to the changed functions only when one of them has a direct test. A changed
             // private helper is still exercised by the tests of its siblings in the same file.
             let narrowed = fns.filter(|list| {
-                units.iter().any(|u| named(u, list) && !self.store.edges_for_code(u.get("id").and_then(|v| v.as_str()).unwrap_or("")).is_empty())
+                units.iter().any(|u| named(u, list) && self.store.edges_for_code(u.get("id").and_then(|v| v.as_str()).unwrap_or("")).iter().any(|e| edge_ok(u, e)))
             });
             let widened = fns.is_some() && narrowed.is_none();
+            // Widened to siblings: in Rust, only those of the changed definitions' own type (the
+            // same impl), not every function of the file.
+            let sibling_owners: Option<BTreeSet<String>> = if widened && extract::detect_language(file) == Some("rust") {
+                let mut set = BTreeSet::new();
+                let mut all_known = true;
+                for n in fns.unwrap_or(&[]) {
+                    match self.changed_owners.get(&(file.clone(), n.clone())) {
+                        Some(o) => set.extend(o.iter().cloned()),
+                        None => all_known = false,
+                    }
+                }
+                (all_known && !set.is_empty()).then_some(set)
+            } else {
+                None
+            };
+            let sibling_text = sibling_owners.as_ref().map(|_| fs::read_to_string(self.project_dir.join(file)).unwrap_or_default());
             for unit in &units {
                 if narrowed.is_some_and(|list| !named(unit, list)) {
                     continue;
                 }
+                if let (Some(owners), Some(text)) = (&sibling_owners, &sibling_text) {
+                    let start = unit.get("line_start").and_then(|v| v.as_i64()).unwrap_or(0).max(1) as usize;
+                    let own = super::resolve::owner_types(text, &[start]).and_then(|o| o.into_iter().next()).unwrap_or_default();
+                    if !owners.contains(&own) {
+                        continue;
+                    }
+                }
                 let uname = unit.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let id = unit.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 for e in self.store.edges_for_code(id) {
+                    if narrowed.is_some() && !edge_ok(unit, e) {
+                        continue;
+                    }
                     let tid = e.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
                     let weight = e.get("weight").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let test = tests.get(tid);
                     let edge_type = e.get("edge_type").and_then(|v| v.as_str()).unwrap_or("import");
+                    let owner = e.get("owner").and_then(|v| v.as_str()).unwrap_or("");
+                    let target = if owner.is_empty() { uname.to_string() } else { format!("{owner}::{uname}") };
                     let reason = if widened {
-                        format!("direct edge to {uname} ({edge_type}); no test calls the changed {} directly", fns.unwrap_or(&[]).join(", "))
+                        format!("direct edge to {target} ({edge_type}); no test calls the changed {} directly", fns.unwrap_or(&[]).join(", "))
                     } else {
-                        format!("direct edge to {uname} ({edge_type})")
+                        format!("direct edge to {target} ({edge_type})")
                     };
+                    called.insert(file.clone());
+                    // A sibling's test exercises the change only if the sibling calls it: half weight.
+                    let score = if widened { weight * 0.5 } else { weight };
                     let row = Value::object(vec![
                         ("test_id".into(), Value::String(tid.into())),
                         ("file_path".into(), test.and_then(|t| t.get("file_path")).cloned().unwrap_or(Value::String(String::new()))),
                         ("name".into(), test.and_then(|t| t.get("name")).cloned().unwrap_or(Value::String(String::new()))),
                         ("reason".into(), Value::String(reason)),
-                        ("score".into(), Value::Float(weight)),
-                        ("source".into(), Value::String("direct".into())),
+                        ("score".into(), Value::Float(score)),
+                        ("source".into(), Value::String(if widened { "sibling" } else { "direct" }.into())),
                     ]);
-                    Self::remember_hit(&mut best, tid, weight, row);
+                    Self::remember_hit(&mut best, tid, score, row);
                 }
             }
         }
@@ -699,12 +822,14 @@ impl Engine {
                 let Some(test) = tests.get(tid) else { continue };
                 let weight = e.get("weight").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let score = weight * 0.5f64.powi(c.hops as i32);
-                let path = if c.via == c.reaches { String::new() } else { format!(" via {}", c.via) };
+                let path = if c.via == c.reaches || c.reaches.ends_with(&format!("::{}", c.via)) { String::new() } else { format!(" via {}", c.via) };
+                let caller = if c.owner.is_empty() { c.name.clone() } else { format!("{}::{}", c.owner, c.name) };
+                called.insert(c.reaches_file.clone());
                 let row = Value::object(vec![
                     ("test_id".into(), Value::String(tid.into())),
                     ("file_path".into(), test.get("file_path").cloned().unwrap_or(Value::String(String::new()))),
                     ("name".into(), test.get("name").cloned().unwrap_or(Value::String(String::new()))),
-                    ("reason".into(), Value::String(format!("calls {}, which reaches the changed {}{path} ({} {} away)", c.name, c.reaches, c.hops, if c.hops == 1 { "call" } else { "calls" }))),
+                    ("reason".into(), Value::String(format!("calls {caller}, which reaches the changed {}{path} ({} {} away)", c.reaches, c.hops, if c.hops == 1 { "call" } else { "calls" }))),
                     ("score".into(), Value::Float((score * 1000.0).round() / 1000.0)),
                     ("source".into(), Value::String("call_graph".into())),
                 ]);
@@ -713,6 +838,9 @@ impl Engine {
         }
         let query_min: i64 = store::meta_get(&self.store.doc, "co_change_query_min").and_then(|s| s.parse().ok()).unwrap_or(1);
         for file in files {
+            if called.contains(file) {
+                continue;
+            }
             for cc in self.store.co_for_file(file) {
                 let a = cc.get("file_a").and_then(|v| v.as_str()).unwrap_or("");
                 let b = cc.get("file_b").and_then(|v| v.as_str()).unwrap_or("");
@@ -785,11 +913,17 @@ impl Engine {
             }
         }
         let mut out: Vec<Value> = best.into_values().map(|(_, v)| v).collect();
-        let transitive = |v: &Value| v.get("source").and_then(|s| s.as_str()) == Some("call_graph");
+        // Tiers: tests that call the change (or import it), then tests of its callers, then weaker
+        // evidence (siblings in the same type, files that changed together in history).
+        let tier = |v: &Value| match v.get("source").and_then(|s| s.as_str()) {
+            Some("call_graph") => 1,
+            Some("sibling" | "co_change") => 2,
+            _ => 0,
+        };
         out.sort_by(|a, b| {
             let sa = a.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let sb = b.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            transitive(a).cmp(&transitive(b)).then_with(|| sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)).then_with(|| {
+            tier(a).cmp(&tier(b)).then_with(|| sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)).then_with(|| {
                 a.get("test_id").and_then(|v| v.as_str()).unwrap_or("").cmp(b.get("test_id").and_then(|v| v.as_str()).unwrap_or(""))
             })
         });
@@ -1224,23 +1358,23 @@ impl Engine {
             Ok(b) => b,
             Err(e) => return Ok(git::git_tool_error(&self.project_dir.to_string_lossy(), &e.0)),
         };
-        let diff_ref = if let Some(r) = &self.diff_ref_override {
-            r.clone()
-        } else if branch == "main" || branch == "master" {
-            "HEAD".to_string()
-        } else if git.branch_exists("main") {
-            "main".into()
-        } else if git.branch_exists("master") {
-            "master".into()
-        } else {
-            "HEAD".into()
+        let (diff_ref, base) = match self.diff_base(&git, &branch) {
+            Ok(v) => v,
+            Err(err) => return Ok(err),
         };
+        if let Some(since) = &self.diff_since {
+            self.reply_meta.push(("since".into(), Value::String(since.clone())));
+        }
+        if let Some(base) = &base {
+            self.reply_meta.push(("base".into(), Value::String(base.clone())));
+        }
         let diff_files = match git.changed_files(&diff_ref) {
             Ok(v) => v,
             Err(e) => return Ok(git::git_tool_error(&self.project_dir.to_string_lossy(), &e.0)),
         };
         let untracked_code: BTreeSet<String> = git.untracked().unwrap_or_default().into_iter().filter(|p| extract::path_has_code_extension(p)).collect();
-        let mut changed: Vec<String> = diff_files.into_iter().filter(|p| extract::path_has_code_extension(p)).chain(untracked_code.iter().cloned()).collect();
+        // A file deleted since the base is not missing from a shard; it is left out.
+        let mut changed: Vec<String> = diff_files.into_iter().filter(|p| extract::path_has_code_extension(p) && self.project_dir.join(p).exists()).chain(untracked_code.iter().cloned()).collect();
         changed.sort();
         changed.dedup();
         if changed.is_empty() {
@@ -1427,6 +1561,11 @@ impl Engine {
     }
 
     pub fn dispatch(&mut self, name: &str, args: &Value) -> Result<Value, String> {
+        match self.overlay_target(name, args) {
+            Err(reply) => return Ok(reply),
+            Ok(Some(worktree)) => return self.dispatch_overlay(name, args, worktree),
+            Ok(None) => {}
+        }
         for attempt in 0..3 {
             if attempt > 0 {
                 self.store.reload().map_err(|e| e.to_string())?;
@@ -1487,6 +1626,14 @@ impl Engine {
             self.exclude_new_file_boost = exclude;
         }
         self.diff_ref_override = args.get("ref").and_then(|v| v.as_str()).map(|s| s.to_string());
+        self.diff_since = if name == "diff_impact" { args.get("since").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()) } else { None };
+        if self.diff_since.is_some() && self.diff_ref_override.is_some() {
+            return Ok(Value::object(vec![
+                ("status".into(), Value::String("error".into())),
+                ("message".into(), Value::String("Pass since (all changes since the merge-base with that ref) or ref (a plain diff against it), not both.".into())),
+            ]));
+        }
+        self.reply_meta.clear();
         self.impact_depth = args.get("depth").and_then(|v| v.as_i64()).map(|d| d.clamp(1, 3) as usize).unwrap_or(DEFAULT_IMPACT_DEPTH);
         self.directory = args.get("directory").and_then(|v| v.as_str()).filter(|s| !s.is_empty() && *s != ".").map(|s| s.trim_end_matches('/').to_string());
         self.exclude_tests = args.get("exclude_tests").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -1503,7 +1650,7 @@ impl Engine {
         let result = match name {
             "analyze" => {
                 let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-                if force && self.count_code_files() > 300 {
+                if force && !self.inline_jobs && self.count_code_files() > 300 {
                     let mut job = self.start_job("analyze")?;
                     job.insert("status", Value::String("auto_queued".into()));
                     return Ok(job);
@@ -1582,7 +1729,26 @@ impl Engine {
             _ => Err(format!("unknown tool: {name}. Valid tools: {}", crate::schemas::TOOL_NAMES.join(", "))),
         }?;
         let limited = self.apply_limit(name, args, result);
-        Ok(self.finish_auto(auto, compact_risk_rows(name, limited)))
+        let finished = self.finish_auto(auto, compact_risk_rows(name, limited));
+        Ok(self.with_reply_meta(finished))
+    }
+
+    /// Adds `reply_meta` to a reply: keys on an object, or `{"items": [...], ..}` around a list.
+    pub(super) fn with_reply_meta(&mut self, result: Value) -> Value {
+        let meta = std::mem::take(&mut self.reply_meta);
+        if meta.is_empty() {
+            return result;
+        }
+        let mut value = match result {
+            Value::Array(items) => Value::object(vec![("items".into(), Value::Array(items))]),
+            other => other,
+        };
+        if value.as_object().is_some() {
+            for (k, v) in meta {
+                value.insert(&k, v);
+            }
+        }
+        value
     }
 
     pub(super) fn test_gaps(&mut self) -> Result<Value, String> {

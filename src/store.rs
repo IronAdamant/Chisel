@@ -34,6 +34,9 @@ pub struct Store {
     loaded_generation: i64,
     /// Test hook: the next N saves fail as a stale generation and do not publish.
     pub fail_stale_remaining: i64,
+    /// fsync each save (the default). Off for a cache that can be rebuilt, such as a worktree
+    /// overlay: the write is still atomic (temp file + rename), only not flushed to the disk.
+    pub durable: bool,
     /// `(len, mtime_nanos)` of the snapshot last parsed. A matching stamp skips a re-parse.
     snapshot_stamp: Option<(u64, u128)>,
     units_by_id: HashMap<String, usize>,
@@ -66,6 +69,7 @@ impl Store {
             doc: empty_doc(),
             loaded_generation: 0,
             fail_stale_remaining: 0,
+            durable: true,
             snapshot_stamp: None,
             units_by_id: HashMap::new(),
             units_by_file: HashMap::new(),
@@ -137,7 +141,7 @@ impl Store {
             edit(&mut self.doc);
             let gen = disk_gen + 1;
             self.doc.insert("generation", Value::Int(gen));
-            write_snapshot_file(&self.temp_path(), &self.doc)?;
+            write_snapshot_file(&self.temp_path(), &self.doc, self.durable)?;
             self.publish_temp()?;
             self.loaded_generation = gen;
             self.snapshot_stamp = file_stamp(&self.snapshot_path());
@@ -150,14 +154,14 @@ impl Store {
     /// before publish leaves the previous snapshot loadable.
     pub fn write_temp_for_crash(&mut self) -> Result<(), StoreError> {
         let guard = self.lock.exclusive().map_err(|e| StoreError(e.to_string()))?;
-        write_snapshot_file(&self.temp_path(), &self.doc)?;
+        write_snapshot_file(&self.temp_path(), &self.doc, true)?;
         drop(guard);
         Ok(())
     }
 
     pub fn hold_exclusive_after_temp(&mut self) -> Result<LockGuard<'_>, StoreError> {
         let guard = self.lock.exclusive().map_err(|e| StoreError(e.to_string()))?;
-        write_snapshot_file(&self.temp_path(), &self.doc)?;
+        write_snapshot_file(&self.temp_path(), &self.doc, true)?;
         Ok(guard)
     }
 
@@ -165,6 +169,9 @@ impl Store {
         let tmp = self.temp_path();
         let dest = self.snapshot_path();
         fs::rename(&tmp, &dest).map_err(|e| StoreError(e.to_string()))?;
+        if !self.durable {
+            return Ok(());
+        }
         if let Ok(dir) = File::open(&self.dir) {
             let _ = dir.sync_all();
         }
@@ -433,7 +440,7 @@ fn snapshot_text(doc: &Value) -> Result<String, StoreError> {
     Ok(text)
 }
 
-fn write_snapshot_file(path: &Path, doc: &Value) -> Result<(), StoreError> {
+fn write_snapshot_file(path: &Path, doc: &Value, durable: bool) -> Result<(), StoreError> {
     let text = snapshot_text(doc)?;
     let mut file = OpenOptions::new()
         .write(true)
@@ -442,7 +449,9 @@ fn write_snapshot_file(path: &Path, doc: &Value) -> Result<(), StoreError> {
         .open(path)
         .map_err(|e| StoreError(e.to_string()))?;
     file.write_all(text.as_bytes()).map_err(|e| StoreError(e.to_string()))?;
-    file.sync_all().map_err(|e| StoreError(e.to_string()))?;
+    if durable {
+        file.sync_all().map_err(|e| StoreError(e.to_string()))?;
+    }
     Ok(())
 }
 

@@ -36,26 +36,28 @@ Add to `.mcp.json` in your project (or `~/.claude.json`):
 
 The snapshot goes to `<project>/.chisel/store` unless `CHISEL_STORAGE_DIR` says otherwise. Any stdio MCP client works the same way. `chisel serve --port 8377` is a separate JSON HTTP API (`GET /health`, `GET /tools`, `POST /call`), not an MCP URL.
 
-The agent loop: call `analyze` once, `diff_impact` after each edit, run the tests it names, then `record_result`. When something needs doing, the response has a `status` (`no_data`: call `analyze`; `stale_db`: call `update`), and most responses suggest `next_steps`. The full calling contract is in [AGENTS.md](AGENTS.md). A ready-made Claude Code skill is in [skills/SKILL.md](skills/SKILL.md).
+The agent loop: call `analyze` once, `diff_impact` after each edit to pick which tests to run (grep finds names; Chisel knows which tests call the code you changed, and their callers), run those tests, then `record_result`. Work in a git worktree? Pass `worktree_root` (CLI `--worktree`), or start the server inside the worktree: Chisel answers for that tree from the main checkout's snapshot. Committed work: `since: "main"`. When something needs doing, the response has a `status` (`no_data`: call `analyze`; `stale_db`: call `update`), and most responses suggest `next_steps`. The full calling contract is in [AGENTS.md](AGENTS.md). A ready-made Claude Code skill is in [skills/SKILL.md](skills/SKILL.md).
 
 ## CLI in 30 seconds
 
 ```bash
 chisel analyze .                           # build the graph (once; `update` after that)
-chisel diff-impact --json                  # tests touched by your uncommitted changes
+chisel diff-impact --json                  # tests touched by your changes (on a branch: since the merge-base with main)
+chisel diff-impact --since main            # every change since main, committed or not
+chisel diff-impact --worktree /path/to/wt  # the same, for another git worktree, from this checkout's snapshot
 chisel suggest-tests src/engine/analyze.rs # ranked tests for one file
 chisel triage                              # top risky files, untested code, stale tests
 chisel run -- pytest tests/                # run tests and record pass/fail
 ```
 
-`chisel --help` lists every command and `chisel <command> --help` shows its flags. With `--json`, branch on `status`: `error` and `git_error` exit 1, everything else exits 0.
+`chisel --help` lists every command and `chisel <command> --help` shows its flags. With `--json`, branch on `status`: `error` and `git_error` exit 1, a usage error (unknown command or flag) exits 2, everything else exits 0.
 
 ## MCP tools
 
 | Tool | Answers |
 |---|---|
 | `analyze`, `update` | Build or incrementally refresh the snapshot. `start_job`, `job_status`, `cancel_job` run them in the background. |
-| `diff_impact` | Which tests cover what changed in `git diff` (plus untracked code)? |
+| `diff_impact` | Which tests should I run after this edit? Ranked: tests that call the changed functions, then tests of their callers. `since` covers committed work. |
 | `impact`, `suggest_tests` | Which tests cover these files, ranked? |
 | `triage`, `risk_map`, `test_gaps` | Where is risk: churn, coupling, coverage gaps, one-author code, flaky tests? |
 | `churn`, `coupling`, `history` | How often does this change, and what changes with it? |
@@ -118,10 +120,11 @@ The SessionStart line prints at most two lines, and only when issues are open. A
 ## How it works
 
 1. **Scan.** `git ls-files` lists code. A built-in extractor (no tree-sitter) finds functions, classes, and tests in Python, JS/TS, Go, Rust, Java, Kotlin, C#, C/C++, Swift, PHP, Ruby, and Dart, and recognises pytest, Jest, Playwright, Go test, Rust `#[test]`, JUnit, xUnit, XCTest, PHPUnit, RSpec, gtest, and Dart test.
-2. **Link.** Each test's imports and calls become edges to the code units they reach; in a Cargo workspace only units in crates the test's crate depends on. Imports between code files form a second graph that `diff_impact` walks for indirect hits, and it follows callers of the changed functions one or two calls up (`depth`, default 2).
+2. **Link.** Each test's imports and calls become edges to the code units they reach; in a Cargo workspace only units in crates the test's crate depends on. Rust calls resolve by type and path, not by name: `GlyphAtlas::new`, `self.atlas.clear()` and `let a = Atlas::new(); a.glyph()` reach that type's methods, `Default::default()` and std methods on unknown values reach nothing, and a rare name matched only by name weighs half. Imports between code files form a second graph that `diff_impact` walks for indirect hits, and it follows callers of the changed functions one or two calls up (`depth`, default 2).
 3. **Mine git.** One `git log --numstat` and one `git log -p` stream give churn, co-change coupling, per-function history and authorship. Chisel replays git's own `-L` and blame rules over the stream instead of starting git once per function and per file.
 4. **Store.** Everything lands in one JSON snapshot, `.chisel/store`, written atomically under a cross-process lock. `update` re-reads only changed files and new commits.
 5. **Answer.** Queries read the snapshot, so most calls return in milliseconds; `diff_impact` also asks git what changed.
+6. **Worktrees.** With `worktree_root`, a copy of the snapshot under `.chisel/overlays/` is brought in line with that worktree (only files whose content differs are re-indexed) and answers for it; main's snapshot is never written. The reply adds `worktree` and `overlay_files`.
 
 Scores are heuristics. Read `_meta.uniform_components` before trusting a composite risk score.
 

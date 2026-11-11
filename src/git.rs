@@ -4,6 +4,16 @@ use std::collections::BTreeMap;
 use std::process::{Command, Output};
 use std::sync::Arc;
 
+/// git with `GIT_INDEX_FILE` set: a worktree overlay reads a worktree through a private,
+/// refreshed copy of its index, so it never writes (or locks) the worktree's own index.
+pub fn index_file_runner(index: std::path::PathBuf) -> GitRunner {
+    Arc::new(move |repo, args| {
+        let mut cmd = Command::new("git");
+        cmd.args(args).current_dir(repo).env("GIT_INDEX_FILE", &index);
+        cmd.output()
+    })
+}
+
 /// `repo_dir` plus the argument list. Tests wrap this to count spawns and still call git.
 pub type GitRunner = Arc<dyn Fn(&str, &[&str]) -> Result<Output, std::io::Error> + Send + Sync>;
 
@@ -125,7 +135,7 @@ impl GitAnalyzer {
 
     pub fn changed_files(&self, r#ref: &str) -> Result<Vec<String>, GitError> {
         guard_ref(r#ref)?;
-        let raw = self.run(&["diff", "--name-only", "--end-of-options", r#ref])?;
+        let raw = self.run(&["diff", "--name-only", "--relative", "--end-of-options", r#ref])?;
         Ok(raw.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
     }
 
@@ -148,7 +158,7 @@ impl GitAnalyzer {
     /// `changed_functions` for every file that differs from `ref`, from one `git diff`.
     pub fn changed_functions_all(&self, r#ref: &str) -> Result<BTreeMap<String, Vec<String>>, GitError> {
         guard_ref(r#ref)?;
-        let raw = self.run(&["diff", "-U0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--end-of-options", r#ref])?;
+        let raw = self.run(&["diff", "-U0", "--relative", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--end-of-options", r#ref])?;
         Ok(split_diff_by_file(&raw).into_iter().map(|(path, section)| (path, parse_diff_functions(&section))).collect())
     }
 

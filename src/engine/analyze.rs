@@ -26,6 +26,13 @@ impl HashedFile {
         Self { hash: sha256_hex(content), mtime, mtime_ns, size }
     }
 
+    /// Stamp without reading the file; the caller supplies the hash it knows.
+    fn from_stat(path: &std::path::Path) -> Option<Self> {
+        let meta = fs::metadata(path).ok()?;
+        let since = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+        Some(Self { hash: String::new(), mtime: since.as_secs_f64(), mtime_ns: since.as_nanos() as i64, size: meta.len() as i64 })
+    }
+
     fn row(&self, rel: &str) -> Value {
         Value::object(vec![
             ("file_path".into(), Value::String(rel.to_string())),
@@ -265,6 +272,7 @@ impl Engine {
         if let Ok(head) = git.head_sha() {
             store::meta_set(&mut self.store.doc, "analyzed_head", &head);
         }
+        store::meta_set(&mut self.store.doc, "analyzer_version", env!("CARGO_PKG_VERSION"));
         self.store.save()?;
         Ok(self.analyze_summary(files.len()))
     }
@@ -282,6 +290,10 @@ impl Engine {
         }
         let Ok(head) = git.head_sha() else { return None };
         if store::meta_get(&self.store.doc, "analyzed_head").as_deref() != Some(head.as_str()) {
+            return None;
+        }
+        // A snapshot written by another Chisel version is rebuilt: its edges follow that version's rules.
+        if store::meta_get(&self.store.doc, "analyzer_version").as_deref() != Some(env!("CARGO_PKG_VERSION")) {
             return None;
         }
         Some(self.analyze_summary(files.len()))
@@ -329,19 +341,47 @@ impl Engine {
             before.insert(path.to_string(), (hash.to_string(), mtime_ns, size, mtime));
         }
         let mut changed: Vec<String> = Vec::new();
+        // Same content, new mtime (a checkout, a worktree): remembered so the next check is a stat.
+        let mut restamp: HashMap<String, HashedFile> = HashMap::new();
         for rel in &files {
             let abs = self.project_dir.join(rel);
             if let Some((hash, mtime_ns, size, mtime)) = before.get(rel) {
                 if disk_unchanged(&abs, *mtime_ns, *size, *mtime) {
-                    let _ = hash;
                     continue;
+                }
+                // An overlay's fresh copy: git says this file is main's indexed one; only stat it.
+                if self.known_same.contains(rel) {
+                    if let Some(mut stamped) = HashedFile::from_stat(&abs) {
+                        stamped.hash = hash.clone();
+                        restamp.insert(rel.clone(), stamped);
+                        continue;
+                    }
                 }
             }
             let content = fs::read(&abs).unwrap_or_default();
             let hash = sha256_hex(&content);
             if before.get(rel).map(|(h, _, _, _)| h.as_str()) != Some(hash.as_str()) {
-                changed.push(rel.clone());
+                // An overlay: a fresh checkout can hold main's indexed file with other line endings.
+                match before.get(rel).filter(|(h, _, _, _)| self.same_as_base_but_line_endings(rel, h, &content)) {
+                    Some((h, _, _, _)) => {
+                        let mut stamped = HashedFile::from_path(&abs, &content);
+                        stamped.hash = h.clone();
+                        restamp.insert(rel.clone(), stamped);
+                    }
+                    None => changed.push(rel.clone()),
+                }
+            } else if self.restamp_unchanged {
+                restamp.insert(rel.clone(), HashedFile::from_path(&abs, &content));
             }
+        }
+        if !restamp.is_empty() {
+            let rows: Vec<Value> = self.store.array("file_hashes").into_iter().map(|row| {
+                match row.get("file_path").and_then(|v| v.as_str()).and_then(|p| restamp.get(p).map(|h| (p.to_string(), h))) {
+                    Some((p, h)) => h.row(&p),
+                    None => row,
+                }
+            }).collect();
+            self.store.doc.insert("file_hashes", Value::Array(rows));
         }
         let file_set: HashSet<&str> = files.iter().map(|s| s.as_str()).collect();
         let removed: Vec<String> = before.keys().filter(|path| !file_set.contains(path.as_str())).cloned().collect();
@@ -350,7 +390,7 @@ impl Engine {
         let commit_touch: BTreeSet<String> = new_commits.iter().flat_map(|c| c.files.iter().map(|f| f.path.clone())).collect();
         if changed.is_empty() && new_commits.is_empty() && removed.is_empty() {
             let cleaned = self.cleanup_orphaned_results();
-            if cleaned > 0 {
+            if cleaned > 0 || !restamp.is_empty() {
                 self.store.save()?;
             }
             return Ok(Value::object(vec![
@@ -363,9 +403,23 @@ impl Engine {
                 ("hint".into(), Value::String("For large repos, use start_job with kind='update' to avoid MCP timeouts.".into())),
             ]));
         }
+        if let Some(src) = &self.source_base {
+            self.source_base = Some(src.without(&changed));
+        }
         // Changed files and new commits only. Untouched files keep their units, blame, and edges.
         let summary = self.analyze_subset(&git, &files, &changed, &new_commits, &commit_touch, &removed)?;
         Ok(summary)
+    }
+
+    /// For an overlay: `content` is main's file as indexed (`base_hash`), apart from carriage returns.
+    fn same_as_base_but_line_endings(&self, rel: &str, base_hash: &str, content: &[u8]) -> bool {
+        let Some(base) = &self.overlay_base else { return false };
+        let Ok(main) = fs::read(base.join(rel)) else { return false };
+        if sha256_hex(&main) != base_hash {
+            return false;
+        }
+        let strip = |b: &[u8]| b.iter().copied().filter(|c| *c != 13).collect::<Vec<u8>>();
+        strip(&main) == strip(content)
     }
 
     pub(super) fn analyze_subset(
@@ -490,112 +544,119 @@ impl Engine {
             unit_tasks = unit_log_tasks(&scope, &units_by_file);
         }
         let renames = rename_targets(commit_files.iter().filter_map(|r| Some((r.get("hash")?.as_str()?, r.get("path")?.as_str()?))));
-        let history = history_churn::churn_and_blame(git, &self.project_dir, &scope, &unit_tasks, &renames, self.history_stream, false);
-        for (task, func_commits) in unit_tasks.iter().zip(history.logs) {
-            let Some(func_commits) = func_commits else { continue };
-            if func_commits.is_empty() {
-                continue;
+        // The history of the changed files (git) runs while the edges are rebuilt (CPU).
+        let history_dir = self.project_dir.clone();
+        let history_stream = self.history_stream;
+        let (changed_sources, edge_rebuild_skipped) = std::thread::scope(|sc| {
+            let pending = sc.spawn(|| history_churn::churn_and_blame(git, &history_dir, &scope, &unit_tasks, &renames, history_stream, false));
+            let changed_tests: Vec<String> = changed.iter().filter(|p| looks_like_test(p)).cloned().collect();
+            let changed_sources: Vec<String> = changed.iter().filter(|p| !looks_like_test(p)).cloned().collect();
+            let mut tests_to_rebuild = changed_tests.clone();
+            let prior_tests = self.store.array("test_units");
+            for path in &changed_sources {
+                let fresh = units_by_file.get(path).is_some_and(|units| units.iter().any(|u| is_test_unit_type(&u.unit_type)));
+                let prior = prior_tests.iter().any(|u| u.get("file_path").and_then(|v| v.as_str()) == Some(path.as_str()));
+                if fresh || prior {
+                    tests_to_rebuild.push(path.clone());
+                }
             }
-            let (func_count, author_n, ins, del, last, func_score) = unit_churn_from(&func_commits, &task.0);
-            churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: author_n, insertions: ins, deletions: del }, &last, func_score));
-        }
-        self.store.doc.insert("churn", Value::Array(churn_rows));
+            if !changed_sources.is_empty() || !removed.is_empty() {
+                let known_tests = self.store.array("test_units");
+                for edge in self.store.array("test_edges") {
+                    let code_id = edge.get("code_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let code_file = edge.get("code_file").and_then(|v| v.as_str()).unwrap_or("");
+                    let targets_changed = changed_sources.iter().any(|path| code_id.starts_with(&format!("{path}:")));
+                    let targets_removed = removed.iter().any(|path| code_file == path.as_str() || code_id.starts_with(&format!("{path}:")));
+                    if !targets_changed && !targets_removed {
+                        continue;
+                    }
+                    let tid = edge.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let Some(test_file) = known_tests.iter().find(|unit| unit.get("id").and_then(|v| v.as_str()) == Some(tid)).and_then(|unit| unit.get("file_path").and_then(|v| v.as_str())) else {
+                        continue;
+                    };
+                    if removed.iter().any(|path| path == test_file) {
+                        continue;
+                    }
+                    if !tests_to_rebuild.iter().any(|path| path == test_file) {
+                        tests_to_rebuild.push(test_file.to_string());
+                    }
+                }
+            }
+            let edge_rebuild_skipped = tests_to_rebuild.is_empty();
+            if edge_rebuild_skipped {
+                // No test content changed and no edge still names a replaced code id.
+            } else {
+                for rel in &tests_to_rebuild {
+                    if !units_by_file.contains_key(rel) {
+                        let content = fs::read_to_string(self.sources().path(rel)).unwrap_or_default();
+                        self.source_reads += 1;
+                        units_by_file.insert(rel.clone(), extract::extract_code_units_in(rel, &content, Some(&self.project_dir), self.allow_repo_extractor));
+                    }
+                }
+                let (fresh_units, fresh_edges, fresh_static) = self.build_tests_and_edges(&tests_to_rebuild, &units_by_file);
+                let mut test_units: Vec<Value> = self.store.array("test_units").into_iter().filter(|u| {
+                    u.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !tests_to_rebuild.iter().any(|c| c == p))
+                }).collect();
+                test_units.extend(fresh_units);
+                let mut edges: Vec<Value> = self.store.array("test_edges").into_iter().filter(|e| {
+                    let tid = e.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let code_id = e.get("code_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let rebuilt_test = tests_to_rebuild.iter().any(|c| tid.starts_with(&format!("{c}:")));
+                    let replaced_target = changed_sources.iter().any(|path| code_id.starts_with(&format!("{path}:")));
+                    !rebuilt_test && !replaced_target
+                }).collect();
+                edges.extend(fresh_edges);
+                let mut static_rows: Vec<Value> = self.store.array("static_test_imports").into_iter().filter(|r| {
+                    r.get("test_file").and_then(|v| v.as_str()).is_none_or(|p| !tests_to_rebuild.iter().any(|c| c == p))
+                }).collect();
+                static_rows.extend(fresh_static);
+                self.store.doc.insert("test_units", Value::Array(test_units));
+                self.store.doc.insert("test_edges", Value::Array(edges));
+                self.store.doc.insert("static_test_imports", Value::Array(static_rows));
+            }
+            let history = pending.join().unwrap_or_else(|_| history_churn::churn_and_blame(git, &history_dir, &scope, &unit_tasks, &renames, history_stream, false));
+            for (task, func_commits) in unit_tasks.iter().zip(history.logs) {
+                let Some(func_commits) = func_commits else { continue };
+                if func_commits.is_empty() {
+                    continue;
+                }
+                let (func_count, author_n, ins, del, last, func_score) = unit_churn_from(&func_commits, &task.0);
+                churn_rows.push(churn_row(&task.0, &task.1, ChurnCounts { commits: func_count, authors: author_n, insertions: ins, deletions: del }, &last, func_score));
+            }
+            self.store.doc.insert("churn", Value::Array(churn_rows));
 
-        let in_scope = |path: &str| scope.iter().any(|s| s == path);
-        let mut blame_rows: Vec<Value> = self.store.array("blame").into_iter().filter(|row| {
-            row.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !in_scope(p))
-        }).collect();
-        let mut hash_rows: Vec<Value> = self.store.array("file_hashes").into_iter().filter(|row| {
-            row.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !in_scope(p))
-        }).collect();
-        for rel in &scope {
-            let abs = self.project_dir.join(rel);
-            let content = fs::read(&abs).unwrap_or_default();
-            hash_rows.push(HashedFile::from_path(&abs, &content).row(rel));
-        }
-        for (rel, blocks) in scope.iter().zip(history.blames) {
-            let hash = hash_rows.iter().rev().find(|h| h.get("file_path").and_then(|v| v.as_str()) == Some(rel.as_str())).and_then(|h| h.get("hash").and_then(|v| v.as_str())).unwrap_or("");
-            for b in blocks {
-                blame_rows.push(Value::object(vec![
-                    ("file_path".into(), Value::String(rel.clone())),
-                    ("content_hash".into(), Value::String(hash.into())),
-                    ("line_start".into(), Value::Int(b.line_start as i64)),
-                    ("line_end".into(), Value::Int(b.line_end as i64)),
-                    ("author".into(), Value::String(b.author)),
-                    ("author_email".into(), Value::String(b.author_email)),
-                    ("commit_hash".into(), Value::String(b.commit_hash)),
-                ]));
+            let in_scope = |path: &str| scope.iter().any(|s| s == path);
+            let mut blame_rows: Vec<Value> = self.store.array("blame").into_iter().filter(|row| {
+                row.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !in_scope(p))
+            }).collect();
+            let mut hash_rows: Vec<Value> = self.store.array("file_hashes").into_iter().filter(|row| {
+                row.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !in_scope(p))
+            }).collect();
+            for rel in &scope {
+                let abs = self.project_dir.join(rel);
+                let content = fs::read(&abs).unwrap_or_default();
+                hash_rows.push(HashedFile::from_path(&abs, &content).row(rel));
             }
-        }
-        self.store.doc.insert("blame", Value::Array(blame_rows));
-        self.store.doc.insert("file_hashes", Value::Array(hash_rows));
-        fill_branch_co_changes(git, &mut self.store.doc);
+            for (rel, blocks) in scope.iter().zip(history.blames) {
+                let hash = hash_rows.iter().rev().find(|h| h.get("file_path").and_then(|v| v.as_str()) == Some(rel.as_str())).and_then(|h| h.get("hash").and_then(|v| v.as_str())).unwrap_or("");
+                for b in blocks {
+                    blame_rows.push(Value::object(vec![
+                        ("file_path".into(), Value::String(rel.clone())),
+                        ("content_hash".into(), Value::String(hash.into())),
+                        ("line_start".into(), Value::Int(b.line_start as i64)),
+                        ("line_end".into(), Value::Int(b.line_end as i64)),
+                        ("author".into(), Value::String(b.author)),
+                        ("author_email".into(), Value::String(b.author_email)),
+                        ("commit_hash".into(), Value::String(b.commit_hash)),
+                    ]));
+                }
+            }
+            self.store.doc.insert("blame", Value::Array(blame_rows));
+            self.store.doc.insert("file_hashes", Value::Array(hash_rows));
+            fill_branch_co_changes(git, &mut self.store.doc);
 
-        let changed_tests: Vec<String> = changed.iter().filter(|p| looks_like_test(p)).cloned().collect();
-        let changed_sources: Vec<String> = changed.iter().filter(|p| !looks_like_test(p)).cloned().collect();
-        let mut tests_to_rebuild = changed_tests.clone();
-        let prior_tests = self.store.array("test_units");
-        for path in &changed_sources {
-            let fresh = units_by_file.get(path).is_some_and(|units| units.iter().any(|u| is_test_unit_type(&u.unit_type)));
-            let prior = prior_tests.iter().any(|u| u.get("file_path").and_then(|v| v.as_str()) == Some(path.as_str()));
-            if fresh || prior {
-                tests_to_rebuild.push(path.clone());
-            }
-        }
-        if !changed_sources.is_empty() || !removed.is_empty() {
-            let known_tests = self.store.array("test_units");
-            for edge in self.store.array("test_edges") {
-                let code_id = edge.get("code_id").and_then(|v| v.as_str()).unwrap_or("");
-                let code_file = edge.get("code_file").and_then(|v| v.as_str()).unwrap_or("");
-                let targets_changed = changed_sources.iter().any(|path| code_id.starts_with(&format!("{path}:")));
-                let targets_removed = removed.iter().any(|path| code_file == path.as_str() || code_id.starts_with(&format!("{path}:")));
-                if !targets_changed && !targets_removed {
-                    continue;
-                }
-                let tid = edge.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
-                let Some(test_file) = known_tests.iter().find(|unit| unit.get("id").and_then(|v| v.as_str()) == Some(tid)).and_then(|unit| unit.get("file_path").and_then(|v| v.as_str())) else {
-                    continue;
-                };
-                if removed.iter().any(|path| path == test_file) {
-                    continue;
-                }
-                if !tests_to_rebuild.iter().any(|path| path == test_file) {
-                    tests_to_rebuild.push(test_file.to_string());
-                }
-            }
-        }
-        let edge_rebuild_skipped = tests_to_rebuild.is_empty();
-        if edge_rebuild_skipped {
-            // No test content changed and no edge still names a replaced code id.
-        } else {
-            for rel in &tests_to_rebuild {
-                if !units_by_file.contains_key(rel) {
-                    let content = fs::read_to_string(self.project_dir.join(rel)).unwrap_or_default();
-                    self.source_reads += 1;
-                    units_by_file.insert(rel.clone(), extract::extract_code_units_in(rel, &content, Some(&self.project_dir), self.allow_repo_extractor));
-                }
-            }
-            let (fresh_units, fresh_edges, fresh_static) = self.build_tests_and_edges(&tests_to_rebuild, &units_by_file);
-            let mut test_units: Vec<Value> = self.store.array("test_units").into_iter().filter(|u| {
-                u.get("file_path").and_then(|v| v.as_str()).is_none_or(|p| !tests_to_rebuild.iter().any(|c| c == p))
-            }).collect();
-            test_units.extend(fresh_units);
-            let mut edges: Vec<Value> = self.store.array("test_edges").into_iter().filter(|e| {
-                let tid = e.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
-                let code_id = e.get("code_id").and_then(|v| v.as_str()).unwrap_or("");
-                let rebuilt_test = tests_to_rebuild.iter().any(|c| tid.starts_with(&format!("{c}:")));
-                let replaced_target = changed_sources.iter().any(|path| code_id.starts_with(&format!("{path}:")));
-                !rebuilt_test && !replaced_target
-            }).collect();
-            edges.extend(fresh_edges);
-            let mut static_rows: Vec<Value> = self.store.array("static_test_imports").into_iter().filter(|r| {
-                r.get("test_file").and_then(|v| v.as_str()).is_none_or(|p| !tests_to_rebuild.iter().any(|c| c == p))
-            }).collect();
-            static_rows.extend(fresh_static);
-            self.store.doc.insert("test_units", Value::Array(test_units));
-            self.store.doc.insert("test_edges", Value::Array(edges));
-            self.store.doc.insert("static_test_imports", Value::Array(static_rows));
-        }
+            (changed_sources, edge_rebuild_skipped)
+        });
         let mut imports: Vec<Value> = self.store.array("import_edges").into_iter().filter(|e| {
             e.get("importer_file").and_then(|v| v.as_str()).is_none_or(|p| !changed_set.contains(p))
         }).collect();
@@ -681,7 +742,7 @@ impl Engine {
         let mut test_units = Vec::new();
         for rel in files {
             let units = units_by_file.get(rel).cloned().unwrap_or_default();
-            let abs = self.project_dir.join(rel);
+            let abs = self.sources().path(rel);
             let content = fs::read_to_string(&abs).unwrap_or_default();
             self.source_reads += 1;
             let framework = extract::framework_for(rel, &content).unwrap_or(if looks_like_test(rel) { "test" } else { "" });
@@ -749,16 +810,18 @@ impl Engine {
         let type_files = type_files(&code_units);
         let mut use_cache: HashMap<String, HashMap<String, Vec<Vec<String>>>> = HashMap::new();
         let mut declared_cache: HashMap<String, BTreeSet<String>> = HashMap::new();
-        let project_dir = self.project_dir.clone();
+        let sources = self.sources();
         // A Rust test only reaches its own crate and the crates it depends on.
         let mut crates = crate::cargo::Crates::new(&self.project_dir);
         let mut dep_cache: BTreeMap<String, (String, Vec<extract::Dep>, BTreeSet<String>)> = BTreeMap::new();
+        // Rust calls resolve by type and path (`resolve.rs`); C and C++ keep the file narrowing.
+        let mut resolver = super::resolve::RustResolver::new(self.sources(), &code_units, type_files.clone());
         for tu in &test_units {
             let file = tu.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             let tid = tu.get("id").and_then(|v| v.as_str()).unwrap_or("");
             let index = &shared_index;
             if !dep_cache.contains_key(file) {
-                let content = fs::read_to_string(self.project_dir.join(file)).unwrap_or_default();
+                let content = fs::read_to_string(sources.path(file)).unwrap_or_default();
                 let deps = extract::extract_deps_in(file, &content, Some(&self.project_dir), self.allow_repo_extractor);
                 let resolved = resolve_deps(&deps, &import_index);
                 dep_cache.insert(file.to_string(), (content, deps, resolved));
@@ -783,6 +846,11 @@ impl Engine {
                 let uses = use_cache.entry(file.to_string()).or_insert_with(|| extract::calls::use_paths(content));
                 (extract::calls::call_sites(call_text), uses.clone())
             });
+            let is_rust = extract::detect_language(file) == Some("rust");
+            let rust_scope = narrowing.as_ref().filter(|_| is_rust).map(|(_, uses)| {
+                let line = tu.get("line_start").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
+                (extract::rust_items::local_types(call_text), super::resolve::type_idents(call_text, uses), resolver.self_type_at(file, line))
+            });
             for path in resolved {
                 let key = format!("{file}|{path}");
                 if static_seen.insert(key) {
@@ -793,14 +861,20 @@ impl Engine {
                 }
             }
             for dep in deps {
-                let mut matched = match_dep(file, dep, &code_units, resolved, index);
+                let mut matched: Vec<(String, f64, String)> = match_dep(file, dep, &code_units, resolved, index).into_iter().map(|c| (c, 1.0, String::new())).collect();
                 if let (Some((sites, uses)), true) = (&narrowing, dep.module_path.is_none()) {
-                    let mut declares = |f: &str, ty: &str| {
-                        declared_cache.entry(f.to_string()).or_insert_with(|| declared_types(&fs::read_to_string(project_dir.join(f)).unwrap_or_default())).contains(ty)
-                    };
-                    matched = narrow_by_call_site(file, &dep.name, matched, sites.get(&dep.name), uses, &id_file, &type_files, &mut declares);
+                    let ids: Vec<String> = matched.drain(..).map(|m| m.0).collect();
+                    if let Some((locals, idents, self_type)) = &rust_scope {
+                        let ctx = super::resolve::Ctx { file, uses, locals, self_type: self_type.as_deref(), idents };
+                        matched = resolver.resolve(&ctx, &dep.name, sites.get(&dep.name), &ids, &id_file).into_iter().map(|r| (r.id, r.conf, r.owner)).collect();
+                    } else {
+                        let mut declares = |f: &str, ty: &str| {
+                            declared_cache.entry(f.to_string()).or_insert_with(|| declared_types(&fs::read_to_string(sources.path(f)).unwrap_or_default())).contains(ty)
+                        };
+                        matched = narrow_by_call_site(file, &dep.name, ids, sites.get(&dep.name), uses, &id_file, &type_files, &mut declares).into_iter().map(|c| (c, 1.0, String::new())).collect();
+                    }
                 }
-                for cid in matched {
+                for (cid, conf, owner) in matched {
                     let code_file = id_file.get(cid.as_str()).copied().unwrap_or("");
                     if code_file.is_empty() || (code_file == file && !inline) || !crates.allows(file, code_file) {
                         continue;
@@ -812,12 +886,13 @@ impl Engine {
                     if !seen.insert(key) {
                         continue;
                     }
-                    let weight = extract::proximity_weight(file, code_file) * dep.confidence.sqrt();
+                    let weight = extract::proximity_weight(file, code_file) * dep.confidence.sqrt() * conf;
                     edges.push(Value::object(vec![
                         ("test_id".into(), Value::String(tid.into())),
                         ("code_id".into(), Value::String(cid)),
                         ("edge_type".into(), Value::String(dep.dep_type.clone())),
                         ("weight".into(), Value::Float(weight)),
+                        ("owner".into(), Value::String(owner)),
                     ]));
                 }
             }
@@ -1616,6 +1691,7 @@ fn backfill_heuristic(test_units: &[Value], edges: &mut Vec<Value>, code_units: 
                 ("code_id".into(), Value::String(cid.clone())),
                 ("edge_type".into(), Value::String("heuristic".into())),
                 ("weight".into(), Value::Float(0.2)),
+                ("owner".into(), Value::String(String::new())),
             ]));
         }
     }

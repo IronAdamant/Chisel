@@ -8,7 +8,7 @@ The crate exposes two binaries. `chisel` is `src/main.rs`. `chisel-mcp` is `src/
 
 1. `analyze` lists code files through git (or a walk when ignored files are included), extracts units, and writes one snapshot.
 2. Test files come from `looks_like_test` in `src/engine/mod.rs`. That is the only filename classifier. Rust files under the top-level `tests/` directory are test files. Functions with a `#[test]`-family attribute are test units even inside a source file.
-3. Edges are calls and imports from those test units to code units. `suggest-tests`, `diff-impact`, `test-gaps`, and `risk-map` read the snapshot.
+3. Edges are calls and imports from those test units to code units. Rust calls are resolved to the definitions they can reach (`src/engine/resolve.rs`); each edge records the owner type it went through. `suggest-tests`, `diff-impact`, `test-gaps`, and `risk-map` read the snapshot.
 4. `update` recomputes changed files. A no-op update sets `edge_rebuild_skipped` and reads no history. Function churn and blame for the files in scope come from one `git log -p` stream (`src/history.rs`, driven by `src/engine/history_churn.rs`); files it cannot replay exactly fall back to `git log -L` per function and `git blame` per file.
 5. `risk-map` and `test-gaps` skip paths that `looks_like_test` accepts. A source file that also holds `#[test]` functions stays in those answers. The test functions themselves are not listed as untested code.
 
@@ -20,10 +20,12 @@ The crate exposes two binaries. `chisel` is `src/main.rs`. `chisel-mcp` is `src/
 | `src/engine/analyze.rs` | Full and incremental scans, test units, edges. |
 | `src/engine/query.rs` | Read tools: impact, suggestions, risk, gaps, triage. |
 | `src/engine/callers.rs` | Callers of changed functions, a few calls up, read from source at query time, for `diff_impact` `depth`. |
+| `src/engine/resolve.rs` | Rust calls to definitions by type and path: owner types, receivers, std traits and methods; name-only matches at lower weight. |
+| `src/engine/overlay.rs` | `worktree_root`: an overlay of main's snapshot under `.chisel/overlays/<hash>/`, refreshed by `update` against that worktree. |
 | `src/engine/issues.rs` | Issue capture, suspects, hunk-to-unit mapping, fix summaries. |
 | `src/cargo.rs` | Cargo manifests: which crates a Rust test can reach (dependencies, dev-dependencies, workspace deps). |
 | `src/engine/locks.rs` | Advisory lock rows in the snapshot. |
-| `src/extract` | Python syntax units, brace-language units, import and call deps. `calls.rs` reads how a name is called (`Type::f`, `x.f()`, `f()`, outside strings and comments) and `use` imports. |
+| `src/extract` | Python syntax units, brace-language units, import and call deps. `calls.rs` reads how a name is called (`Type::f`, `x.f()` and its receiver, `f()`, outside strings and comments) and `use` imports. `rust_items.rs` reads impl and trait blocks, struct fields and local variable types. |
 | `src/syntax.rs` | Built-in Python and JavaScript syntax tree used by the scanners. |
 | `src/store.rs` | One snapshot file. Write to a temp file, fsync, rename. |
 | `src/git.rs` | Porcelain via `std::process`. A ref that starts with `-` is rejected. |
@@ -49,6 +51,6 @@ Git is a subprocess. Locks are advisory records. They do not lock source files.
 
 ## Status
 
-`no_data`, `no_changes`, `no_edges`, `git_error`, `stale_db`, `error`, `unsupported`, `auto_queued`. `no_data` and `stale_db` exit 0. `error` and `git_error` exit 1.
+`no_data`, `no_changes`, `no_edges`, `git_error`, `stale_db`, `error`, `unsupported`, `auto_queued`. `no_data` and `stale_db` exit 0. `error` and `git_error` exit 1. Usage errors exit 2.
 
 Do not pip-install this project. Do not store analysis in SQLite. Do not add a crates.io dependency.

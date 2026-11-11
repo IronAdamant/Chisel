@@ -55,12 +55,21 @@ pub struct Args {
     pub since: Option<String>,
     pub brief: bool,
     pub write: bool,
+    /// `--worktree PATH`: answer for that git worktree (MCP `worktree_root`).
+    pub worktree: Option<PathBuf>,
+    /// The linked worktree this process started in, when neither the project nor the storage
+    /// directory was given: read tools answer for it from the main checkout's snapshot.
+    pub default_worktree: Option<PathBuf>,
 }
 
 pub fn parse(argv: &[String]) -> Result<Args, String> {
     let mut command = String::new();
-    let mut project_dir = env::var("CHISEL_PROJECT_DIR").map(PathBuf::from).unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let env_project = env::var("CHISEL_PROJECT_DIR").ok().map(PathBuf::from);
+    let mut explicit_dirs = env_project.is_some();
+    let mut project_dir = env_project.unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let mut storage_dir = env::var("CHISEL_STORAGE_DIR").ok().map(PathBuf::from);
+    explicit_dirs |= storage_dir.is_some();
+    let mut worktree = None;
     let mut json = false;
     let mut positionals = Vec::new();
     let mut host = "127.0.0.1".to_string();
@@ -115,14 +124,23 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
         }
         if let Some(v) = a.strip_prefix("--project-dir=") {
             project_dir = PathBuf::from(v);
+            explicit_dirs = true;
         } else if a == "--project-dir" {
             i += 1;
             project_dir = PathBuf::from(argv.get(i).ok_or("missing --project-dir")?);
+            explicit_dirs = true;
         } else if let Some(v) = a.strip_prefix("--storage-dir=") {
             storage_dir = Some(PathBuf::from(v));
+            explicit_dirs = true;
         } else if a == "--storage-dir" {
             i += 1;
             storage_dir = Some(PathBuf::from(argv.get(i).ok_or("missing --storage-dir")?));
+            explicit_dirs = true;
+        } else if let Some(v) = a.strip_prefix("--worktree=") {
+            worktree = Some(PathBuf::from(v));
+        } else if a == "--worktree" {
+            i += 1;
+            worktree = Some(PathBuf::from(argv.get(i).ok_or("missing --worktree: pass the absolute path of a git worktree")?));
         } else if a == "--json" {
             json = true;
         } else if a == "--host" {
@@ -249,14 +267,25 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
         i += 1;
     }
     if command.is_empty() && !help {
-        return Err("missing command".into());
+        return Err("missing command. Run `chisel --help` for the command list.".into());
+    }
+    // Started inside a linked git worktree with no directory given: the main checkout's snapshot
+    // is the base and this worktree the overlay, when main has a snapshot and this tree has none.
+    let mut default_worktree = None;
+    if !explicit_dirs {
+        if let Some((main, tree)) = crate::engine::linked_worktree(&project_dir) {
+            if main.join(".chisel").join(crate::store::STORE_NAME).is_file() && !tree.join(".chisel").join(crate::store::STORE_NAME).is_file() {
+                project_dir = main;
+                default_worktree = Some(tree);
+            }
+        }
     }
     Ok(Args {
         command, project_dir, storage_dir, json, positionals, host, port, ttl, purpose, test_command,
         force, working_tree, auto_update, limit, shard, directory, git_ref, depth, kind, passed,
         coverage_mode, proximity_adjustment, exclude_new_file_boost, allow_repo_extractor, once, interval_secs,
         functions, fallback, unit, min_count, no_exclude_tests, top_n, agent_id, duration_ms, help,
-        capture_command, hook, all, since, brief, write,
+        capture_command, hook, all, since, brief, write, worktree, default_worktree,
     })
 }
 
@@ -285,12 +314,21 @@ fn tool_name(command: &str) -> String {
 pub fn run(args: &Args) -> Result<i32, String> {
     match args.command.as_str() {
         "serve" => {
-            crate::http::serve(&args.project_dir, args.storage_dir.as_deref(), &args.host, args.port)?;
+            crate::http::serve(&args.project_dir, args.storage_dir.as_deref(), args.default_worktree.as_deref(), &args.host, args.port)?;
             return Ok(0);
         }
         "serve-mcp" | "mcp" => {
-            crate::mcp::serve(&args.project_dir, args.storage_dir.as_deref())?;
+            crate::mcp::serve(&args.project_dir, args.storage_dir.as_deref(), args.default_worktree.as_deref())?;
             return Ok(0);
+        }
+        "help" => {
+            return Ok(match args.positionals.first() {
+                Some(cmd) => if crate::cli_text::command_help(cmd) { 0 } else { 2 },
+                None => {
+                    help();
+                    0
+                }
+            });
         }
         "run" => return crate::run_cmd::run_tests(args),
         "capture" => return Ok(crate::capture::capture_cmd(args)),
@@ -300,18 +338,47 @@ pub fn run(args: &Args) -> Result<i32, String> {
         "watch" => return watch(args),
         _ => {}
     }
+    if crate::cli_text::command_entry(&args.command).is_none() {
+        eprintln!("Error: unknown command '{}'. Run `chisel --help` for the command list.", args.command);
+        return Ok(2);
+    }
     let mut engine = Engine::open(&args.project_dir, args.storage_dir.as_deref())?;
     if args.allow_repo_extractor {
         engine.allow_repo_extractor = true;
     }
+    engine.default_worktree = args.default_worktree.clone();
+    // The CLI has no client timeout: `analyze --force` runs here instead of as a job, and a job
+    // started here is waited for (the process would otherwise exit and take the job with it).
+    engine.inline_jobs = true;
     let tool = tool_name(&args.command);
     let call_args = call_args(args);
-    let result = engine.dispatch(&tool, &call_args)?;
-    emit(args.json, &args.command, &result)?;
-    if result.get("status").and_then(|v| v.as_str()).is_some_and(|s| s == "error" || s == "git_error") {
-        return Ok(1);
+    let mut result = engine.dispatch(&tool, &call_args)?;
+    if tool == "start_job" && result.get("status").and_then(|v| v.as_str()) == Some("queued") {
+        if let Some(id) = result.get("job_id").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+            result = wait_for_job(&mut engine, &id);
+        }
     }
-    Ok(0)
+    emit(args.json, &args.command, &result)?;
+    Ok(exit_code(&result))
+}
+
+/// 0 for answers, including `no_data`, `no_changes`, `no_edges`, `stale_db` and `auto_queued`
+/// (the reply says what to do next); 1 for `error` and `git_error`. Usage errors exit 2.
+pub fn exit_code(result: &Value) -> i32 {
+    match result.get("status").and_then(|v| v.as_str()) {
+        Some("error" | "git_error") => 1,
+        _ => 0,
+    }
+}
+
+fn wait_for_job(engine: &mut Engine, id: &str) -> Value {
+    loop {
+        let status = engine.job_status_value(id);
+        match status.get("status").and_then(|v| v.as_str()) {
+            Some("queued" | "running") => std::thread::sleep(std::time::Duration::from_millis(100)),
+            _ => return status,
+        }
+    }
 }
 
 fn call_args(args: &Args) -> Value {
@@ -401,6 +468,10 @@ fn call_args(args: &Args) -> Value {
     }
     if let Some(depth) = args.depth {
         pairs.push(("depth".into(), Value::Int(depth)));
+    }
+    if let Some(worktree) = &args.worktree {
+        let path = if worktree.is_absolute() { worktree.clone() } else { env::current_dir().map(|d| d.join(worktree)).unwrap_or_else(|_| worktree.clone()) };
+        pairs.push(("worktree_root".into(), Value::String(path.to_string_lossy().into_owned())));
     }
 
     if let Some(kind) = &args.kind {
@@ -599,12 +670,18 @@ pub fn entry() -> Result<i32, String> {
         help();
         return Ok(0);
     }
-    let args = parse(&argv)?;
+    let args = match parse(&argv) {
+        Ok(args) => args,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return Ok(2);
+        }
+    };
     if args.help {
         if args.command.is_empty() {
             help();
-        } else {
-            crate::cli_text::command_help(&args.command);
+        } else if !crate::cli_text::command_help(&args.command) {
+            return Ok(2);
         }
         return Ok(0);
     }
@@ -639,13 +716,18 @@ fn migrate(args: &Args) -> Result<i32, String> {
 }
 
 pub fn help() {
-    println!("Chisel — test impact analysis and code intelligence");
+    println!("Chisel — test impact analysis: which tests to run after an edit");
     println!("usage: chisel [--json] [--version] [--project-dir DIR] [--storage-dir DIR] <command> ...");
-    println!("commands: analyze, impact, suggest-tests, churn, ownership, coupling, risk-map,");
-    println!("  stale-tests, history, who-reviews, diff-impact, update, test-gaps, record-result,");
-    println!("  run, watch, stats, start-job, job-status, cancel-job, triage, serve, serve-mcp,");
-    println!("  migrate, acquire-lock, release-lock, refresh-lock, check-lock, check-locks, list-locks");
-    println!("  issues [--all] [--since 7d] [--brief], issue <id>, trace <file> [--unit fn],");
-    println!("  capture [--hook] [--command CMD] < output, hook-install [--write]");
-    println!("Run `chisel <command> --help` for one command.");
+    println!("After editing: `chisel diff-impact` (committed work too: `--since main`; another worktree: `--worktree PATH`).");
+    let mut line = String::from("commands:");
+    for (name, _, _) in crate::cli_text::COMMANDS {
+        if line.len() + name.len() > 92 {
+            println!("{line}");
+            line = String::from(" ");
+        }
+        line.push(' ');
+        line.push_str(name);
+    }
+    println!("{line}");
+    println!("Run `chisel <command> --help` for one command. Exit codes: 0 answered, 1 error, 2 usage.");
 }

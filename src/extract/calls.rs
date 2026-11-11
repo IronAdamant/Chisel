@@ -16,6 +16,52 @@ pub struct CallSite {
     pub method: bool,
     /// Called as `name(`.
     pub free: bool,
+    /// What each `.name(` was called on: a variable (`atlas`), `self`, a field of self
+    /// (`self.atlas`), or `?` when it is the result of another call or an index.
+    pub recvs: BTreeSet<String>,
+}
+
+/// `text` with strings, chars and comments replaced by spaces (newlines kept), so offsets and
+/// line numbers still match the original.
+pub fn code_only(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(next) = skip_non_code(text, i) {
+            let next = next.min(bytes.len());
+            out.extend(bytes[i..next].iter().map(|b| if *b == b'\n' { b'\n' } else { b' ' }));
+            i = next;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// What `.name(` at `dot` (the index of the `.`) is called on.
+fn receiver(text: &str, dot: usize) -> String {
+    let bytes = text.as_bytes();
+    let end = skip_ws_back(bytes, dot);
+    let Some(start) = ident_before(bytes, end) else { return "?".into() };
+    let word = &text[start..end];
+    let before = skip_ws_back(bytes, start);
+    if before >= 1 && bytes[before - 1] == b'.' {
+        let inner_end = skip_ws_back(bytes, before - 1);
+        if let Some(inner) = ident_before(bytes, inner_end) {
+            let outer = skip_ws_back(bytes, inner);
+            let chained = outer >= 1 && (bytes[outer - 1] == b'.' || bytes[outer - 1] == b':');
+            if &text[inner..inner_end] == "self" && !chained {
+                return format!("self.{word}");
+            }
+        }
+        return "?".into();
+    }
+    if before >= 2 && &bytes[before - 2..before] == b"::" {
+        return "?".into();
+    }
+    word.to_string()
 }
 
 const NOT_CALLS: [&str; 12] = ["if", "while", "for", "match", "return", "fn", "loop", "in", "as", "move", "unsafe", "where"];
@@ -137,6 +183,7 @@ pub fn call_sites(text: &str) -> HashMap<String, CallSite> {
         let site = out.entry(name.to_string()).or_default();
         if before >= 1 && bytes[before - 1] == b'.' || before >= 2 && &bytes[before - 2..before] == b"->" {
             site.method = true;
+            site.recvs.insert(if bytes[before - 1] == b'.' { receiver(text, before - 1) } else { "?".to_string() });
         } else if before >= 2 && &bytes[before - 2..before] == b"::" {
             let mut k = skip_ws_back(bytes, before - 2);
             if k > 0 && bytes[k - 1] == b'>' {
@@ -229,6 +276,23 @@ mod tests {
         assert_eq!(sites["with_capacity"].quals.iter().collect::<Vec<_>>(), vec!["HashMap"]);
         assert!(sites["free_fn"].free && sites["make"].quals.contains("Self"));
         assert!(!sites.contains_key("helper") && !sites.contains_key("if"));
+        assert_eq!(sites["len"].recvs.iter().collect::<Vec<_>>(), vec!["v"]);
+    }
+
+    #[test]
+    fn receivers_of_method_calls() {
+        let text = "atlas.glyph(1);\nself.clear();\nself.atlas.take_dirty();\nmake().finish();\nself.a.b.deep();\nlist[0].first();\nx\n    .chained();\nx.y().z();";
+        let sites = call_sites(text);
+        let recv = |n: &str| sites[n].recvs.iter().cloned().collect::<Vec<_>>();
+        assert_eq!(recv("glyph"), vec!["atlas"]);
+        assert_eq!(recv("clear"), vec!["self"]);
+        assert_eq!(recv("take_dirty"), vec!["self.atlas"]);
+        assert_eq!(recv("finish"), vec!["?"]);
+        assert_eq!(recv("deep"), vec!["?"]);
+        assert_eq!(recv("first"), vec!["?"]);
+        assert_eq!(recv("chained"), vec!["x"]);
+        assert_eq!(recv("z"), vec!["?"]);
+        assert_eq!(code_only("a(\"x{\") // }\nb"), "a(    )     \nb");
     }
 
     #[test]
