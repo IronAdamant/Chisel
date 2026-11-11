@@ -268,40 +268,65 @@ pub fn title_key(key: &str) -> String {
     }).collect::<Vec<_>>().join(" ")
 }
 
-pub fn command_help(command: &str) {
-    let text = match command {
-        "analyze" => "analyze [DIR] [--force] [--shard NAME]\n  Scan the project and write .chisel/store.",
-        "update" => "update [--shard NAME]\n  Recompute changed files. A no-op reports code units found as 0.",
-        "impact" => "impact FILE... [--functions NAME...]\n  Tests that reach the named files, optionally limited to those functions.",
-        "suggest-tests" => "suggest-tests FILE | --directory DIR [--fallback] [--working-tree] [--auto-update]\n  Rank tests for one file, or return a map for every code file under a directory.",
-        "churn" => "churn FILE [--unit NAME]\n  File-level churn, or one unit row with insertions and last changed.",
-        "ownership" => "ownership FILE\n  Blame share for a file.",
-        "coupling" => "coupling FILE [--min-count N] [--working-tree]\n  Co-change partners. --working-tree scans an untracked file on disk.",
-        "risk-map" => "risk-map [DIR] [--no-exclude-tests] [--proximity|--no-proximity] [--coverage-mode unit|line]\n  Risk scores. DIR limits the files. Cycles and locks are included when present.",
-        "test-gaps" => "test-gaps [FILE] [--directory DIR] [--no-exclude-tests]\n  Untested units. A file argument or --directory limits the scope.",
-        "triage" => "triage [DIR] [--top-n N] [--no-exclude-tests]\n  Top risk files plus their gaps and stale tests.",
-        "stale-tests" => "stale-tests\n  Tests whose edges point at code that is gone. Returns a list when edges exist.",
-        "record-result" => "record-result TEST_ID (--passed|--failed) [--duration MS]\n  Store a result. Duration feeds the instability variance.",
-        "run" => "run -- COMMAND...\n  Run tests, stream their output, record results, and log issues for failures.",
-        "capture" => "capture [--hook] [--command CMD] < OUTPUT\n  Read test output (cargo, pytest, jest, vitest, go, node:test), record results and issues.\n  Prints one line only for new, reopened or fixed issues; always exits 0. --hook reads a\n  Claude Code PostToolUse payload. Needs a snapshot (`chisel analyze`).",
-        "issues" => "issues [--all] [--since 30m|12h|7d|YYYY-MM-DD] [--limit N] [--brief]\n  Captured test failures, newest first. --brief prints at most two lines, for a SessionStart hook.",
-        "issue" => "issue ID\n  One issue: error, location, suspects, occurrences, excerpt, fix.",
-        "trace" => "trace FILE [--unit NAME]\n  Issues where the file or function was a suspect, the test, the failure site, or fixed.",
-        "hook-install" => "hook-install [--write]\n  Print Claude Code hooks for capture and the SessionStart summary. --write merges them into\n  .claude/settings.local.json with this binary's path.",
-        "stats" => "stats\n  Counts, including co_change_query_min as a number and the shadow graph.",
-        "start-job" => "start-job analyze|update [DIR] [--force] [--shard NAME]\n  Queue analyze or update. The kind may be the first argument.",
-        "job-status" => "job-status JOB_ID",
-        "cancel-job" => "cancel-job JOB_ID",
-        "list-locks" => "list-locks [--agent-id ID]\n  Active advisory locks, optionally for one agent.",
-        "serve" => "serve [--host HOST] [--port PORT]\n  HTTP JSON API. Not an MCP URL.",
-        "serve-mcp" => "serve-mcp\n  Stdio MCP. Accepts newline-delimited JSON and Content-Length framing.",
-        "migrate" => "migrate [chisel.db]\n  Copy test results from a legacy SQLite chisel.db into .chisel/store.",
-        "watch" => "watch [--once] [--interval SECS]\n  Run update when the worktree changes.",
-        other => {
-            println!("Unknown command '{other}'.");
-            println!("Run `chisel --help` for the command list.");
-            return;
+/// Every subcommand: name, usage line, what it does. `chisel --help` lists the names and
+/// `chisel <command> --help` (or `chisel help <command>`) prints the entry.
+pub const COMMANDS: &[(&str, &str, &str)] = &[
+    ("analyze", "analyze [DIR] [--force] [--shard NAME] [--worktree PATH]", "Scan the project and write .chisel/store. With --worktree, rebuild that worktree's overlay instead."),
+    ("update", "update [--shard NAME] [--worktree PATH]", "Recompute changed files and new commits. A no-op reports code units found as 0."),
+    ("diff-impact", "diff-impact [--since REF | --ref REF] [--worktree PATH] [--depth 1|2|3] [--working-tree] [--auto-update] [--limit N]", "Which tests to run after editing. Default: uncommitted changes on main; on a branch or a detached\n  worktree, everything since the merge-base with main. --since REF scores every change from the\n  merge-base of REF and HEAD to the working tree, committed or not. --ref REF diffs against REF itself.\n  --worktree PATH answers for that git worktree from this checkout's snapshot."),
+    ("impact", "impact FILE... [--functions NAME...] [--depth 1|2|3] [--worktree PATH]", "Tests that reach the named files, optionally limited to those functions."),
+    ("suggest-tests", "suggest-tests FILE | --directory DIR [--fallback] [--working-tree] [--auto-update] [--worktree PATH]", "Rank tests for one file, or return a map for every code file under a directory."),
+    ("churn", "churn FILE [--unit NAME] [--worktree PATH]", "File-level churn, or one unit row with insertions and last changed."),
+    ("ownership", "ownership FILE [--worktree PATH]", "Blame share for a file."),
+    ("coupling", "coupling FILE [--min-count N] [--working-tree] [--worktree PATH]", "Co-change partners. --working-tree scans an untracked file on disk."),
+    ("history", "history FILE [--limit N] [--worktree PATH]", "Commits that touched a file, newest first."),
+    ("who-reviews", "who-reviews FILE [--worktree PATH]", "Active maintainers of a file from recent commits."),
+    ("risk-map", "risk-map [DIR] [--no-exclude-tests] [--proximity|--no-proximity] [--coverage-mode unit|line] [--worktree PATH]", "Risk scores. DIR limits the files. Cycles and locks are included when present."),
+    ("test-gaps", "test-gaps [FILE] [--directory DIR] [--no-exclude-tests] [--worktree PATH]", "Untested units. A file argument or --directory limits the scope."),
+    ("triage", "triage [DIR] [--top-n N] [--no-exclude-tests] [--worktree PATH]", "Top risk files plus their gaps and stale tests."),
+    ("stale-tests", "stale-tests [--worktree PATH]", "Tests whose edges point at code that is gone. Returns a list when edges exist."),
+    ("stats", "stats [--worktree PATH]", "Counts, including co_change_query_min as a number and the shadow graph."),
+    ("record-result", "record-result TEST_ID (--passed|--failed) [--duration MS]", "Store a result. Duration feeds the instability variance."),
+    ("run", "run -- COMMAND...", "Run tests, stream their output, record results, and log issues for failures."),
+    ("capture", "capture [--hook] [--command CMD] < OUTPUT", "Read test output (cargo, pytest, jest, vitest, go, node:test), record results and issues.\n  Prints one line only for new, reopened or fixed issues; always exits 0. --hook reads a\n  Claude Code PostToolUse payload. Needs a snapshot (`chisel analyze`)."),
+    ("issues", "issues [--all] [--since 30m|12h|7d|YYYY-MM-DD] [--limit N] [--brief]", "Captured test failures, newest first. --brief prints at most two lines, for a SessionStart hook."),
+    ("issue", "issue ID", "One issue: error, location, suspects, occurrences, excerpt, fix."),
+    ("trace", "trace FILE [--unit NAME]", "Issues where the file or function was a suspect, the test, the failure site, or fixed."),
+    ("hook-install", "hook-install [--write]", "Print Claude Code hooks for capture and the SessionStart summary. --write merges them into\n  .claude/settings.local.json with this binary's path."),
+    ("start-job", "start-job analyze|update [DIR] [--force] [--shard NAME]", "Run analyze or update as a job and print its final status (the CLI waits; over MCP it returns at once)."),
+    ("job-status", "job-status JOB_ID", "State of a job: queued, running, completed or cancelled."),
+    ("cancel-job", "cancel-job JOB_ID", "Ask a running job to stop between files."),
+    ("optimize-storage", "optimize-storage", "Rewrite the snapshot without expired locks."),
+    ("acquire-lock", "acquire-lock FILE [AGENT_ID] [--agent-id ID] [--ttl SECS] [--purpose TEXT]", "Claim a file before editing (advisory). A refusal names the holder and its purpose."),
+    ("release-lock", "release-lock FILE [AGENT_ID] [--agent-id ID]", "Release your lock on a file."),
+    ("refresh-lock", "refresh-lock FILE [AGENT_ID] [--agent-id ID] [--ttl SECS]", "Extend your lock while you are still editing."),
+    ("check-lock", "check-lock FILE", "Who holds the lock on a file, why, and until when."),
+    ("check-locks", "check-locks FILE...", "Lock conflicts for several files at once."),
+    ("list-locks", "list-locks [--agent-id ID]", "Active advisory locks, optionally for one agent."),
+    ("watch", "watch [--once] [--interval SECS]", "Run update when the worktree changes."),
+    ("serve", "serve [--host HOST] [--port PORT]", "HTTP JSON API. Not an MCP URL."),
+    ("serve-mcp", "serve-mcp", "Stdio MCP. Accepts newline-delimited JSON and Content-Length framing. Inside a linked git worktree\n  (no --project-dir) it answers for that worktree from the main checkout's snapshot."),
+    ("migrate", "migrate [chisel.db]", "Copy test results from a legacy SQLite chisel.db into .chisel/store."),
+    ("help", "help [COMMAND]", "The command list, or one command's flags."),
+];
+
+/// `mcp` is an alias of `serve-mcp`.
+pub fn command_entry(command: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
+    let name = if command == "mcp" { "serve-mcp" } else { command };
+    COMMANDS.iter().find(|(n, _, _)| *n == name)
+}
+
+/// Prints one command's help. `false` (and a pointer to the list) for an unknown command.
+pub fn command_help(command: &str) -> bool {
+    match command_entry(command) {
+        Some((_, usage, what)) => {
+            println!("chisel {usage}\n  {what}");
+            println!("Global flags: --json, --project-dir DIR, --storage-dir DIR. With --json, branch on `status`.");
+            true
         }
-    };
-    println!("chisel {text}");
+        None => {
+            println!("Unknown command '{command}'. Run `chisel --help` for the command list.");
+            false
+        }
+    }
 }

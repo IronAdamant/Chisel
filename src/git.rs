@@ -125,7 +125,7 @@ impl GitAnalyzer {
 
     pub fn changed_files(&self, r#ref: &str) -> Result<Vec<String>, GitError> {
         guard_ref(r#ref)?;
-        let raw = self.run(&["diff", "--name-only", "--end-of-options", r#ref])?;
+        let raw = self.run(&["diff", "--name-only", "--relative", "--end-of-options", r#ref])?;
         Ok(raw.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
     }
 
@@ -148,7 +148,7 @@ impl GitAnalyzer {
     /// `changed_functions` for every file that differs from `ref`, from one `git diff`.
     pub fn changed_functions_all(&self, r#ref: &str) -> Result<BTreeMap<String, Vec<String>>, GitError> {
         guard_ref(r#ref)?;
-        let raw = self.run(&["diff", "-U0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--end-of-options", r#ref])?;
+        let raw = self.run(&["diff", "-U0", "--relative", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--end-of-options", r#ref])?;
         Ok(split_diff_by_file(&raw).into_iter().map(|(path, section)| (path, parse_diff_functions(&section))).collect())
     }
 

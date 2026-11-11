@@ -7,6 +7,9 @@ mod issues;
 pub use issues::CaptureSummary;
 mod history_churn;
 mod query;
+mod resolve;
+mod overlay;
+pub use overlay::linked_worktree;
 mod locks;
 
 use crate::extract::{self, CodeUnit, Dep};
@@ -209,6 +212,24 @@ pub struct Engine {
     only_files: Option<BTreeSet<String>>,
     active_job: Option<String>,
     diff_ref_override: Option<String>,
+    /// `diff_impact`: for a changed Rust function `(file, name)`, the owner types of the changed
+    /// definitions (`""` free). Edges resolved through another owner of that name are not hits.
+    changed_owners: HashMap<(String, String), BTreeSet<String>>,
+    /// `diff_impact` `since`: diff from the merge-base of this ref and HEAD.
+    diff_since: Option<String>,
+    /// Metadata a tool adds to its reply (`since`, `base`, `worktree`); a list reply becomes
+    /// `{"items": [...], ...}` when there is any.
+    reply_meta: Vec<(crate::json::SharedStr, Value)>,
+    /// `update` also records new mtimes of files whose content did not change (overlays: a
+    /// worktree's files all have their own mtimes).
+    restamp_unchanged: bool,
+    /// Overlay engines by canonical worktree path (`worktree_root`), kept while this one lives.
+    overlays: HashMap<PathBuf, Box<Engine>>,
+    /// The worktree read/query tools answer for when `worktree_root` is not passed (the process
+    /// was started inside a linked worktree of this project).
+    pub default_worktree: Option<PathBuf>,
+    /// CLI: no client timeout, so `analyze` with `force` runs inline instead of as a job.
+    pub inline_jobs: bool,
     /// `impact`/`diff_impact` depth: 1 is direct edges only; 2 and 3 add tests of the changed
     /// functions' callers, and their callers.
     pub impact_depth: usize,
@@ -255,6 +276,13 @@ impl Engine {
             only_files: None,
             active_job: None,
             diff_ref_override: None,
+            changed_owners: HashMap::new(),
+            diff_since: None,
+            reply_meta: Vec::new(),
+            restamp_unchanged: false,
+            overlays: HashMap::new(),
+            default_worktree: None,
+            inline_jobs: false,
             impact_depth: DEFAULT_IMPACT_DEPTH,
             directory: None,
             source_reads: 0,
@@ -303,7 +331,7 @@ pub(crate) fn analyze_hint(test_files: i64) -> String {
 pub(crate) fn stale_status() -> Value {
     Value::object(vec![
         ("status".into(), Value::String("error".into())),
-        ("message".into(), Value::String("stale generation".into())),
+        ("message".into(), Value::String("stale generation: another chisel process wrote the snapshot during this call. Run the command again.".into())),
     ])
 }
 

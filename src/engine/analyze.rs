@@ -329,6 +329,8 @@ impl Engine {
             before.insert(path.to_string(), (hash.to_string(), mtime_ns, size, mtime));
         }
         let mut changed: Vec<String> = Vec::new();
+        // Same content, new mtime (a checkout, a worktree): remembered so the next check is a stat.
+        let mut restamp: HashMap<String, HashedFile> = HashMap::new();
         for rel in &files {
             let abs = self.project_dir.join(rel);
             if let Some((hash, mtime_ns, size, mtime)) = before.get(rel) {
@@ -341,7 +343,18 @@ impl Engine {
             let hash = sha256_hex(&content);
             if before.get(rel).map(|(h, _, _, _)| h.as_str()) != Some(hash.as_str()) {
                 changed.push(rel.clone());
+            } else if self.restamp_unchanged {
+                restamp.insert(rel.clone(), HashedFile::from_path(&abs, &content));
             }
+        }
+        if !restamp.is_empty() {
+            let rows: Vec<Value> = self.store.array("file_hashes").into_iter().map(|row| {
+                match row.get("file_path").and_then(|v| v.as_str()).and_then(|p| restamp.get(p).map(|h| (p.to_string(), h))) {
+                    Some((p, h)) => h.row(&p),
+                    None => row,
+                }
+            }).collect();
+            self.store.doc.insert("file_hashes", Value::Array(rows));
         }
         let file_set: HashSet<&str> = files.iter().map(|s| s.as_str()).collect();
         let removed: Vec<String> = before.keys().filter(|path| !file_set.contains(path.as_str())).cloned().collect();
@@ -350,7 +363,7 @@ impl Engine {
         let commit_touch: BTreeSet<String> = new_commits.iter().flat_map(|c| c.files.iter().map(|f| f.path.clone())).collect();
         if changed.is_empty() && new_commits.is_empty() && removed.is_empty() {
             let cleaned = self.cleanup_orphaned_results();
-            if cleaned > 0 {
+            if cleaned > 0 || !restamp.is_empty() {
                 self.store.save()?;
             }
             return Ok(Value::object(vec![
@@ -753,6 +766,8 @@ impl Engine {
         // A Rust test only reaches its own crate and the crates it depends on.
         let mut crates = crate::cargo::Crates::new(&self.project_dir);
         let mut dep_cache: BTreeMap<String, (String, Vec<extract::Dep>, BTreeSet<String>)> = BTreeMap::new();
+        // Rust calls resolve by type and path (`resolve.rs`); C and C++ keep the file narrowing.
+        let mut resolver = super::resolve::RustResolver::new(&self.project_dir, &code_units, type_files.clone());
         for tu in &test_units {
             let file = tu.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             let tid = tu.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -783,6 +798,11 @@ impl Engine {
                 let uses = use_cache.entry(file.to_string()).or_insert_with(|| extract::calls::use_paths(content));
                 (extract::calls::call_sites(call_text), uses.clone())
             });
+            let is_rust = extract::detect_language(file) == Some("rust");
+            let rust_scope = narrowing.as_ref().filter(|_| is_rust).map(|(_, uses)| {
+                let line = tu.get("line_start").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
+                (extract::rust_items::local_types(call_text), super::resolve::type_idents(call_text, uses), resolver.self_type_at(file, line))
+            });
             for path in resolved {
                 let key = format!("{file}|{path}");
                 if static_seen.insert(key) {
@@ -793,14 +813,20 @@ impl Engine {
                 }
             }
             for dep in deps {
-                let mut matched = match_dep(file, dep, &code_units, resolved, index);
+                let mut matched: Vec<(String, f64, String)> = match_dep(file, dep, &code_units, resolved, index).into_iter().map(|c| (c, 1.0, String::new())).collect();
                 if let (Some((sites, uses)), true) = (&narrowing, dep.module_path.is_none()) {
-                    let mut declares = |f: &str, ty: &str| {
-                        declared_cache.entry(f.to_string()).or_insert_with(|| declared_types(&fs::read_to_string(project_dir.join(f)).unwrap_or_default())).contains(ty)
-                    };
-                    matched = narrow_by_call_site(file, &dep.name, matched, sites.get(&dep.name), uses, &id_file, &type_files, &mut declares);
+                    let ids: Vec<String> = matched.drain(..).map(|m| m.0).collect();
+                    if let Some((locals, idents, self_type)) = &rust_scope {
+                        let ctx = super::resolve::Ctx { file, uses, locals, self_type: self_type.as_deref(), idents };
+                        matched = resolver.resolve(&ctx, &dep.name, sites.get(&dep.name), &ids, &id_file).into_iter().map(|r| (r.id, r.conf, r.owner)).collect();
+                    } else {
+                        let mut declares = |f: &str, ty: &str| {
+                            declared_cache.entry(f.to_string()).or_insert_with(|| declared_types(&fs::read_to_string(project_dir.join(f)).unwrap_or_default())).contains(ty)
+                        };
+                        matched = narrow_by_call_site(file, &dep.name, ids, sites.get(&dep.name), uses, &id_file, &type_files, &mut declares).into_iter().map(|c| (c, 1.0, String::new())).collect();
+                    }
                 }
-                for cid in matched {
+                for (cid, conf, owner) in matched {
                     let code_file = id_file.get(cid.as_str()).copied().unwrap_or("");
                     if code_file.is_empty() || (code_file == file && !inline) || !crates.allows(file, code_file) {
                         continue;
@@ -812,12 +838,13 @@ impl Engine {
                     if !seen.insert(key) {
                         continue;
                     }
-                    let weight = extract::proximity_weight(file, code_file) * dep.confidence.sqrt();
+                    let weight = extract::proximity_weight(file, code_file) * dep.confidence.sqrt() * conf;
                     edges.push(Value::object(vec![
                         ("test_id".into(), Value::String(tid.into())),
                         ("code_id".into(), Value::String(cid)),
                         ("edge_type".into(), Value::String(dep.dep_type.clone())),
                         ("weight".into(), Value::Float(weight)),
+                        ("owner".into(), Value::String(owner)),
                     ]));
                 }
             }
@@ -1616,6 +1643,7 @@ fn backfill_heuristic(test_units: &[Value], edges: &mut Vec<Value>, code_units: 
                 ("code_id".into(), Value::String(cid.clone())),
                 ("edge_type".into(), Value::String("heuristic".into())),
                 ("weight".into(), Value::Float(0.2)),
+                ("owner".into(), Value::String(String::new())),
             ]));
         }
     }

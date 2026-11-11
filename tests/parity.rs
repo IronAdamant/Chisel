@@ -216,7 +216,8 @@ fn flags_reach_the_engine_on_the_sample() {
 
     let job = Command::new(bin()).args(["--json", "start-job", "update", "--project-dir"]).arg(&dir).arg("--storage-dir").arg(&store).output().unwrap();
     assert!(job.status.success(), "{}", String::from_utf8_lossy(&job.stderr));
-    assert!(String::from_utf8_lossy(&job.stdout).contains("queued"), "{}", String::from_utf8_lossy(&job.stdout));
+    // The CLI waits for its job: a process that exited at "queued" took the job with it.
+    assert!(String::from_utf8_lossy(&job.stdout).contains("\"completed\""), "{}", String::from_utf8_lossy(&job.stdout));
 
     let stats = Command::new(bin()).args(["--json", "stats", "--project-dir"]).arg(&dir).arg("--storage-dir").arg(&store).output().unwrap();
     let stats_doc = chisel::json::parse(String::from_utf8_lossy(&stats.stdout).trim()).unwrap();

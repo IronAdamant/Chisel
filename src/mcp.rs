@@ -13,10 +13,11 @@ use std::path::Path;
 /// A call to a hidden tool, with its one-line explanation.
 struct DisabledTool(String);
 
-pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
+pub fn serve(project: &Path, storage: Option<&Path>, worktree: Option<&Path>) -> Result<(), String> {
     // A typo in CHISEL_TOOLS / CHISEL_DISABLE stops the server, so the client shows it as failed.
     // Problems in the project's AGENTS.md block are warnings instead (see `tool_groups`).
     let mut engine = Engine::open(project, storage)?;
+    engine.default_worktree = worktree.map(|p| p.to_path_buf());
     let mut surface = Surface::start(&engine.project_dir).unwrap_or_else(|line| {
         eprintln!("{line}");
         std::process::exit(2);
@@ -84,7 +85,7 @@ pub fn serve(project: &Path, storage: Option<&Path>) -> Result<(), String> {
                     ("version".into(), Value::String(env!("CARGO_PKG_VERSION").into())),
                 ])),
                 ("instructions".into(), Value::String({
-                    let base = "Storage is .chisel/store. Branch on status. Call analyze when status is no_data. Call diff_impact after edits. This process is stdio MCP (chisel serve-mcp).";
+                    let base = "Storage is .chisel/store. Branch on status. Call analyze when status is no_data. Call diff_impact after edits, before running tests: since=main covers committed work; in a git worktree pass worktree_root. This process is stdio MCP (chisel serve-mcp).";
                     let report = surface.report_lines();
                     if report.is_empty() { base.to_string() } else { format!("{base}\n{}", report.join("\n")) }
                 })),

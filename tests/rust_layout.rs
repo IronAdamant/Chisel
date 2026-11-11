@@ -238,7 +238,8 @@ fn ambiguous_rust_calls_link_only_where_the_call_points() {
         .filter_map(|e| e.get("code_id").and_then(|v| v.as_str()))
         .collect();
     targets.sort();
-    // A::new -> a.rs only (not b.rs); Vec::new -> nothing; .len() has five definitions and no
-    // receiver type -> dropped; yaw is imported from geom -> geom.rs, not other.rs.
-    assert_eq!(targets, vec!["src/a.rs:new:function", "src/geom.rs:yaw:function"]);
+    // A::new -> a.rs only (not b.rs); Vec::new -> nothing; `a.len()` has five definitions but
+    // `a` is bound by `let a = A::new()` -> a.rs; `v.len()` is Vec's -> nothing; yaw is imported
+    // from geom -> geom.rs, not other.rs.
+    assert_eq!(targets, vec!["src/a.rs:len:function", "src/a.rs:new:function", "src/geom.rs:yaw:function"]);
 }
