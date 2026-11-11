@@ -38,7 +38,7 @@ From Specula's M5 lanes, where Chisel was the weakest tool: `diff_impact` was mo
   - Replies add `worktree` and `overlay_files`.
   - A missing path, or a checkout of another repository (git common dir differs), is a one-line error.
   - The CLI and `serve-mcp` started inside a linked worktree, with no directory flags and no store of the worktree's own, use it automatically.
-  - Without `worktree_root`, replies are as before.
+  - Without `worktree_root`, replies are as before. With shards configured, `worktree_root` answers `unsupported`.
 
   On Specula the first call took 17 s (79 files differ from main) and later CLI calls 2 s.
 - Row `source: "sibling"`, ranked last together with `co_change`. When no test calls a changed function, Chisel lists the tests of other methods of the same type (Rust), at half weight. Before, it listed the tests of every function in the file at full weight.

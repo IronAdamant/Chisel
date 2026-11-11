@@ -217,6 +217,10 @@ fn a_worktree_overlays_the_main_snapshot() {
     assert_eq!(code, 1);
     assert!(out.contains("not a checkout"), "{out}");
 
+    // Shards keep their own snapshots: no overlay, a clear answer.
+    let sharded = Command::new(env!("CARGO_BIN_EXE_chisel")).args(["--json", "stats", "--worktree", &wt_arg, "--project-dir"]).arg(&dir).env("CHISEL_SHARDS", "src").output().unwrap();
+    assert!(String::from_utf8_lossy(&sharded.stdout).contains("unsupported"), "{}", String::from_utf8_lossy(&sharded.stdout));
+
     // An overlay whose worktree is gone is removed on the next overlay call.
     let overlays = dir.join(".chisel").join("overlays");
     assert_eq!(fs::read_dir(&overlays).unwrap().count(), 1);

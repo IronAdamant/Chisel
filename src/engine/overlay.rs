@@ -131,6 +131,12 @@ impl Engine {
         if wt == self.project_dir {
             return Ok(None);
         }
+        if !self.shards.is_empty() {
+            return Err(Value::object(vec![
+                ("status".into(), Value::String("unsupported".into())),
+                ("message".into(), Value::String("worktree_root does not work with shards (CHISEL_SHARDS or .chisel/shards.toml). Run chisel in the worktree with its own --storage-dir instead.".into())),
+            ]));
+        }
         if let Some(base_common) = git_common_dir(&self.project_dir) {
             if git_common_dir(&wt).as_ref() != Some(&base_common) {
                 return Err(error(format!("worktree_root '{}' is not a checkout of {project} (its git common dir differs). Pass a worktree made by `git worktree add` from this repository, or omit worktree_root.", display_path(&wt))));
