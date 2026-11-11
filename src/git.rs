@@ -4,6 +4,16 @@ use std::collections::BTreeMap;
 use std::process::{Command, Output};
 use std::sync::Arc;
 
+/// git with `GIT_INDEX_FILE` set: a worktree overlay reads a worktree through a private,
+/// refreshed copy of its index, so it never writes (or locks) the worktree's own index.
+pub fn index_file_runner(index: std::path::PathBuf) -> GitRunner {
+    Arc::new(move |repo, args| {
+        let mut cmd = Command::new("git");
+        cmd.args(args).current_dir(repo).env("GIT_INDEX_FILE", &index);
+        cmd.output()
+    })
+}
+
 /// `repo_dir` plus the argument list. Tests wrap this to count spawns and still call git.
 pub type GitRunner = Arc<dyn Fn(&str, &[&str]) -> Result<Output, std::io::Error> + Send + Sync>;
 

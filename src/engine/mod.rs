@@ -223,6 +223,13 @@ pub struct Engine {
     /// `update` also records new mtimes of files whose content did not change (overlays: a
     /// worktree's files all have their own mtimes).
     restamp_unchanged: bool,
+    /// For an overlay: the main checkout, whose files tell a line-ending-only difference apart.
+    overlay_base: Option<PathBuf>,
+    /// For an overlay's first refresh: files git reports as identical to main's indexed content,
+    /// stamped by stat instead of read (a fresh checkout's first read is slow).
+    known_same: std::collections::HashSet<String>,
+    /// Where a file's content is read from (an overlay reads unchanged files from main).
+    source_base: Option<Sources>,
     /// Overlay engines by canonical worktree path (`worktree_root`), kept while this one lives.
     overlays: HashMap<PathBuf, Box<Engine>>,
     /// The worktree read/query tools answer for when `worktree_root` is not passed (the process
@@ -280,6 +287,9 @@ impl Engine {
             diff_since: None,
             reply_meta: Vec::new(),
             restamp_unchanged: false,
+            overlay_base: None,
+            known_same: std::collections::HashSet::new(),
+            source_base: None,
             overlays: HashMap::new(),
             default_worktree: None,
             inline_jobs: false,
@@ -310,6 +320,46 @@ impl Engine {
         self.git.set_runner(runner);
     }
 
+}
+
+/// Where to read a project file. An overlay names main's checkout and the files there that hold
+/// the same content as the worktree's; every other file is read from the project itself.
+#[derive(Clone)]
+pub(crate) struct Sources {
+    root: PathBuf,
+    base: Option<(PathBuf, std::sync::Arc<std::collections::HashSet<String>>)>,
+}
+
+impl Sources {
+    pub(crate) fn new(root: &Path, base: Option<(PathBuf, std::sync::Arc<std::collections::HashSet<String>>)>) -> Self {
+        Sources { root: root.to_path_buf(), base }
+    }
+
+    pub(crate) fn path(&self, rel: &str) -> PathBuf {
+        match &self.base {
+            Some((dir, same)) if same.contains(rel) => dir.join(rel),
+            _ => self.root.join(rel),
+        }
+    }
+
+    /// The same, but `changed` (this refresh's changed files) are read from the project.
+    pub(crate) fn without(&self, changed: &[String]) -> Self {
+        let base = self.base.as_ref().map(|(dir, same)| {
+            let mut set = (**same).clone();
+            for c in changed {
+                set.remove(c);
+            }
+            (dir.clone(), std::sync::Arc::new(set))
+        });
+        Sources { root: self.root.clone(), base }
+    }
+}
+
+impl Engine {
+    /// Where to read `rel`'s content.
+    pub(crate) fn sources(&self) -> Sources {
+        self.source_base.clone().unwrap_or_else(|| Sources::new(&self.project_dir, None))
+    }
 }
 
 /// Filename patterns `looks_like_test` accepts. Rust `#[test]` functions are separate: they are units, not names.

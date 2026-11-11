@@ -40,7 +40,13 @@ From Specula's M5 lanes, where Chisel was the weakest tool: `diff_impact` was mo
   - The CLI and `serve-mcp` started inside a linked worktree, with no directory flags and no store of the worktree's own, use it automatically.
   - Without `worktree_root`, replies are as before. With shards configured, `worktree_root` answers `unsupported`.
 
-  On Specula the first call took 17 s (79 files differ from main) and later CLI calls 2 s.
+  On a fresh Specula worktree with a one-line edit, the first MCP call takes 1.2-1.7 s and later ones 0.26-0.78 s. The same query on main without an overlay takes 0.04-0.55 s.
+  - Files git reports as unchanged since main's analyzed commit, in both checkouts, are stamped by stat and never read. A fresh checkout's first read of every file cost 6 s here.
+  - Files the worktree holds with main's content are read from main's checkout.
+  - A line-ending-only difference from main's file is no change.
+  - The worktree's git commands use a private, refreshed copy of its index (`GIT_INDEX_FILE`), so they do not re-read racily clean files. Chisel never writes the worktree's own index.
+  - Overlay saves skip fsync: the overlay is a cache that can be rebuilt.
+- `update` runs the git history of changed files in parallel with the edge rebuild.
 - Row `source: "sibling"`, ranked last together with `co_change`. When no test calls a changed function, Chisel lists the tests of other methods of the same type (Rust), at half weight. Before, it listed the tests of every function in the file at full weight.
 
 ### Changed

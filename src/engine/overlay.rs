@@ -19,6 +19,8 @@ pub(crate) const OVERLAY_TOOLS: [&str; 15] = [
 ];
 
 const BASE_FILE: &str = "base.txt";
+const INDEX_FILE: &str = "git-index";
+const INDEX_STAMP: &str = "git-index.stamp";
 const WORKTREE_FILE: &str = "worktree.txt";
 
 /// The directory holding `.git` for `dir`, and that `.git` (a directory, or a file pointing at
@@ -67,6 +69,35 @@ pub fn linked_worktree(dir: &Path) -> Option<(PathBuf, PathBuf)> {
         return None;
     }
     Some((common.parent()?.to_path_buf(), root))
+}
+
+/// A private copy of the worktree's git index under the overlay, refreshed with
+/// `git update-index --refresh`. A fresh checkout's index entries are "racily clean", so every
+/// `git diff` there re-reads files (about 0.5 s on Specula); refreshing the worktree's own index
+/// would write it and could collide with the agent's own git commands, so a copy is refreshed
+/// instead, and copied again only when the worktree's index file changes. `None` when the
+/// worktree's index cannot be found (git then reads the worktree's own index).
+fn private_index(wt: &Path, dir: &Path) -> Option<PathBuf> {
+    let (root, dotgit) = find_dotgit(wt)?;
+    let wt = PathBuf::from(display_path(wt));
+    let source = if dotgit.is_dir() { dotgit.join("index") } else { linked_dirs(&root, &dotgit)?.0.join("index") };
+    // git cannot open a verbatim (`\?\`) path: hand it the plain form.
+    let dir = PathBuf::from(display_path(dir));
+    let copy = dir.join(INDEX_FILE);
+    let source_stamp = stamp(&source);
+    if source_stamp.is_empty() {
+        return None;
+    }
+    if copy.is_file() && fs::read_to_string(dir.join(INDEX_STAMP)).ok().as_deref() == Some(source_stamp.as_str()) {
+        return Some(copy);
+    }
+    let tmp = dir.join(format!("{INDEX_FILE}.tmp"));
+    fs::copy(&source, &tmp).ok()?;
+    // Exit code 1 only means some files differ from the index; the copy is refreshed either way.
+    let _ = std::process::Command::new("git").args(["update-index", "-q", "--refresh"]).current_dir(&wt).env("GIT_INDEX_FILE", &tmp).output();
+    fs::rename(&tmp, &copy).ok()?;
+    let _ = fs::write(dir.join(INDEX_STAMP), source_stamp);
+    Some(copy)
 }
 
 /// A path as an agent would type it (no `\\?\` prefix on Windows).
@@ -167,15 +198,15 @@ impl Engine {
                 fs::write(dir.join(WORKTREE_FILE), display_path(&wt)).map_err(|e| e.to_string())?;
                 let mut o = Box::new(Engine::open(&wt, Some(&dir))?);
                 if !fresh || name == "analyze" {
+                    // The refresh below saves it; a fresh copy always has files to restamp.
                     o.store.doc = self.store.doc.clone();
-                    o.store.save()?;
+                    o.store.reindex_memory();
                     let mut base = base_stamp.clone();
                     for row in self.store.rows("file_hashes") {
                         if let (Some(p), Some(h)) = (row.get("file_path").and_then(|v| v.as_str()), row.get("hash").and_then(|v| v.as_str())) {
-                            base.push('\n');
-                            base.push_str(p);
-                            base.push('\t');
-                            base.push_str(h);
+                            let size = row.get("size").and_then(|v| v.as_i64()).unwrap_or(-1);
+                            let ns = row.get("mtime_ns").and_then(|v| v.as_i64()).unwrap_or(0);
+                            base.push_str(&format!("\n{p}\t{h}\t{size}\t{ns}"));
                         }
                     }
                     fs::write(dir.join(BASE_FILE), base).map_err(|e| e.to_string())?;
@@ -184,11 +215,31 @@ impl Engine {
             }
         };
         overlay.restamp_unchanged = true;
+        overlay.overlay_base = Some(self.project_dir.clone());
         overlay.allow_repo_extractor = self.allow_repo_extractor;
         overlay.include_ignored = self.include_ignored;
         overlay.history_stream = self.history_stream;
-        overlay.store.reload()?;
-        let refreshed = overlay.update();
+        overlay.store.durable = false;
+        let index = private_index(&wt, &dir);
+        if let Some(index) = &index {
+            overlay.set_git_runner(git::index_file_runner(index.clone()));
+        }
+        if fresh {
+            overlay.store.reload()?;
+        }
+        // Files whose content is main's indexed content are read from main's checkout (already
+        // read and cached there); a fresh worktree's first read of every file is slow.
+        let same = if fresh { same_by_hash(&overlay, &dir, &self.project_dir) } else { self.same_in_git(&wt, index.as_deref()) };
+        if !fresh {
+            overlay.known_same = same.clone();
+        }
+        overlay.source_base = Some(Sources::new(&wt, Some((self.project_dir.clone(), std::sync::Arc::new(same)))));
+        let mut refreshed = overlay.update();
+        overlay.known_same.clear();
+        if refreshed.is_ok() && !overlay.store.snapshot_path().is_file() {
+            // Nothing differed and nothing needed a new stamp: publish the copy as it is.
+            refreshed = overlay.store.save().map_err(String::from).and(refreshed);
+        }
         let result = match refreshed {
             Ok(summary) if matches!(name, "analyze" | "update") => Ok(summary),
             Ok(_) => overlay.dispatch(name, &without_worktree(args)),
@@ -205,10 +256,72 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// Files whose worktree copy is, by git, the content main's snapshot indexed: tracked at the
+    /// commit main was analyzed at, changed in neither checkout since (`git diff`), and main's
+    /// file still has the stamp the snapshot recorded. Empty when anything cannot be read.
+    fn same_in_git(&self, wt: &Path, index: Option<&Path>) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        let Some(head) = crate::store::meta_get(&self.store.doc, "analyzed_head").filter(|h| !h.is_empty() && !h.starts_with('-')) else { return out };
+        let main_git = self.git.fork();
+        let mut wt_git = GitAnalyzer::new(wt.to_string_lossy().to_string());
+        if let Some(index) = index {
+            wt_git.set_runner(git::index_file_runner(index.to_path_buf()));
+        }
+        let names = |raw: Result<String, git::GitError>| -> Option<std::collections::HashSet<String>> {
+            raw.ok().map(|t| t.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+        };
+        let (tracked, main_changed, wt_changed) = std::thread::scope(|s| {
+            let tracked = s.spawn(|| main_git.run_args(&["ls-tree".into(), "-r".into(), "--name-only".into(), head.clone()]));
+            let main_changed = s.spawn(|| main_git.run_args(&["diff".into(), "--name-only".into(), "--relative".into(), "--no-renames".into(), head.clone()]));
+            let wt_changed = wt_git.run_args(&["diff".into(), "--name-only".into(), "--relative".into(), "--no-renames".into(), head.clone()]);
+            (tracked.join().ok().and_then(names), main_changed.join().ok().and_then(names), names(wt_changed))
+        });
+        let (Some(tracked), Some(main_changed), Some(wt_changed)) = (tracked, main_changed, wt_changed) else { return out };
+        for row in self.store.rows("file_hashes") {
+            let Some(path) = row.get("file_path").and_then(|v| v.as_str()) else { continue };
+            if !tracked.contains(path) || main_changed.contains(path) || wt_changed.contains(path) {
+                continue;
+            }
+            let Ok(meta) = fs::metadata(self.project_dir.join(path)) else { continue };
+            let size = row.get("size").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let mtime_ns = row.get("mtime_ns").and_then(|v| v.as_i64()).unwrap_or(0);
+            let disk_ns = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos() as i64).unwrap_or(-1);
+            if meta.len() as i64 == size && mtime_ns > 0 && disk_ns == mtime_ns {
+                out.insert(path.to_string());
+            }
+        }
+        out
+    }
+}
+
+/// Files the overlay holds with main's indexed hash whose main copy still has the stamp main's
+/// snapshot recorded: their main copy is the same content.
+fn same_by_hash(overlay: &Engine, dir: &Path, main: &Path) -> std::collections::HashSet<String> {
+    let text = fs::read_to_string(dir.join(BASE_FILE)).unwrap_or_default();
+    let mut out = std::collections::HashSet::new();
+    for line in text.lines().skip(1) {
+        let mut parts = line.split('\t');
+        let (Some(p), Some(h), Some(size), Some(ns)) = (parts.next(), parts.next(), parts.next(), parts.next()) else { continue };
+        if overlay.store.hash_for_file(p) != h {
+            continue;
+        }
+        let Ok(meta) = fs::metadata(main.join(p)) else { continue };
+        let disk_ns = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos() as i64).unwrap_or(-1);
+        if size.parse::<i64>().ok() == Some(meta.len() as i64) && ns.parse::<i64>().ok() == Some(disk_ns) && disk_ns > 0 {
+            out.insert(p.to_string());
+        }
+    }
+    out
+}
+
 /// Files whose content in the worktree differs from main's snapshot: changed, added, deleted.
 fn overlay_files(overlay: &Engine, dir: &Path) -> usize {
     let text = fs::read_to_string(dir.join(BASE_FILE)).unwrap_or_default();
-    let base: HashMap<&str, &str> = text.lines().skip(1).filter_map(|l| l.split_once('\t')).collect();
+    let base: HashMap<&str, &str> = text.lines().skip(1).filter_map(|l| {
+        let mut parts = l.split('\t');
+        Some((parts.next()?, parts.next()?))
+    }).collect();
     let mut seen = 0usize;
     let mut differ = 0usize;
     for row in overlay.store.rows("file_hashes") {

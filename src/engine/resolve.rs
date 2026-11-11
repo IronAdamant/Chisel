@@ -13,7 +13,6 @@ use crate::extract::calls::CallSite;
 use crate::extract::rust_items::{self, ImplBlock};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
 
 /// Weight factor of an edge matched by name only (the receiver type is unknown).
 pub(super) const NAME_ONLY: f64 = 0.5;
@@ -87,7 +86,7 @@ struct Owner {
 }
 
 pub(super) struct RustResolver {
-    project: PathBuf,
+    sources: super::Sources,
     blocks: HashMap<String, Vec<ImplBlock>>,
     declared: HashMap<String, BTreeSet<String>>,
     /// Struct name -> field -> type, read lazily from the files declaring the struct.
@@ -100,7 +99,7 @@ pub(super) struct RustResolver {
 }
 
 impl RustResolver {
-    pub(super) fn new(project: &Path, code_units: &[crate::json::Value], type_files: HashMap<String, BTreeSet<String>>) -> Self {
+    pub(super) fn new(sources: super::Sources, code_units: &[crate::json::Value], type_files: HashMap<String, BTreeSet<String>>) -> Self {
         let mut defs: HashMap<String, Vec<(usize, String)>> = HashMap::new();
         for u in code_units {
             let Some(id) = u.get("id").and_then(|v| v.as_str()) else { continue };
@@ -109,7 +108,7 @@ impl RustResolver {
             defs.entry(id.to_string()).or_default().push((line, kind));
         }
         RustResolver {
-            project: project.to_path_buf(),
+            sources,
             blocks: HashMap::new(),
             declared: HashMap::new(),
             fields: HashMap::new(),
@@ -121,7 +120,7 @@ impl RustResolver {
     }
 
     fn read(&self, file: &str) -> String {
-        fs::read_to_string(self.project.join(file)).unwrap_or_default()
+        fs::read_to_string(self.sources.path(file)).unwrap_or_default()
     }
 
     /// Impl and trait blocks of a file, read once.
@@ -383,6 +382,7 @@ mod tests {
     use super::*;
     use crate::extract::calls::{call_sites, use_paths};
     use crate::json::Value;
+    use std::path::PathBuf;
 
     fn unit(id: &str, file: &str, kind: &str, line: i64) -> Value {
         let name = id.split(':').nth(1).unwrap_or("");
@@ -427,7 +427,7 @@ mod tests {
         ];
         let id_file: HashMap<&str, &str> = units.iter().map(|u| (u.get("id").unwrap().as_str().unwrap(), u.get("file_path").unwrap().as_str().unwrap())).collect();
         let type_files = super::super::analyze::type_files(&units);
-        let mut r = RustResolver::new(&dir, &units, type_files);
+        let mut r = RustResolver::new(super::super::Sources::new(&dir, None), &units, type_files);
         let all = |name: &str| -> Vec<String> { units.iter().filter(|u| u.get("name").and_then(|v| v.as_str()) == Some(name)).map(|u| u.get("id").unwrap().as_str().unwrap().to_string()).collect() };
         let test = "use crate::atlas::GlyphAtlas;\nfn t() {\n    let mut a = GlyphAtlas::new();\n    a.glyph();\n    let cfg = Config { ..Default::default() };\n    a.clear();\n    let v: Vec<u8> = Vec::new();\n    v.len();\n}\n";
         let sites = call_sites(test);

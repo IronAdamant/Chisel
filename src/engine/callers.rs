@@ -132,7 +132,8 @@ impl Engine {
             ids.dedup();
         }
         let types = type_files(code_units);
-        let mut resolver = RustResolver::new(&self.project_dir, code_units, types.clone());
+        let sources = self.sources();
+        let mut resolver = RustResolver::new(sources.clone(), code_units, types.clone());
         let mut crates = crate::cargo::Crates::new(&self.project_dir);
         let mut texts: HashMap<&str, String> = HashMap::new();
         let mut uses: HashMap<String, HashMap<String, Vec<Vec<String>>>> = HashMap::new();
@@ -140,7 +141,6 @@ impl Engine {
         let mut declared: HashMap<String, BTreeSet<String>> = HashMap::new();
         let mut file_sites: HashMap<&str, HashMap<String, CallSite>> = HashMap::new();
         let mut verdicts: HashMap<String, bool> = HashMap::new();
-        let project_dir = self.project_dir.clone();
         let mut out: Vec<Caller> = Vec::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
         // (file, name, ids of that function, the changed function it leads to, the owner types
@@ -170,7 +170,7 @@ impl Engine {
                 let rust = lang == Some("rust");
                 let candidates: Vec<&str> = if narrowing {
                     let own = crates.crate_of(file);
-                    let text = texts.entry(file_key(&funcs, file)).or_insert_with(|| fs::read_to_string(project_dir.join(file.as_str())).unwrap_or_default());
+                    let text = texts.entry(file_key(&funcs, file)).or_insert_with(|| fs::read_to_string(sources.path(file)).unwrap_or_default());
                     // A private Rust function is called only from its module; pub(crate) only from its crate.
                     let reach = if rust { ids.iter().filter_map(|i| starts.get(i.as_str())).map(|l| rust_reach(text, *l)).max_by_key(|r| *r as u8).unwrap_or(Reach::Anywhere) } else { Reach::Anywhere };
                     let mut c: Vec<&str> = funcs
@@ -200,14 +200,14 @@ impl Engine {
                         return *hit;
                     }
                     let file_uses = uses.entry(cand.to_string()).or_insert_with(|| use_paths(text));
-                    let mut declares = |f: &str, ty: &str| declared.entry(f.to_string()).or_insert_with(|| declared_types(&fs::read_to_string(project_dir.join(f)).unwrap_or_default())).contains(ty);
+                    let mut declares = |f: &str, ty: &str| declared.entry(f.to_string()).or_insert_with(|| declared_types(&fs::read_to_string(sources.path(f)).unwrap_or_default())).contains(ty);
                     let kept = narrow_by_call_site(cand, name, matched.clone(), Some(site), file_uses, &id_file, &types, &mut declares);
                     let hit = kept.iter().any(|k| ids.contains(k));
                     verdicts.insert(key, hit);
                     hit
                 };
                 'files: for cand in candidates {
-                    let text = texts.entry(cand).or_insert_with(|| fs::read_to_string(project_dir.join(cand)).unwrap_or_default());
+                    let text = texts.entry(cand).or_insert_with(|| fs::read_to_string(sources.path(cand)).unwrap_or_default());
                     if !text.contains(name.as_str()) {
                         continue;
                     }

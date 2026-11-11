@@ -182,11 +182,26 @@ fn a_worktree_overlays_the_main_snapshot() {
     let ids = test_ids(&doc);
     assert!(ids.contains(&"tests/t.rs:yaw_doubles".to_string()), "committed edit in the worktree: {out}");
     assert!(ids.contains(&"tests/fresh_test.rs:fresh_is_seven".to_string()), "new test, indexed in the overlay: {out}");
+    // atlas.rs is untouched: GlyphKey and GlyphAtlas tests are not this change's.
+    // (A misread worktree index makes every file look changed and every test a direct hit.)
+    for row in items(&doc) {
+        let id = row.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
+        let source = row.get("source").and_then(|v| v.as_str()).unwrap_or("");
+        if matches!(id, "tests/t.rs:keys_are_small" | "tests/t.rs:atlas_starts_empty") {
+            assert!(!matches!(source, "direct" | "call_graph"), "{id} is not reached by this change: {out}");
+        }
+    }
     assert!(doc.get("worktree").and_then(|v| v.as_str()).is_some_and(|w| w.ends_with("tree")), "{out}");
     // geom.rs, lib.rs, fresh.rs, fresh_test.rs and old.rs differ from main's snapshot.
     assert_eq!(doc.get("overlay_files").and_then(|v| v.as_i64()), Some(5), "{out}");
     assert!(items(&doc).iter().all(|r| !r.get("file_path").and_then(|v| v.as_str()).unwrap_or("").contains(':')), "paths are relative: {out}");
     assert_eq!(fs::read(&base_store).unwrap(), before, "main's snapshot is never written");
+
+    // A fresh checkout can hold main's file with other line endings: not a change.
+    let crlf = fs::read_to_string(wt.join("src/atlas.rs")).unwrap().replace('\n', "\r\n");
+    fs::write(wt.join("src/atlas.rs"), crlf).unwrap();
+    let (_, out, _) = run(&dir, &["--json", "diff-impact", "--since", "main", "--worktree", &wt_arg], false);
+    assert_eq!(json_of(&out).get("overlay_files").and_then(|v| v.as_i64()), Some(5), "a line-ending-only copy of main's file is no overlay file: {out}");
 
     // Other read tools answer for the worktree too.
     let (_, out, _) = run(&dir, &["--json", "suggest-tests", "src/fresh.rs", "--worktree", &wt_arg], false);

@@ -370,8 +370,11 @@ impl Engine {
         // ones, and diff against the likely ref (HEAD, or the requested one) before the branch is
         // known. On main/master that finishes diff_impact's git work in one round.
         let likely_ref = if self.diff_since.is_some() { None } else { Some(self.diff_ref_override.clone().unwrap_or_else(|| "HEAD".to_string())) };
-        let (branch, untracked, likely) = std::thread::scope(|s| {
+        let trunk_base = self.diff_since.is_none() && self.diff_ref_override.is_none();
+        let (branch, untracked, likely, trunk) = std::thread::scope(|s| {
             let untracked = s.spawn(|| git.untracked());
+            // On a branch the base is the merge-base with main (or master): ask now, in parallel.
+            let trunk = trunk_base.then(|| s.spawn(|| ["main", "master"].iter().find_map(|t| git.merge_base(t).ok().filter(|b| !b.is_empty()).map(|b| (t.to_string(), b)))));
             let likely = likely_ref.as_deref().map(|r| {
                 let files = s.spawn(|| git.changed_files(r));
                 let functions = s.spawn(|| git.changed_sections(r));
@@ -379,7 +382,8 @@ impl Engine {
             });
             let branch = git.current_branch();
             let likely = likely.map(|(files, functions)| (files.join().unwrap_or_else(|_| Ok(Vec::new())), functions.join().unwrap_or_else(|_| Ok(BTreeMap::new()))));
-            (branch, untracked.join().unwrap_or_else(|_| Ok(Vec::new())), likely)
+            let trunk = trunk.and_then(|h| h.join().ok().flatten());
+            (branch, untracked.join().unwrap_or_else(|_| Ok(Vec::new())), likely, trunk)
         });
         let branch = match branch {
             Ok(b) => b,
@@ -388,7 +392,12 @@ impl Engine {
         if !self.has_data() {
             return Ok(Self::no_data());
         }
-        let (diff_ref, base) = match self.diff_base(&git, &branch) {
+        let picked = match (&trunk, branch.as_str()) {
+            (_, "main" | "master") => self.diff_base(&git, &branch),
+            (Some((_, b)), _) => Ok((b.clone(), Some(b.clone()))),
+            (None, _) => self.diff_base(&git, &branch),
+        };
+        let (diff_ref, base) = match picked {
             Ok(v) => v,
             Err(err) => return Ok(err),
         };
