@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn local_and_parameter_types() {
-        let text = "fn helper(atlas: &mut GlyphAtlas, n: usize, cfg: specula::Cfg<u8>) {}\nfn t() {\n    let mut a = specula_text::GlyphAtlas::new(AtlasConfig::default());\n    let k = GlyphKey { size: 1 };\n    let b: Box<Board> = make();\n    let v = Vec::new();\n    let o = Some(Foo::new());\n    let x = Foo::new();\n    let x = Bar::new();\n}\n";
+        let text = "fn helper(atlas: &mut GlyphAtlas, n: usize, cfg: kit::Cfg<u8>) {}\nfn t() {\n    let mut a = glyph_text::GlyphAtlas::new(AtlasConfig::default());\n    let k = GlyphKey { size: 1 };\n    let b: Box<Board> = make();\n    let v = Vec::new();\n    let o = Some(Foo::new());\n    let x = Foo::new();\n    let x = Bar::new();\n}\n";
         let t = local_types(text);
         assert_eq!(t.get("atlas").map(String::as_str), Some("GlyphAtlas"));
         assert_eq!(t.get("cfg").map(String::as_str), Some("Cfg"));

@@ -73,7 +73,7 @@ pub fn linked_worktree(dir: &Path) -> Option<(PathBuf, PathBuf)> {
 
 /// A private copy of the worktree's git index under the overlay, refreshed with
 /// `git update-index --refresh`. A fresh checkout's index entries are "racily clean", so every
-/// `git diff` there re-reads files (about 0.5 s on Specula); refreshing the worktree's own index
+/// `git diff` there re-reads files (about 0.5 s on a large Rust workspace); refreshing the worktree's own index
 /// would write it and could collide with the agent's own git commands, so a copy is refreshed
 /// instead, and copied again only when the worktree's index file changes. `None` when the
 /// worktree's index cannot be found (git then reads the worktree's own index).

@@ -570,7 +570,7 @@ mod classify_tests {
     #[test]
     fn crate_tests_folders_are_tests_and_src_test_modules_are_code() {
         assert!(looks_like_test("tests/it.rs"));
-        assert!(looks_like_test("crates/specula/tests/disk_guard.rs"));
+        assert!(looks_like_test("crates/app/tests/disk_guard.rs"));
         assert!(looks_like_test("crates/a/tests/common/mod.rs"));
         assert!(!looks_like_test("crates/a/src/tests.rs"));
         assert!(!looks_like_test("crates/a/src/trace/tests/mod.rs"));

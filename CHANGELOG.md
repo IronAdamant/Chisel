@@ -7,14 +7,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.24.0] — 2026-11-15
+### Changed
 
-From a week of Chisel 0.23.0 on Specula (a 600-file Rust workspace), measured on six real diffs: useful for a one-function change, useless on a lane-sized diff (266 to 565 tests, all scored 1.0), and it never named a source-scanning guard test.
+- The release workflow uploads `SHA256SUMS` for the four binaries. Check it before use.
+
+## [0.24.0]: 2026-11-15
+
+From a week of Chisel 0.23.0 on a large Rust workspace (about 600 files), measured on six real diffs: useful for a one-function change, useless on a lane-sized diff (266 to 565 tests, all scored 1.0), and it never named a source-scanning guard test.
 
 ### Fixed
 
-- **Wide diffs no longer saturate at 1.0.** A test's score was its single best edge, and every inline `mod tests` edge is 1.0. Now a test scores by the changed units it reaches, each weighted by how rare it is among the tests (`ln(1 + tests / tests reaching it)`), scaled so the best row keeps the best edge weight. A one-function diff keeps its scores and order. Rows carry `units` when a test reaches two or more. On Specula's clone, `ref=HEAD~6` (39 Rust files): 236 of 778 rows at 1.0 before, 3 of 889 ranked rows after, with 33 distinct scores instead of 12.
-- **Past `limit`, the rest is summarised, not paged.** The reply stops before a tie that crosses the limit (`tied`) and lists `groups`: per Cargo package (or test folder) `{group, tests, top, run}`, best first, at most 20 (`groups_total` when more). The default `limit` is 50 rows (was 100): Specula's `HEAD~6` default reply is 27,536 bytes, against 33,082 in 0.23.0.
+- **Wide diffs no longer saturate at 1.0.** A test's score was its single best edge, and every inline `mod tests` edge is 1.0. Now a test scores by the changed units it reaches, each weighted by how rare it is among the tests (`ln(1 + tests / tests reaching it)`), scaled so the best row keeps the best edge weight. A one-function diff keeps its scores and order. Rows carry `units` when a test reaches two or more. On a clone of that workspace, `ref=HEAD~6` (39 Rust files): 236 of 778 rows at 1.0 before, 3 of 889 ranked rows after, with 33 distinct scores instead of 12.
+- **Past `limit`, the rest is summarised, not paged.** The reply stops before a tie that crosses the limit (`tied`) and lists `groups`: per Cargo package (or test folder) `{group, tests, top, run}`, best first, at most 20 (`groups_total` when more). The default `limit` is 50 rows (was 100): that workspace's `HEAD~6` default reply is 27,536 bytes, against 33,082 in 0.23.0.
 - **A hunk inside a test names that test first, and only that test** (`source: changed_test`). Before, a test's hunk named no function, and the whole file came back, shared helpers and all. A hunk in a helper names the tests that call it; in a test file, the tests of that file whose lines call it. A struct field change names the struct's own methods' tests (sibling tier). git's hunk header is used only for a hunk in no unit. Demo: one changed assertion in `src/beta.rs` returned all five tests at 1.0; now it returns that one test.
 - **`<crate>/tests/` in a workspace counts as tests** (`crates/a/tests/it.rs`), not only the root's `tests/`. `src/tests/` stays code. A test file's own history no longer adds co-change rows.
 - **Names a test binds itself are not project functions.** `let page = || ..; page()`, `let err = |..|`, a parameter `write: F`: none of them call a same-named function of the crate.
@@ -25,9 +29,9 @@ From a week of Chisel 0.23.0 on Specula (a 600-file Rust workspace), measured on
 ### Added
 
 - **Always-run rules** in the project's `AGENTS.md` `agent-tools` block: `chisel: always-run <paths> -> <tests>`. When a changed file (code or not) matches, `guards` lists those tests per test file with `source: always_run` and the rule. Other tools ignore the line; a line without `->` is a warning.
-- **Source-reading guards are found at analyze.** A test that builds a path from `env!("CARGO_MANIFEST_DIR")` (`.join("src")`, a variable or helper joined later, `concat!`) or reads one with `include_str!`, and reads files, records the paths as `reads`. A detected scope is dropped when it is the project root or a folder holding two or more Cargo packages (`crates/**`); a crate's own folders (`crates/a/src/**`) are kept. A test that reads wider needs a rule. A change under a kept scope lists the test in `guards` with `source: reads_source`. On Specula this finds `disk_guard`, `engine_thread_guard`, `inputguard_guard`, `wholesale_guard`, `write_policy_guard`, `authority_guard`, `reply_wait_guard` and `script_settings_guard`; `private_paths`, `print_guard` and `clock_guard` read the whole repository or every crate and need a rule.
-- **`guards`**: guard tests are folded per test file, `{file, tests, source, rule | reads, changed}` (`changed` when the diff has more than one file), rules first, at most 10 (`guards_total` counts the rest). `items` stays the ranked list. The one-function Specula diff (`toolkits::tags`) answers 1,723 bytes: one direct row, 7 guard files, 2 commands.
-- **`run`**: narrow ready-to-run commands. Per Cargo package, the targets the rows live in and their names: `cargo test -p specula --lib -- tags_follow_the_authority_table`. Guard files whose tests are all named: `cargo test -p specula --test disk_guard --test wholesale_guard`. pytest node ids. Past 30 names a command keeps its targets and drops the names, and `run_note` says so. `next_steps` points at them.
+- **Source-reading guards are found at analyze.** A test that builds a path from `env!("CARGO_MANIFEST_DIR")` (`.join("src")`, a variable or helper joined later, `concat!`) or reads one with `include_str!`, and reads files, records the paths as `reads`. A detected scope is dropped when it is the project root or a folder holding two or more Cargo packages (`crates/**`); a crate's own folders (`crates/a/src/**`) are kept. A test that reads wider needs a rule. A change under a kept scope lists the test in `guards` with `source: reads_source`. On that workspace this finds `disk_guard`, `engine_thread_guard`, `inputguard_guard`, `wholesale_guard`, `write_policy_guard`, `authority_guard`, `reply_wait_guard` and `script_settings_guard`; `private_paths`, `print_guard` and `clock_guard` read the whole repository or every crate and need a rule.
+- **`guards`**: guard tests are folded per test file, `{file, tests, source, rule | reads, changed}` (`changed` when the diff has more than one file), rules first, at most 10 (`guards_total` counts the rest). `items` stays the ranked list. The one-function diff on that workspace (`toolkits::tags`) answers 1,723 bytes: one direct row, 7 guard files, 2 commands.
+- **`run`**: narrow ready-to-run commands. Per Cargo package, the targets the rows live in and their names: `cargo test -p app --lib -- tags_follow_the_authority_table`. Guard files whose tests are all named: `cargo test -p app --test disk_guard --test wholesale_guard`. pytest node ids. Past 30 names a command keeps its targets and drops the names, and `run_note` says so. `next_steps` points at them.
 - **`record_result` `message` and `platform`** (CLI `--message`, `--platform`). A failure keeps its first 300 characters; the platform defaults to this OS. A pass records the commit in `test_passes`, as captured runs did. A failure after passes answers `first_failure_after: N` (batch replies: `first_failures`; captured issues: `first_failure_after` in `issue`).
 - **`stats` `not_passed_since: "<ref>"` and `not_run_on: "<os>"`** (CLI `--not-passed-since`, `--not-run-on`): tests with no recorded pass on a commit containing that ref (those that passed before it first), and tests with no result on that OS. Counts are whole; ids are capped by `limit` (default 50).
 
@@ -35,16 +39,16 @@ From a week of Chisel 0.23.0 on Specula (a 600-file Rust workspace), measured on
 
 - `diff_impact` replies `{"items": [...], "run": [...]}` whenever a listed row has a runner command; it was a bare list unless `since`, `base` or a cap applied. Clients that read `items` already handle it.
 - `diff_impact` lists 50 rows by default (was 100); `groups` summarise the rest. Guard tests and always-run rules are in `guards`, not in `items`.
-- The snapshot is rebuilt on the first `analyze` after upgrading (the analyzer version is part of the check). On Specula's clone: 30,911 edges instead of 36,725.
+- The snapshot is rebuilt on the first `analyze` after upgrading (the analyzer version is part of the check). On a clone of that workspace: 30,911 edges instead of 36,725.
 - `tools/list` is about 0.6 KB larger (the new arguments).
 
-## [0.23.0] — 2026-11-11
+## [0.23.0]: 2026-11-11
 
-From Specula's M5 lanes, where Chisel was the weakest tool: `diff_impact` was mostly name-matched noise, refused with "run chisel update" in worktrees, and scored only uncommitted work.
+From M5 lanes on a large Rust workspace, where Chisel was the weakest tool: `diff_impact` was mostly name-matched noise, refused with "run chisel update" in worktrees, and scored only uncommitted work.
 
 ### Fixed
 
-- **Rust calls resolve by type and path, not by name.** `Default::default()` linked every test to every `impl Default` (22,957 of Specula's 66,265 edges); `new`, `name`, `grow` and `clear` matched across unrelated types. Now:
+- **Rust calls resolve by type and path, not by name.** `Default::default()` linked every test to every `impl Default` (22,957 of that workspace's 66,265 edges); `new`, `name`, `grow` and `clear` matched across unrelated types. Now:
   - `Type::f` and `Self::f` reach only methods that type owns, read from its `impl` and `trait` blocks.
   - `x.f()` resolves through `self`, `self.field` (the field's declared type), and locals or parameters whose type is written down.
   - A std trait or type (`Default::default()`, `Vec::new()`) and a std method on an unknown receiver (`x.clear()`) link to nothing.
@@ -53,7 +57,7 @@ From Specula's M5 lanes, where Chisel was the weakest tool: `diff_impact` was mo
 
   Edges carry the resolved `owner`, so same-named methods of one file (`GlyphKey::new`, `GlyphAtlas::new`) are told apart. Reasons name the type: `direct edge to GlyphAtlas::new`, `calls Ui::new, which reaches the changed GlyphAtlas::new`.
 
-  The caller walk resolves the same way. On Specula, edges fell from 66,265 to 31,859, and the store from 11.8 to 11.3 MB. `analyze` CPU time is unchanged within noise (median 10.4 s vs 10.7 s over 7 runs).
+  The caller walk resolves the same way. On that workspace, edges fell from 66,265 to 31,859, and the store from 11.8 to 11.3 MB. `analyze` CPU time is unchanged within noise (median 10.4 s vs 10.7 s over 7 runs).
 - **`diff_impact` on a branch or a detached worktree diffs from the merge-base with main**, not from main's tip. Main's newer commits counted as changes, and files the branch lacks were "missing from the analysis database" forever, even after `update` and `analyze`. A file deleted since the base is no longer reported missing, and diffs use `--relative`.
 - **`analyze` after upgrading Chisel rebuilds the snapshot.** The unchanged-tree shortcut returned the old version's summary and kept its edges; `analyzer_version` is now part of the check.
 - **CLI `analyze --force` on more than 300 files runs inline.** It used to queue a job, then the process exited and took the job with it, so the job stayed `queued`. CLI `start-job` now waits for its job and prints the final status.
@@ -71,7 +75,7 @@ From Specula's M5 lanes, where Chisel was the weakest tool: `diff_impact` was mo
   - The CLI and `serve-mcp` started inside a linked worktree, with no directory flags and no store of the worktree's own, use it automatically.
   - Without `worktree_root`, replies are as before. With shards configured, `worktree_root` answers `unsupported`.
 
-  On a fresh Specula worktree with a one-line edit, the first MCP call takes 1.2-1.7 s and later ones 0.26-0.78 s. The same query on main without an overlay takes 0.04-0.55 s.
+  On a fresh worktree of that workspace with a one-line edit, the first MCP call takes 1.2-1.7 s and later ones 0.26-0.78 s. The same query on main without an overlay takes 0.04-0.55 s.
   - Files git reports as unchanged since main's analyzed commit, in both checkouts, are stamped by stat and never read. A fresh checkout's first read of every file cost 6 s here.
   - Files the worktree holds with main's content are read from main's checkout.
   - A line-ending-only difference from main's file is no change.
@@ -89,32 +93,32 @@ From Specula's M5 lanes, where Chisel was the weakest tool: `diff_impact` was mo
 - CI and release run macOS jobs on `macos-latest`: GitHub no longer runs the `macos-14` image.
 - `tools/list` is 14.8 KB with every group on, up from 13.0 KB, because of `worktree_root` and `since`. The golden default output is this release's.
 
-## [0.22.0] — 2026-11-05
+## [0.22.0]: 2026-11-05
 
-From the Specula re-check: suspects from crates the failing test cannot reach, and `diff_impact` missing tests that reach a changed function through a caller.
+From a re-check on a large Rust workspace: suspects from crates the failing test cannot reach, and `diff_impact` missing tests that reach a changed function through a caller.
 
 ### Fixed
 
-- **A Rust test links only to code it can reach.** In a Cargo workspace a test's edges, heuristic edges and cross-shard edges now go only to its own crate, its `[dependencies]` (transitively) and its `[dev-dependencies]`, read from the `Cargo.toml` files (`path` and `workspace = true` deps; `[build-dependencies]` excluded). Issue suspects apply the same rule, so snapshots written by older versions benefit too. Specula: 15,491 of 73,273 edges (21%) pointed into crates the test cannot reach; now none, and 54,991 edges in all.
-- **Suspects from unreachable crates (Specula I1/I2).** `specula-lux/src/bvh.rs:new` came from `Vec3::new`: the extractor skipped `pub struct Vec3` (it read `struct` only at the start of a line), so the type fallback treated `impl MulEach for Vec3` in `bvh.rs` as a declaration and kept that file's `new`. `specula/src/streaming.rs:front` came from the assertion message `"front (+Z) away from the wall"`, read as a call, and its `new` from `Cell::new` with `use std::cell::Cell`, matched to a `struct Cell` in `streaming.rs`. It scored 1.0 because unchanged suspects score by summed edge weight (two edges, 1.2), file churn (2.9, capped at 2) and recency (edited that day). Now: the crate filter; `call_sites` skips strings, raw strings, char literals and comments; a `Type::` or `module::` qualifier imported from `std`, `core` or `alloc` matches no workspace file; and Rust `pub`/`pub(crate)` structs, enums and traits are extracted, with the kind taken from the keyword (`public enum` in Java is now `enum`, not `class`) and a body-less `struct X;` ending on its own line.
+- **A Rust test links only to code it can reach.** In a Cargo workspace a test's edges, heuristic edges and cross-shard edges now go only to its own crate, its `[dependencies]` (transitively) and its `[dev-dependencies]`, read from the `Cargo.toml` files (`path` and `workspace = true` deps; `[build-dependencies]` excluded). Issue suspects apply the same rule, so snapshots written by older versions benefit too. On that workspace: 15,491 of 73,273 edges (21%) pointed into crates the test cannot reach; now none, and 54,991 edges in all.
+- **Suspects from unreachable crates (I1/I2).** `crates/lux/src/bvh.rs:new` came from `Vec3::new`: the extractor skipped `pub struct Vec3` (it read `struct` only at the start of a line), so the type fallback treated `impl MulEach for Vec3` in `bvh.rs` as a declaration and kept that file's `new`. `crates/app/src/streaming.rs:front` came from the assertion message `"front (+Z) away from the wall"`, read as a call, and its `new` from `Cell::new` with `use std::cell::Cell`, matched to a `struct Cell` in `streaming.rs`. It scored 1.0 because unchanged suspects score by summed edge weight (two edges, 1.2), file churn (2.9, capped at 2) and recency (edited that day). Now: the crate filter; `call_sites` skips strings, raw strings, char literals and comments; a `Type::` or `module::` qualifier imported from `std`, `core` or `alloc` matches no workspace file; and Rust `pub`/`pub(crate)` structs, enums and traits are extracted, with the kind taken from the keyword (`public enum` in Java is now `enum`, not `class`) and a body-less `struct X;` ending on its own line.
 
 ### Added
 
 - **`diff_impact` and `impact` follow callers (`depth`, default 2).** Test edges link a test to what it calls itself, and when a changed function had a direct test, its callers' tests were dropped. Depth 2 adds tests of the changed functions' callers, depth 3 their callers' callers; `depth: 1` restores direct hits only. Callers are read from the source at query time through the same call-site narrowing as edges, limited by Rust visibility (private: its module; `pub(crate)`: its crate; trait methods: anywhere) and the crate graph. A function with more than 40 callers is not walked past. Rows have `source: "call_graph"`, a reason such as `calls aligned, which reaches the changed yaw_toward (1 call away)`, half the edge weight per hop, and come after direct hits. CLI: `--depth N`.
-  Measured on a Specula copy with 40 panic mutants in four crates (a mutant panics on entry, so the tests that fail are the ones that run it), counting reported tests in the mutated crate: depth 1 found 312 of 475 failing tests at 42% precision, depth 2 353 (+41 true, +14 false), depth 3 363 (+51, +19). 0.21.0 found 354 at 38% precision. A warm MCP `diff_impact` call takes 85-96 ms at depth 1 and 107-128 ms at depth 2.
+  Measured on a copy of that workspace with 40 panic mutants in four crates (a mutant panics on entry, so the tests that fail are the ones that run it), counting reported tests in the mutated crate: depth 1 found 312 of 475 failing tests at 42% precision, depth 2 353 (+41 true, +14 false), depth 3 363 (+51, +19). 0.21.0 found 354 at 38% precision. A warm MCP `diff_impact` call takes 85-96 ms at depth 1 and 107-128 ms at depth 2.
 - `diff_impact` names changed functions by the snapshot unit each hunk falls in, as issue suspects do, instead of git's hunk header. Inside an impl block the header is `impl X {`, which matched nothing and silently widened the answer to every test of the file.
 
-## [0.21.0] — 2026-11-05
+## [0.21.0]: 2026-11-05
 
-Fixes from a live test on Specula (587 code files, 2,384 tests, about 317k lines).
+Fixes from a live test on a large Rust workspace (587 code files, 2,384 tests, about 317k lines).
 
 ### Fixed
 
-- **The snapshot no longer outgrows what Chisel can read (B1).** On Specula `analyze` wrote 98.9 MB with 461,698 test edges, the JSON reader refused anything over 32 MiB, and every later process failed, including `serve-mcp` at startup. Three changes:
+- **The snapshot no longer outgrows what Chisel can read (B1).** On that workspace `analyze` wrote 98.9 MB with 461,698 test edges, the JSON reader refused anything over 32 MiB, and every later process failed, including `serve-mcp` at startup. Three changes:
   - Rust tests take their calls from their own body plus the same-file helpers they call, not from every test in the file.
   - A called name defined in several files (`new`, `parse`, `len`) is narrowed by how it is called: `Type::f` keeps files declaring `Type`, `module::f` files named after the module, a free call its own file, crate or `use` path; an ambiguous `.method()` with more than three definitions is dropped. Applies to Rust, C and C++.
   - `test_edges` and `blame` are stored as compact tables (column names, one string list, rows of indexes) and expanded on load, so readers are unchanged.
-  On Specula: 461,698 -> 73,273 edges, 98.9 MB -> 10.3 MB, `analyze` about the same (7.0-7.3 s), and a new MCP server starts in 156 ms instead of failing. The reader and the writer now share one 1 GiB limit, and the writer refuses past it with an actionable message.
+  On that workspace: 461,698 -> 73,273 edges, 98.9 MB -> 10.3 MB, `analyze` about the same (7.0-7.3 s), and a new MCP server starts in 156 ms instead of failing. The reader and the writer now share one 1 GiB limit, and the writer refuses past it with an actionable message.
 - **A broken snapshot is no longer silent (B2).** `capture`, `capture --hook` and `issues --brief` print one line, `chisel: snapshot unreadable (<reason>); run chisel analyze to rebuild it`, and still exit 0.
 - **Suspects name the function that changed (B3).** Hunks are mapped to the innermost code unit whose lines cover them, not to git's hunk header (the line before the hunk, `impl ...` inside an impl block). When the changed function is not one the test calls, the reason says so instead of labelling a called, unchanged function with the change.
 - **Reverting an uncommitted break is recorded as a revert (B4).** A new issue records the uncommitted diff at failure; when the test passes with no change against the failing commit, the issue closes as `reverted uncommitted change` with those files, not `none (...flaky?)`.
@@ -123,7 +127,7 @@ Fixes from a live test on Specula (587 code files, 2,384 tests, about 317k lines
 
 - A save no longer re-parses the snapshot to check its generation when the file is the one this process loaded (same mtime and size).
 
-## [0.20.0] — 2026-11-05
+## [0.20.0]: 2026-11-05
 
 Automatic issue logging and traceability. Test runs the agent already makes become issues linked to the code and history behind them, with no model tokens spent on capture.
 
@@ -140,7 +144,7 @@ Automatic issue logging and traceability. Test runs the agent already makes beco
 
 - `tools/list` with every group on is 12.8 KB (three new tools); the golden default-output test now uses this release's output.
 
-## [0.19.0] — 2026-11-05
+## [0.19.0]: 2026-11-05
 
 Tool groups, chosen by agents. An `agent-tools` block in a project's `AGENTS.md` (or `CHISEL_TOOLS` / `CHISEL_DISABLE`) switches off the parts of Chisel an agent does not use, so their schemas stop costing context. The rules follow the suite-wide convention. With no block and no env var the MCP output is byte-identical to 0.18.0, except that `initialize` now always advertises `capabilities.tools.listChanged: true`.
 
@@ -154,7 +158,7 @@ Tool groups, chosen by agents. An `agent-tools` block in a project's `AGENTS.md`
 
 `tools/list` is 11,596 bytes with every group on, 9,312 with `locks` off, 9,721 with `history` off, 7,437 with both off, and 3,347 with only `core`. The CLI and the HTTP API are unchanged.
 
-## [0.18.0] — 2026-11-05
+## [0.18.0]: 2026-11-05
 
 Agent-facing speed and output size. `analyze` reads git history in one batched stream instead of one git process per function and per file, `tools/list` and risk rows are about half the size, and lock and tool errors say what to do next. The crate still links only the standard library.
 
@@ -169,7 +173,7 @@ Agent-facing speed and output size. `analyze` reads git history in one batched s
 
 ### Changed
 
-- `analyze` reads function churn and blame from one batched `git log -p` stream and replays git's `-L` and blame rules in-process (`src/history.rs`), instead of one `git log -L` per function and one `git blame` per file. On a 144-file Trammel clone `analyze` went from 10-19 s to 0.5-1.1 s; on Specula (587 code files, 791 commits) from 160-243 s to 9-17 s. Above 2000 code files, where there is no function churn, blame stays one `git blame` per file as before. Results matched real git for 1952 functions and 306 files across four repositories; files the stream cannot replay exactly still spawn git. `update` uses the same path for the files in scope and lists files and new commits together.
+- `analyze` reads function churn and blame from one batched `git log -p` stream and replays git's `-L` and blame rules in-process (`src/history.rs`), instead of one `git log -L` per function and one `git blame` per file. On a 144-file Trammel clone `analyze` went from 10-19 s to 0.5-1.1 s; on a large Rust workspace (587 code files, 791 commits) from 160-243 s to 9-17 s. Above 2000 code files, where there is no function churn, blame stays one `git blame` per file as before. Results matched real git for 1952 functions and 306 files across four repositories; files the stream cannot replay exactly still spawn git. `update` uses the same path for the files in scope and lists files and new commits together.
 - `diff_impact` reads every changed function from one `git diff -U0` and, when the ref is HEAD (or the one passed), runs it in the same round as the branch lookup, the untracked listing and the file list.
 - `risk_map` and `triage` rows drop fields that are zero, null, false or empty (about half of each row). `file_path`, `risk_score` and `flakiness_trend` always stay.
 - `tools/list` is 11.6 KB instead of 19.2 KB. Descriptions say what each tool answers and when to call it; arguments are unchanged.
@@ -177,7 +181,7 @@ Agent-facing speed and output size. `analyze` reads git history in one batched s
 - The benchmark harness reports argument errors in its own words (`missing --python, --small, --large`) instead of argparse's.
 - `scripts/benchmark_parity.py` is now `examples/benchmark_parity.rs` (std-only, same report and exit codes). On Windows it keeps snapshots in the absolute temp directory; `/tmp` there is drive-relative.
 
-## [0.17.0] — 2026-11-03
+## [0.17.0]: 2026-11-03
 
 The Rust binary picks up the Python 0.15.1 behaviour that 0.16.1 still missed: stdio MCP framing, the flags and directory scopes that did not reach the engine, test detection for Java, Kotlin, C#, Swift, and C++, `chisel migrate`, and `CHISEL_DEP_EXTRACTOR`. The crate still links only the standard library. Figures below are copied from `scripts/benchmark_results.md`. None are estimated.
 
@@ -231,13 +235,13 @@ Peak RSS for those same runs, in KiB. This is the highest VmHWM sampled from `/p
 
 After the timed runs the large Rust snapshot was 10463225 bytes and mentioned 829 test units. The large Python snapshot had 829 test units and 10267 test edges. The small sample, a two-file Python repo, had 1 test unit on both sides. Reproduce with `scripts/benchmark_parity.py`.
 
-## [0.15.1] — 2026-07-09
+## [0.15.1]: 2026-07-09
 
 ### Fixed
 
 - **Doc honesty for `risk_map` defaults**: `ImpactAnalyzer.get_risk_map` Args docstring and `CLAUDE.md` coverage-mode bullet still said `coverage_mode="unit"` was the default after 0.15.0 switched runtime/CLI/schema to `"line"`. Docs and a regression test now match the shipped signature.
 
-## [0.15.0] — 2026-07-09
+## [0.15.0]: 2026-07-09
 
 ### Changed
 
@@ -250,7 +254,7 @@ After the timed runs the large Rust snapshot was 10463225 bytes and mentioned 82
 
 - Regression tests for CLI/engine default parity, schema honesty (`coverage_mode` line default; no `stale_tests` working_tree), flag forwarding, and `compose_risk_score` weight math.
 
-## [0.14.0] — 2026-06-11
+## [0.14.0]: 2026-06-11
 
 ### Added
 
@@ -260,7 +264,7 @@ After the timed runs the large Rust snapshot was 10463225 bytes and mentioned 82
 
 - **Agent-facing docs refreshed for v0.13**: `docs/AGENT_PLAYBOOK.md` gains v0.13 behavior notes (gitignore-aware scanning + `CHISEL_INCLUDE_IGNORED`, real CLI exit codes, `edge_rebuild_skipped`) and links the skill; README features list now documents gitignore-aware scanning.
 
-## [0.13.0] — 2026-06-11
+## [0.13.0]: 2026-06-11
 
 ### Fixed
 
@@ -272,7 +276,7 @@ After the timed runs the large Rust snapshot was 10463225 bytes and mentioned 82
 - **`build_test_edges` is ~76× faster with byte-identical output** (A/B-verified against the previous algorithm on the same input: 14,667 edges, 17.6s → 0.23s). Match results are memoized per module path and dependency extraction per test file; previously every dep of every test *unit* scanned every code unit (33M `_matches_import_path` calls on this repo alone — the dominant cost of `analyze`/`update`, and the real culprit behind multi-minute updates on monorepos).
 - **`update()` skips edge rebuilding when nothing changed**: with no changed files and no new commits, the discover/rebuild phases are skipped and the result includes `edge_rebuild_skipped: true`. Per-function `git log -L` churn is now restricted to changed files (plus files touched by new commits) instead of every function in the project. Net on this repo: no-op update ~18s → 0.14s; single-file update ~19s → 1.4s; full analyze 19.4s → 2.3s.
 
-## [0.12.0] — 2026-06-11
+## [0.12.0]: 2026-06-11
 
 ### Added
 
@@ -301,7 +305,7 @@ After the timed runs the large Rust snapshot was 10463225 bytes and mentioned 82
 
 - Dead code: `Storage._ensure_main_conn()`, `ImpactAnalyzer._import_graph_undirected_neighbors()`, the unreachable `swift_test` branches, and a redundant duplicated conditional in `_suggest_tests_impl`.
 
-## [0.11.0] — 2026-05-15
+## [0.11.0]: 2026-05-15
 
 ### Added
 
@@ -325,7 +329,7 @@ After the timed runs the large Rust snapshot was 10463225 bytes and mentioned 82
 
 **Grok Build** edited this iteration while closing the `chisel_open.md` findings (subsequently renamed `chisel_closed.md`).
 
-## [0.10.0] — 2026-04-29
+## [0.10.0]: 2026-04-29
 
 > Reconstructed from the release commit — the original entry was never added
 > to this file, which is why the v0.10.0 GitHub release had no notes.
@@ -339,13 +343,13 @@ After the timed runs the large Rust snapshot was 10463225 bytes and mentioned 82
 
 - Symbol-collision fix in test edge matching.
 
-## [0.9.2] — 2026-04-17
+## [0.9.2]: 2026-04-17
 
 ### Fixed
 
 - **CI lint failures**: Resolved 29 ruff errors blocking the CI matrix. `chisel/engine.py` — `JobCancelledError` and `logger` moved below the import block (was triggering 12× E402); removed unused `StaticImportIndex` import (F401); removed unused `lang = self.mapper.detect_framework(tf)` local (F841). `chisel/mcp_server.py` — removed unused `from socketserver import ThreadingMixIn` (F401). `examples/extractors/lsp_symbol_extractor.py` — removed unused `import uuid` (F401). `examples/extractors/swift_syntax_extractor.py` — added `# noqa: F403 / F405` on the star import and the symbols it provides (intentional — optional third-party dep). `tests/test_language_frameworks.py` — removed unused `import os` (F401). No behavior changes.
 
-## [0.9.1] — 2026-04-17
+## [0.9.1]: 2026-04-17
 
 ### Fixed
 
@@ -357,7 +361,7 @@ After the timed runs the large Rust snapshot was 10463225 bytes and mentioned 82
 
 - **Documentation parity sweep**: Tool count (`22`/`24` → `26` = 20 functional + 6 file-lock), CLI subcommand count (`17`/`18` → `28`), and SQLite table count (`10`/`13` → `17`) corrected across `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `ARCHITECTURE.md`, `COMPLETE_PROJECT_DOCUMENTATION.md`, and `wiki-local/spec-project.md`. `ARCHITECTURE.md` tool table gained `optimize_storage` and `cancel_job` and fixed the file-lock tool names (`acquire_lock` → `acquire_file_lock`, etc.) to match `schemas.py`.
 
-## [0.9.0] — 2026-04-15
+## [0.9.0]: 2026-04-15
 
 ### Added
 
@@ -372,13 +376,13 @@ After the timed runs the large Rust snapshot was 10463225 bytes and mentioned 82
 
 - **Documentation**: `README.md`, `docs/LLM_CONTRACT.md`, `docs/AGENT_PLAYBOOK.md`, `docs/CUSTOM_EXTRACTORS.md`, and `ARCHITECTURE.md` updated for sharding, auto-fallback, and extractor ecosystem.
 
-## [0.8.3] — 2026-04-14
+## [0.8.3]: 2026-04-14
 
 ### Fixed
 
 - **Version sync**: `chisel.__version__` was out of sync with `pyproject.toml` in the 0.8.2 release, causing CI failures.
 
-## [0.8.2] — 2026-04-14
+## [0.8.2]: 2026-04-14
 
 ### Added
 
