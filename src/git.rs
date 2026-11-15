@@ -122,6 +122,20 @@ impl GitAnalyzer {
         self.run(&["rev-parse", "--verify", "--end-of-options", name]).is_ok()
     }
 
+    /// The full sha a ref names.
+    pub fn rev_parse(&self, r: &str) -> Result<String, GitError> {
+        guard_ref(r)?;
+        Ok(self.run(&["rev-parse", "--verify", "--end-of-options", &format!("{r}^{{commit}}")])?.trim().to_string())
+    }
+
+    /// Whether `ancestor` is `descendant` or one of its ancestors.
+    pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> bool {
+        if guard_ref(ancestor).is_err() || guard_ref(descendant).is_err() {
+            return false;
+        }
+        ancestor == descendant || self.run(&["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
+    }
+
     pub fn merge_base(&self, base: &str) -> Result<String, GitError> {
         guard_ref(base)?;
         Ok(self.run(&["merge-base", "HEAD", "--end-of-options", base])?.trim().to_string())
@@ -312,6 +326,23 @@ pub fn split_diff_by_file(raw: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Names of functions defined on the changed (`+`/`-`) lines of a diff: a function added,
+/// removed or renamed there.
+pub fn defined_on_changed_lines(raw: &str) -> Vec<String> {
+    let mut functions = Vec::new();
+    for line in raw.lines() {
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix('+').or_else(|| line.strip_prefix('-')).and_then(defined_name) {
+            if !functions.contains(&name) {
+                functions.push(name);
+            }
+        }
+    }
+    functions
+}
+
 pub fn parse_diff_functions(raw: &str) -> Vec<String> {
     let mut functions = Vec::new();
     for line in raw.lines() {
@@ -368,7 +399,7 @@ fn defined_name(line: &str) -> Option<String> {
     if name.is_empty() { None } else { Some(name) }
 }
 
-fn func_name_from_context(context: &str) -> Option<String> {
+pub fn func_name_from_context(context: &str) -> Option<String> {
     for key in ["async def ", "def ", "func ", "fn ", "fun ", "function ", "async function "] {
         if let Some(i) = context.find(key) {
             let rest = &context[i + key.len()..];

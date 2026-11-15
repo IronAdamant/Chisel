@@ -166,7 +166,8 @@ fn impact(dir: &Path, depth: Option<&str>) -> Vec<(String, String)> {
     let (code, out, err) = chisel(dir, &args, "");
     assert_eq!(code, 0, "{err}");
     let v = json::parse(&out).unwrap();
-    v.as_array()
+    v.get("items")
+        .and_then(|i| i.as_array())
         .unwrap_or_else(|| panic!("{out}"))
         .iter()
         .map(|r| (r.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(), r.get("source").and_then(|v| v.as_str()).unwrap_or("").to_string()))

@@ -420,7 +420,12 @@ impl Engine {
             Err(e) => return Ok(git::git_tool_error(&self.project_dir.to_string_lossy(), &e.0)),
         };
         let all_functions = all_functions.unwrap_or_default();
-        let untracked_code: BTreeSet<String> = untracked.unwrap_or_default().into_iter().filter(|p| extract::path_has_code_extension(p)).collect();
+        let untracked = untracked.unwrap_or_default();
+        let untracked_code: BTreeSet<String> = untracked.iter().filter(|p| extract::path_has_code_extension(p)).cloned().collect();
+        // Every changed path, code or not: always-run rules and read paths may name data or docs.
+        let mut every_path: Vec<String> = diff_files.iter().chain(untracked.iter()).cloned().collect();
+        every_path.sort();
+        every_path.dedup();
         let known: BTreeSet<String> = self.store.array("file_hashes").into_iter().filter_map(|h| h.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
         // A file deleted since the base is gone from the tree: its tests are still worth listing
         // while the snapshot has it, and it is never "missing" from the snapshot.
@@ -433,6 +438,11 @@ impl Engine {
         changed.sort();
         changed.dedup();
         if changed.is_empty() {
+            // Only data or docs changed: the tests a rule or a read path names, if any.
+            let always = self.always_run_rows(&every_path);
+            if !always.is_empty() {
+                return Ok(Value::Array(always));
+            }
             return Ok(Value::object(vec![
                 ("status".into(), Value::String("no_changes".into())),
                 ("ref".into(), Value::String(diff_ref.clone())),
@@ -451,41 +461,89 @@ impl Engine {
             ]));
         }
         // Each hunk names the snapshot unit whose lines it touches (git's hunk header names the
-        // line before the hunk, which inside an impl block is `impl X {`, not the method).
+        // line before the hunk, which inside an impl block is `impl X {`, not the method), or
+        // the test whose own lines it touches.
         let mut functions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut changed_tests: Vec<String> = Vec::new();
+        // Files whose hunks touched only tests (and lines in no unit): nothing in them to trace.
+        let mut tests_only: BTreeSet<String> = BTreeSet::new();
+        // Changed helpers of test files: (file, helper name).
+        let mut test_helpers: Vec<(String, String)> = Vec::new();
         self.changed_owners.clear();
         for (f, section) in all_functions {
             if !changed.contains(&f) {
                 continue;
             }
-            let defs = self.changed_definitions(&f, &section);
-            if defs.is_empty() {
+            let attr = self.hunk_attribution(&f, &section);
+            for t in &attr.tests {
+                if !changed_tests.contains(t) {
+                    changed_tests.push(t.clone());
+                }
+            }
+            if attr.defs.is_empty() {
+                if !attr.tests.is_empty() {
+                    tests_only.insert(f.clone());
+                }
                 continue;
+            }
+            if looks_like_test(&f) {
+                for (name, _) in &attr.defs {
+                    test_helpers.push((f.clone(), name.clone()));
+                }
             }
             if extract::detect_language(&f) == Some("rust") {
                 let text = fs::read_to_string(self.project_dir.join(&f)).unwrap_or_default();
                 let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-                for (name, start) in &defs {
+                for (name, start) in &attr.defs {
                     by_name.entry(name.clone()).or_default().push(*start);
                 }
                 for (name, starts) in by_name {
-                    if let Some(owners) = super::resolve::owner_types(&text, &starts) {
+                    // A changed type (a struct's field): its own methods are its siblings.
+                    let owners = if attr.types.contains(&name) { Some([name.clone()].into_iter().collect()) } else { super::resolve::owner_types(&text, &starts) };
+                    if let Some(owners) = owners {
                         self.changed_owners.insert((f.clone(), name), owners);
                     }
                 }
             }
             let mut names: Vec<String> = Vec::new();
-            for (name, _) in defs {
+            for (name, _) in attr.defs {
                 if !names.contains(&name) {
                     names.push(name);
                 }
             }
             functions.insert(f, names);
         }
-        let mut rows = self.impacted(&changed, &functions, &untracked_code);
+        // An untracked file is new as a whole: its tests are changed tests.
+        for t in self.store.rows("test_units") {
+            if t.get("file_path").and_then(|v| v.as_str()).is_some_and(|f| untracked_code.contains(f)) {
+                if let Some(id) = t.get("id").and_then(|v| v.as_str()).filter(|id| !changed_tests.iter().any(|c| c == id)) {
+                    changed_tests.push(id.to_string());
+                }
+            }
+        }
+        let traced: Vec<String> = changed.iter().filter(|f| !tests_only.contains(*f)).cloned().collect();
+        let mut rows = self.impacted(&traced, &functions, &untracked_code);
+        let mut reach = std::mem::take(&mut self.reach_log);
         self.changed_owners.clear();
+        // A helper in a test file is linked to the tests of that file that call it (edges never
+        // point into the test's own file).
+        rows.extend(self.same_file_helper_hits(&test_helpers, &mut reach));
         self.attach_working_tree_hits(&mut rows, &changed, &untracked_code);
-        Ok(Value::Array(rows))
+        let total_tests = self.store.array("test_units").len();
+        let mut rows = dedupe_rows(rows);
+        let mut first: Vec<Value> = self.changed_test_rows(&changed_tests);
+        for row in self.always_run_rows(&every_path) {
+            let id = row.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
+            if !first.iter().any(|f| f.get("test_id").and_then(|v| v.as_str()) == Some(id)) {
+                first.push(row);
+            }
+        }
+        let first_ids: BTreeSet<String> = first.iter().filter_map(|r| r.get("test_id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
+        rows.retain(|r| !r.get("test_id").and_then(|v| v.as_str()).is_some_and(|t| first_ids.contains(t)));
+        rank_by_breadth(&mut rows, &reach, total_tests);
+        let mut out = first;
+        out.extend(rows);
+        Ok(Value::Array(out))
     }
 
     pub fn suggest_tests(&mut self, file: &str) -> Result<Value, String> {
@@ -722,12 +780,66 @@ impl Engine {
         }
     }
 
+    /// `diff_impact` rows for tests whose own lines changed: they come first, in their own tier.
+    pub(super) fn changed_test_rows(&self, ids: &[String]) -> Vec<Value> {
+        let tests = self.store.rows("test_units");
+        ids.iter()
+            .filter_map(|id| {
+                let t = tests.iter().find(|t| t.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))?;
+                Some(Value::object(vec![
+                    ("test_id".into(), Value::String(id.clone())),
+                    ("file_path".into(), t.get("file_path").cloned().unwrap_or(Value::String(String::new()))),
+                    ("name".into(), t.get("name").cloned().unwrap_or(Value::String(String::new()))),
+                    ("reason".into(), Value::String("the test itself changed".into())),
+                    ("score".into(), Value::Float(1.0)),
+                    ("source".into(), Value::String("changed_test".into())),
+                ]))
+            })
+            .collect()
+    }
+
+    /// Tests of a test file that call a changed helper of that same file (`fn fixture()` in
+    /// `tests/it.rs`): read from the test's own lines, since edges never point into the
+    /// test's own file.
+    pub(super) fn same_file_helper_hits(&self, helpers: &[(String, String)], reach: &mut Vec<(String, String, f64)>) -> Vec<Value> {
+        let mut out = Vec::new();
+        let mut by_file: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for (f, n) in helpers {
+            by_file.entry(f.as_str()).or_default().push(n.as_str());
+        }
+        let tests = self.store.rows("test_units");
+        for (file, names) in by_file {
+            let text = fs::read_to_string(self.project_dir.join(file)).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            for t in tests.iter().filter(|t| t.get("file_path").and_then(|v| v.as_str()) == Some(file)) {
+                let start = t.get("line_start").and_then(|v| v.as_i64()).unwrap_or(1).max(1) as usize;
+                let end = t.get("line_end").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
+                let body = lines.iter().skip(start - 1).take(end.saturating_sub(start - 1)).copied().collect::<Vec<_>>().join("\n");
+                let sites = extract::calls::call_sites_scoped(&body);
+                let Some(hit) = names.iter().find(|n| sites.get(**n).is_some_and(|s| s.free || s.quals.iter().any(|q| q == "self" || q == "Self" || q == "super"))) else { continue };
+                let tid = t.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                reach.push((tid.clone(), format!("{file}:{hit}"), 1.0));
+                out.push(Value::object(vec![
+                    ("test_id".into(), Value::String(tid)),
+                    ("file_path".into(), Value::String(file.to_string())),
+                    ("name".into(), t.get("name").cloned().unwrap_or(Value::String(String::new()))),
+                    ("reason".into(), Value::String(format!("calls {hit}, a changed helper of its own file"))),
+                    ("score".into(), Value::Float(1.0)),
+                    ("source".into(), Value::String("direct".into())),
+                ]));
+            }
+        }
+        out
+    }
+
     pub(super) fn impacted(&mut self, files: &[String], functions: &BTreeMap<String, Vec<String>>, untracked: &BTreeSet<String>) -> Vec<Value> {
         self.absorb_parent_overlay();
         let tests: BTreeMap<String, Value> = self.store.array("test_units").into_iter().filter_map(|t| {
             Some((t.get("id")?.as_str()?.to_string(), t))
         }).collect();
         let mut best: BTreeMap<String, (f64, Value)> = BTreeMap::new();
+        self.reach_log.clear();
+        let mut reach_log: Vec<(String, String, f64)> = Vec::new();
         // Changed files with a test that calls into them: co-change history is only a fallback.
         let mut called: BTreeSet<String> = BTreeSet::new();
         for file in files {
@@ -802,6 +914,9 @@ impl Engine {
                     called.insert(file.clone());
                     // A sibling's test exercises the change only if the sibling calls it: half weight.
                     let score = if widened { weight * 0.5 } else { weight };
+                    // A sibling's test stands in for the changed functions, so it counts as reaching them.
+                    let unit_key = if widened { format!("{file}:{}", fns.unwrap_or(&[]).join(",")) } else { format!("{file}:{target}") };
+                    reach_log.push((tid.to_string(), unit_key, score));
                     let row = Value::object(vec![
                         ("test_id".into(), Value::String(tid.into())),
                         ("file_path".into(), test.and_then(|t| t.get("file_path")).cloned().unwrap_or(Value::String(String::new()))),
@@ -825,6 +940,7 @@ impl Engine {
                 let path = if c.via == c.reaches || c.reaches.ends_with(&format!("::{}", c.via)) { String::new() } else { format!(" via {}", c.via) };
                 let caller = if c.owner.is_empty() { c.name.clone() } else { format!("{}::{}", c.owner, c.name) };
                 called.insert(c.reaches_file.clone());
+                reach_log.push((tid.to_string(), format!("{}:{}", c.reaches_file, c.reaches), score));
                 let row = Value::object(vec![
                     ("test_id".into(), Value::String(tid.into())),
                     ("file_path".into(), test.get("file_path").cloned().unwrap_or(Value::String(String::new()))),
@@ -838,7 +954,8 @@ impl Engine {
         }
         let query_min: i64 = store::meta_get(&self.store.doc, "co_change_query_min").and_then(|s| s.parse().ok()).unwrap_or(1);
         for file in files {
-            if called.contains(file) {
+            // A test file's own history says nothing about which other tests it affects.
+            if called.contains(file) || looks_like_test(file) {
                 continue;
             }
             for cc in self.store.co_for_file(file) {
@@ -913,21 +1030,67 @@ impl Engine {
             }
         }
         let mut out: Vec<Value> = best.into_values().map(|(_, v)| v).collect();
-        // Tiers: tests that call the change (or import it), then tests of its callers, then weaker
-        // evidence (siblings in the same type, files that changed together in history).
-        let tier = |v: &Value| match v.get("source").and_then(|s| s.as_str()) {
-            Some("call_graph") => 1,
-            Some("sibling" | "co_change") => 2,
-            _ => 0,
-        };
-        out.sort_by(|a, b| {
-            let sa = a.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let sb = b.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            tier(a).cmp(&tier(b)).then_with(|| sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)).then_with(|| {
-                a.get("test_id").and_then(|v| v.as_str()).unwrap_or("").cmp(b.get("test_id").and_then(|v| v.as_str()).unwrap_or(""))
-            })
-        });
+        sort_by_tier(&mut out);
+        self.reach_log = reach_log;
         out
+    }
+
+    /// `stats` `not_passed_since` / `not_run_on`: tests with no recorded pass on a commit that
+    /// contains `since`, and tests with no result recorded on `platform` (results keep 90 days).
+    /// Tests that passed before `since` come first: they are the ones a change may have broken
+    /// unseen. Ids are capped at `limit`; the counts are whole.
+    pub(super) fn result_coverage(&self, since: Option<&str>, platform: Option<&str>, limit: usize) -> Result<Vec<(&'static str, Value)>, Value> {
+        let tests: Vec<String> = self.store.rows("test_units").iter().filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
+        let mut out: Vec<(&'static str, Value)> = Vec::new();
+        let list = |ids: Vec<String>| -> Value { Value::Array(ids.into_iter().take(limit).map(Value::String).collect()) };
+        if let Some(since) = since {
+            let git = self.git.fork();
+            let commit = match git.rev_parse(since) {
+                Ok(c) if !c.is_empty() => c,
+                _ => {
+                    return Err(Value::object(vec![
+                        ("status".into(), Value::String("error".into())),
+                        ("message".into(), Value::String(format!("not_passed_since: '{since}' is not a commit here"))),
+                        ("hint".into(), Value::String("Pass a branch, tag or sha of this repository, e.g. not_passed_since=HEAD~5.".into())),
+                    ]));
+                }
+            };
+            let passes = self.store.doc.get("test_passes").and_then(|v| v.as_object()).map(|o| o.to_vec()).unwrap_or_default();
+            let mut verdict: HashMap<String, bool> = HashMap::new();
+            let (mut before, mut never) = (Vec::new(), Vec::new());
+            for id in &tests {
+                match passes.iter().find(|(k, _)| k == id.as_str()).and_then(|(_, v)| v.get("commit").and_then(|c| c.as_str()).map(|c| c.to_string())) {
+                    None => never.push(id.clone()),
+                    Some(c) => {
+                        let ok = *verdict.entry(c.clone()).or_insert_with(|| git.is_ancestor(&commit, &c));
+                        if !ok {
+                            before.push(id.clone());
+                        }
+                    }
+                }
+            }
+            let total = before.len() + never.len();
+            let mut ids = before.clone();
+            ids.extend(never.iter().cloned());
+            out.push(("not_passed_since", Value::object(vec![
+                ("commit".into(), Value::String(commit)),
+                ("total".into(), Value::Int(total as i64)),
+                ("passed_before".into(), Value::Int(before.len() as i64)),
+                ("never_passed".into(), Value::Int(never.len() as i64)),
+                ("items".into(), list(ids)),
+            ])));
+        }
+        if let Some(platform) = platform {
+            let p = platform.trim().to_ascii_lowercase();
+            let seen: BTreeSet<String> = self.result_rows().iter().filter(|r| r.get("platform").and_then(|v| v.as_str()) == Some(p.as_str())).filter_map(|r| r.get("test_id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
+            let missing: Vec<String> = tests.iter().filter(|t| !seen.contains(*t)).cloned().collect();
+            out.push(("not_run_on", Value::object(vec![
+                ("platform".into(), Value::String(p)),
+                ("total".into(), Value::Int(missing.len() as i64)),
+                ("items".into(), list(missing)),
+            ])));
+        }
+        Ok(out)
     }
 
     pub fn stale_tests(&mut self) -> Result<Value, String> {
@@ -1460,44 +1623,75 @@ impl Engine {
         }).count()
     }
 
-    pub(super) fn auto_plan(&self, name: &str, args: &Value) -> AutoPlan {
+    pub(super) fn auto_plan(&mut self, name: &str, args: &Value) -> AutoPlan {
         if !matches!(name, "diff_impact" | "suggest_tests" | "risk_map" | "test_gaps" | "triage") {
             return AutoPlan::Off;
         }
         if args.get("auto_update").and_then(|v| v.as_bool()) != Some(true) {
             return AutoPlan::Off;
         }
+        // Another process (or a finished job) may have written the snapshot since it was read.
+        let _ = self.store.reload();
         let running = job_lock().lock().ok().and_then(|jobs| {
-            jobs.iter().any(|j| j.storage == self.store.dir() && (j.status == "queued" || j.status == "running")).then_some(())
-        }).is_some();
-        if running {
-            return AutoPlan::Skip("background_job_running");
+            jobs.iter().find(|j| j.storage == self.store.dir() && (j.status == "queued" || j.status == "running")).map(|j| j.id.clone())
+        });
+        if let Some(job_id) = running {
+            return AutoPlan::Queued { reason: "background_job_running", job_id, changed: 0, limit: self.auto_update_limit };
         }
-        if self.changed_file_count() > 50 {
-            return AutoPlan::Skip("too_many_changed_files");
+        let changed = self.changed_file_count();
+        if changed <= self.auto_update_limit {
+            return AutoPlan::Run;
         }
-        AutoPlan::Run
+        // The CLI has no client timeout: refresh inline whatever the count.
+        if self.inline_jobs {
+            return AutoPlan::Run;
+        }
+        match self.start_job("update") {
+            Ok(job) => match job.get("job_id").and_then(|v| v.as_str()) {
+                Some(id) => AutoPlan::Queued { reason: "too_many_changed_files", job_id: id.to_string(), changed, limit: self.auto_update_limit },
+                None => AutoPlan::Skip("too_many_changed_files"),
+            },
+            Err(_) => AutoPlan::Skip("too_many_changed_files"),
+        }
     }
 
     pub(super) fn finish_auto(&self, plan: AutoPlan, result: Value) -> Value {
-        let AutoPlan::Skip(reason) = plan else { return result };
-        let hint = match reason {
-            "background_job_running" => "Auto-update skipped: a background analyze/update is in progress. Poll job_status and retry when it completes.",
-            "too_many_changed_files" => "Auto-update skipped: more than 50 files changed. Run 'chisel update' or start_job(kind='update') to refresh the DB.",
-            _ => "Run 'chisel update' first to include new or changed files.",
+        let (reason, hint, job) = match plan {
+            AutoPlan::Skip(reason) => {
+                let hint = match reason {
+                    "too_many_changed_files" => format!("Auto-update skipped: more than {} files changed and no update job could start. Call start_job with kind update, then job_status, then this tool again.", self.auto_update_limit),
+                    _ => "Run 'chisel update' first to include new or changed files.".to_string(),
+                };
+                (reason, hint, None)
+            }
+            AutoPlan::Queued { reason, job_id, changed, limit } => {
+                let hint = if reason == "background_job_running" {
+                    format!("An update job ({job_id}) is already running; this answer is from the snapshot before it. Call job_status with job_id {job_id} until it is completed, then this tool again.")
+                } else {
+                    format!("{changed} files changed (auto_update_limit {limit}): update job {job_id} started; this answer is from the snapshot before it. Call job_status with job_id {job_id} until it is completed, then this tool again.")
+                };
+                (reason, hint, Some(job_id))
+            }
+            _ => return result,
         };
+        let mut extra: Vec<(crate::json::SharedStr, Value)> = vec![("auto_update_skip_reason".into(), Value::String(reason.into()))];
+        if let Some(id) = job {
+            extra.push(("auto_update_job_id".into(), Value::String(id)));
+        }
+        extra.push(("hint".into(), Value::String(hint)));
         match result {
             Value::Object(obj) => {
                 let mut value = Value::Object(obj);
-                value.insert("auto_update_skip_reason", Value::String(reason.into()));
-                value.insert("hint", Value::String(hint.into()));
+                for (k, v) in extra {
+                    value.insert(&k, v);
+                }
                 value
             }
-            Value::Array(items) => Value::object(vec![
-                ("items".into(), Value::Array(items)),
-                ("auto_update_skip_reason".into(), Value::String(reason.into())),
-                ("hint".into(), Value::String(hint.into())),
-            ]),
+            Value::Array(items) => {
+                let mut pairs = vec![("items".into(), Value::Array(items))];
+                pairs.extend(extra);
+                Value::Object(pairs)
+            }
             other => other,
         }
     }
@@ -1634,6 +1828,11 @@ impl Engine {
             ]));
         }
         self.reply_meta.clear();
+        self.auto_update_limit = match args.get("auto_update_limit").and_then(|v| v.as_i64()) {
+            Some(n) => n.max(0) as usize,
+            None => std::env::var("CHISEL_AUTO_UPDATE_LIMIT").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(DEFAULT_AUTO_UPDATE_LIMIT),
+        };
+        self.diff_limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000) as usize;
         self.impact_depth = args.get("depth").and_then(|v| v.as_i64()).map(|d| d.clamp(1, 3) as usize).unwrap_or(DEFAULT_IMPACT_DEPTH);
         self.directory = args.get("directory").and_then(|v| v.as_str()).filter(|s| !s.is_empty() && *s != ".").map(|s| s.trim_end_matches('/').to_string());
         self.exclude_tests = args.get("exclude_tests").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -1670,12 +1869,30 @@ impl Engine {
                 }
             }
             "stale_tests" => self.stale_tests(),
-            "stats" => self.stats_with(args.get("include_results").and_then(|v| v.as_bool()).unwrap_or(false)),
+            "stats" => {
+                let since = args.get("not_passed_since").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+                let platform = args.get("not_run_on").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+                let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(50).clamp(1, 1000) as usize;
+                let mut doc = self.stats_with(args.get("include_results").and_then(|v| v.as_bool()).unwrap_or(false))?;
+                if since.is_some() || platform.is_some() {
+                    match self.result_coverage(since, platform, limit) {
+                        Ok(extra) => {
+                            for (k, v) in extra {
+                                doc.insert(k, v);
+                            }
+                        }
+                        Err(err) => return Ok(err),
+                    }
+                }
+                Ok(doc)
+            }
             "record_result" => {
                 let id = args.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
                 let passed = args.get("passed").and_then(|v| v.as_bool()).unwrap_or(false);
                 let duration = args.get("duration_ms").and_then(|v| v.as_f64());
-                self.record_result_with(id, passed, duration)
+                let message = args.get("message").and_then(|v| v.as_str());
+                let platform = args.get("platform").and_then(|v| v.as_str());
+                self.record_result_with(id, passed, duration, message, platform)
             }
             "impact" => {
                 let files: Vec<String> = args.get("files").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
@@ -1728,6 +1945,7 @@ impl Engine {
             }
             _ => Err(format!("unknown tool: {name}. Valid tools: {}", crate::schemas::TOOL_NAMES.join(", "))),
         }?;
+        let result = if name == "diff_impact" { self.shape_diff_impact(result) } else { result };
         let limited = self.apply_limit(name, args, result);
         let finished = self.finish_auto(auto, compact_risk_rows(name, limited));
         Ok(self.with_reply_meta(finished))
@@ -2237,4 +2455,104 @@ fn compact_risk_rows(name: &str, mut result: Value) -> Value {
         }
     }
     result
+}
+
+/// Tiers: a test whose own lines changed, then tests a project rule says to always run, then
+/// tests that call the change (or import it), then tests of its callers, then weaker evidence
+/// (siblings in the same type, files that changed together in history). Within a tier: score,
+/// then how many changed units the test reaches, then id.
+pub(super) fn row_tier(v: &Value) -> i32 {
+    match v.get("source").and_then(|s| s.as_str()) {
+        Some("changed_test") => -2,
+        Some("always_run") => -1,
+        Some("call_graph") => 1,
+        Some("sibling" | "co_change") => 2,
+        _ => 0,
+    }
+}
+
+pub(super) fn sort_by_tier(rows: &mut [Value]) {
+    let num = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    rows.sort_by(|a, b| {
+        row_tier(a)
+            .cmp(&row_tier(b))
+            .then_with(|| num(b, "score").partial_cmp(&num(a, "score")).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| num(b, "units").partial_cmp(&num(a, "units")).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.get("test_id").and_then(|v| v.as_str()).unwrap_or("").cmp(b.get("test_id").and_then(|v| v.as_str()).unwrap_or("")))
+    });
+}
+
+/// Ranks `diff_impact` rows by evidence breadth, not by the single best edge. A test's
+/// relevance is the sum, over the changed units it reaches, of its edge weight times how rare
+/// that unit is among the tests (`ln(1 + tests / tests reaching it)`): a test that reaches
+/// three changed functions outranks one that reaches a helper hundreds of tests call. Scores
+/// are scaled so the best row keeps the best edge weight, so a diff with one changed unit
+/// keeps its scores and order. Rows that reach no unit (co-change, import graph) keep their
+/// score at the rarest unit's factor. `units` is set when a test reaches two or more.
+pub(super) fn rank_by_breadth(rows: &mut [Value], reach: &[(String, String, f64)], total_tests: usize) {
+    if rows.is_empty() {
+        return;
+    }
+    let mut per: HashMap<&str, HashMap<&str, f64>> = HashMap::new();
+    for (tid, unit, w) in reach {
+        let slot = per.entry(tid.as_str()).or_default().entry(unit.as_str()).or_insert(0.0);
+        if *w > *slot {
+            *slot = *w;
+        }
+    }
+    let mut fan: HashMap<&str, usize> = HashMap::new();
+    for units in per.values() {
+        for u in units.keys() {
+            *fan.entry(u).or_insert(0) += 1;
+        }
+    }
+    let most = fan.values().copied().max().unwrap_or(1);
+    let t = total_tests.max(most) as f64;
+    let idf = |u: &str| (1.0 + t / *fan.get(u).unwrap_or(&1) as f64).ln();
+    let idf_max = fan.keys().map(|u| idf(u)).fold(0.0f64, f64::max).max(f64::MIN_POSITIVE);
+    let score_of = |v: &Value| v.get("score").and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let w_top = rows.iter().filter(|r| row_tier(r) >= 0).map(score_of).fold(0.0f64, f64::max);
+    let raws: Vec<Option<f64>> = rows
+        .iter()
+        .map(|r| {
+            if row_tier(r) < 0 {
+                return None;
+            }
+            let tid = r.get("test_id").and_then(|x| x.as_str()).unwrap_or("");
+            Some(match per.get(tid) {
+                Some(units) => units.iter().map(|(u, w)| w * idf(u)).sum(),
+                None => score_of(r) * idf_max,
+            })
+        })
+        .collect();
+    let raw_max = raws.iter().flatten().copied().fold(0.0f64, f64::max);
+    if raw_max <= 0.0 {
+        return;
+    }
+    for (r, raw) in rows.iter_mut().zip(raws) {
+        let Some(raw) = raw else { continue };
+        let score = ((raw / raw_max * w_top) * 1000.0).round() / 1000.0;
+        r.insert("score", Value::Float(score));
+        let tid = r.get("test_id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        if let Some(n) = per.get(tid.as_str()).map(|u| u.len()).filter(|n| *n >= 2) {
+            r.insert("units", Value::Int(n as i64));
+        }
+    }
+    sort_by_tier(rows);
+}
+
+/// One row per test: the one with the highest score.
+pub(super) fn dedupe_rows(rows: Vec<Value>) -> Vec<Value> {
+    let mut best: BTreeMap<String, Value> = BTreeMap::new();
+    let score = |v: &Value| v.get("score").and_then(|x| x.as_f64()).unwrap_or(0.0);
+    for r in rows {
+        let tid = r.get("test_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        match best.get(&tid) {
+            Some(prev) if score(prev) >= score(&r) => {}
+            _ => {
+                best.insert(tid, r);
+            }
+        }
+    }
+    best.into_values().collect()
 }

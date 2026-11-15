@@ -8,6 +8,7 @@ pub use issues::CaptureSummary;
 mod history_churn;
 mod query;
 mod resolve;
+mod selection;
 mod overlay;
 pub use overlay::linked_worktree;
 mod locks;
@@ -197,7 +198,13 @@ pub(crate) enum AutoPlan {
     Off,
     Run,
     Skip(&'static str),
+    /// More files changed than the inline limit: an `update` job was started (or one was
+    /// already running) and the read answers from the snapshot as it is.
+    Queued { reason: &'static str, job_id: String, changed: usize, limit: usize },
 }
+
+/// `auto_update` refreshes inline at or under this many changed files unless told otherwise.
+pub(crate) const DEFAULT_AUTO_UPDATE_LIMIT: usize = 50;
 
 pub struct Engine {
     pub project_dir: PathBuf,
@@ -215,6 +222,14 @@ pub struct Engine {
     /// `diff_impact`: for a changed Rust function `(file, name)`, the owner types of the changed
     /// definitions (`""` free). Edges resolved through another owner of that name are not hits.
     changed_owners: HashMap<(String, String), BTreeSet<String>>,
+    /// `impacted`: (test id, changed unit it reaches, weight) for every hit, so `diff_impact`
+    /// can rank by how many changed units a test reaches and how rare each one is.
+    reach_log: Vec<(String, String, f64)>,
+    /// `diff_impact`: the reply's row cap (`limit`); past it rows are summarised in groups.
+    diff_limit: usize,
+    /// `auto_update`: refresh inline at or under this many changed files (`auto_update_limit`,
+    /// `CHISEL_AUTO_UPDATE_LIMIT`).
+    auto_update_limit: usize,
     /// `diff_impact` `since`: diff from the merge-base of this ref and HEAD.
     diff_since: Option<String>,
     /// Metadata a tool adds to its reply (`since`, `base`, `worktree`); a list reply becomes
@@ -284,6 +299,9 @@ impl Engine {
             active_job: None,
             diff_ref_override: None,
             changed_owners: HashMap::new(),
+            reach_log: Vec::new(),
+            diff_limit: 100,
+            auto_update_limit: DEFAULT_AUTO_UPDATE_LIMIT,
             diff_since: None,
             reply_meta: Vec::new(),
             restamp_unchanged: false,
@@ -421,10 +439,15 @@ pub(crate) fn prune_old_results(doc: &mut Value, now: f64) {
 }
 
 pub(crate) fn append_test_result(doc: &mut Value, test_id: &str, passed: bool, now: f64) {
-    append_test_result_full(doc, test_id, passed, now, None);
+    append_test_result_full(doc, test_id, passed, now, None, None, Some(std::env::consts::OS));
 }
 
-pub(crate) fn append_test_result_full(doc: &mut Value, test_id: &str, passed: bool, now: f64, duration_ms: Option<f64>) {
+/// Longest failure message kept with a result (a test's own words when its run is gone).
+pub(crate) const RESULT_MESSAGE_CHARS: usize = 300;
+
+/// One `test_results` row. `message` is kept for a failure only, cut to
+/// `RESULT_MESSAGE_CHARS`; `platform` is the OS it ran on (`windows`, `linux`, `macos`).
+pub(crate) fn append_test_result_full(doc: &mut Value, test_id: &str, passed: bool, now: f64, duration_ms: Option<f64>, message: Option<&str>, platform: Option<&str>) {
     if doc.get("test_results").and_then(|v| v.as_array()).is_none() {
         doc.insert("test_results", Value::Array(Vec::new()));
     }
@@ -437,8 +460,42 @@ pub(crate) fn append_test_result_full(doc: &mut Value, test_id: &str, passed: bo
         if let Some(ms) = duration_ms {
             row.push(("duration_ms".into(), Value::Float(ms)));
         }
+        if let Some(m) = message.map(str::trim).filter(|m| !m.is_empty() && !passed) {
+            let cut: String = m.chars().take(RESULT_MESSAGE_CHARS).collect();
+            row.push(("message".into(), Value::String(cut)));
+        }
+        if let Some(p) = platform.filter(|p| !p.is_empty()) {
+            row.push(("platform".into(), Value::String(p.to_string())));
+        }
         results.push(Value::object(row));
     }
+}
+
+/// How many passes in a row a test had most recently (0 when it never passed or last
+/// failed). Read before recording a failure: `N > 0` is "first failure after N passes".
+pub(crate) fn passes_in_a_row(doc: &Value, test_id: &str) -> usize {
+    let id = normalize_test_id(test_id);
+    let Some(results) = doc.get("test_results").and_then(|v| v.as_array()) else { return 0 };
+    let mut n = 0;
+    for row in results.iter().rev().filter(|r| r.get("test_id").and_then(|v| v.as_str()) == Some(id.as_str())) {
+        if row.get("passed").and_then(|v| v.as_bool()) == Some(true) {
+            n += 1;
+        } else {
+            break;
+        }
+    }
+    n
+}
+
+/// Records a pass in `test_passes` (test id -> commit and time of its last pass).
+pub(crate) fn note_pass(doc: &mut Value, test_id: &str, commit: &str, now: f64) {
+    let mut pass_map: Vec<(crate::json::SharedStr, Value)> = doc.get("test_passes").and_then(|v| v.as_object()).map(|o| o.to_vec()).unwrap_or_default();
+    let entry = Value::object(vec![("commit".into(), Value::String(commit.to_string())), ("at".into(), Value::Float(now))]);
+    match pass_map.iter_mut().find(|(k, _)| k == test_id) {
+        Some(slot) => slot.1 = entry,
+        None => pass_map.push((test_id.into(), entry)),
+    }
+    doc.insert("test_passes", Value::Object(pass_map));
 }
 
 pub(crate) fn path_in_directory(path: &str, dir: &str) -> bool {
@@ -654,8 +711,15 @@ fn rust_integration_test(path: &str, name: &str) -> bool {
     if !name.ends_with(".rs") {
         return false;
     }
+    // `tests/` of the root crate, or of any crate in a workspace (`crates/a/tests/it.rs`); a
+    // `tests` module inside `src/` is part of its crate's code.
     let normalized = path.replace('\\', "/");
-    normalized.split('/').next() == Some("tests")
+    let segs: Vec<&str> = normalized.split('/').collect();
+    let dirs = &segs[..segs.len().saturating_sub(1)];
+    match dirs.iter().position(|s| *s == "tests") {
+        Some(t) => !dirs[..t].contains(&"src"),
+        None => false,
+    }
 }
 
 /// Suffix map of code paths so an import resolves without scanning every unit.

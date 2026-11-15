@@ -122,7 +122,14 @@ fn compacted(mut doc: chisel::json::Value, key: &str) -> chisel::json::Value {
 }
 
 fn expect(actual: &str, fixture: &str) {
-    let got = chisel::json::parse(actual.trim()).unwrap();
+    let mut got = chisel::json::parse(actual.trim()).unwrap();
+    // 0.24.0: diff_impact's rows sit under `items` beside `run`, the command that runs them
+    // (CHANGELOG 0.24.0). The rows themselves still match the oracle.
+    if fixture == "diff-impact" {
+        let run = got.get("run").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+        assert_eq!(run, vec![chisel::json::Value::String("pytest tests/test_calc.py::test_add tests/test_calc.py::test_sub".into())], "{actual}");
+        got = got.get("items").cloned().unwrap_or(got);
+    }
     let want = match fixture {
         "risk-map" => compacted(frozen(fixture), "files"),
         "triage" => compacted(frozen(fixture), "top_risk_files"),

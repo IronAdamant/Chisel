@@ -60,6 +60,9 @@ pub struct Args {
     /// The linked worktree this process started in, when neither the project nor the storage
     /// directory was given: read tools answer for it from the main checkout's snapshot.
     pub default_worktree: Option<PathBuf>,
+    /// Flags passed through as tool arguments as they are: `--message`, `--platform`,
+    /// `--not-passed-since`, `--not-run-on` (strings) and `--auto-update-limit` (a number).
+    pub extra: Vec<(String, Value)>,
 }
 
 pub fn parse(argv: &[String]) -> Result<Args, String> {
@@ -70,6 +73,7 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     let mut storage_dir = env::var("CHISEL_STORAGE_DIR").ok().map(PathBuf::from);
     explicit_dirs |= storage_dir.is_some();
     let mut worktree = None;
+    let mut extra: Vec<(String, Value)> = Vec::new();
     let mut json = false;
     let mut positionals = Vec::new();
     let mut host = "127.0.0.1".to_string();
@@ -255,6 +259,14 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
             brief = true;
         } else if a == "--write" {
             write = true;
+        } else if let Some(key) = ["--message", "--platform", "--not-passed-since", "--not-run-on"].iter().find(|f| **f == a.as_str()) {
+            i += 1;
+            let v = argv.get(i).ok_or_else(|| format!("missing {key}"))?.clone();
+            extra.push((key.trim_start_matches("--").replace('-', "_"), Value::String(v)));
+        } else if a == "--auto-update-limit" {
+            i += 1;
+            let n: i64 = argv.get(i).ok_or("missing --auto-update-limit")?.parse().map_err(|_| "bad auto-update-limit: a number of files")?;
+            extra.push(("auto_update_limit".into(), Value::Int(n)));
         } else if a == "--help" || a == "-h" {
             help = true;
         } else if a.starts_with("--") {
@@ -285,7 +297,7 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
         force, working_tree, auto_update, limit, shard, directory, git_ref, depth, kind, passed,
         coverage_mode, proximity_adjustment, exclude_new_file_boost, allow_repo_extractor, once, interval_secs,
         functions, fallback, unit, min_count, no_exclude_tests, top_n, agent_id, duration_ms, help,
-        capture_command, hook, all, since, brief, write, worktree, default_worktree,
+        capture_command, hook, all, since, brief, write, worktree, default_worktree, extra,
     })
 }
 
@@ -517,6 +529,9 @@ fn call_args(args: &Args) -> Value {
     }
     if let Some(agent) = &args.agent_id {
         pairs.push(("agent_id".into(), Value::String(agent.clone())));
+    }
+    for (k, v) in &args.extra {
+        pairs.push((k.as_str().into(), v.clone()));
     }
     if let Some(duration) = args.duration_ms {
         pairs.push(("duration_ms".into(), Value::Int(duration)));

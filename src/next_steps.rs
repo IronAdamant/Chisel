@@ -3,6 +3,13 @@
 use crate::json::Value;
 
 pub fn compute_next_steps(tool_name: &str, result: &Value) -> Vec<Value> {
+    // auto_update started (or found) an update job: wait for it, then ask again.
+    if let Some(id) = result.get("auto_update_job_id").and_then(|v| v.as_str()) {
+        return vec![
+            tool_step("job_status", Value::object(vec![("job_id".into(), Value::String(id.into()))]), "Poll until the update job is completed"),
+            tool_step(tool_name, Value::object(vec![]), "Call again with the same arguments once the job is completed"),
+        ];
+    }
     if let Some(status) = result.get("status").and_then(|v| v.as_str()) {
         if status == "no_data" {
             return vec![tool_step("analyze", Value::object(vec![]), "Populate analysis data")];
@@ -123,9 +130,21 @@ fn hints_diff_impact(result: &Value) -> Vec<Value> {
             tool_step("update", Value::object(vec![]), "Re-analyze if the working tree has new files"),
         ],
         _ => {
-            if result.as_array().is_some_and(|a| !a.is_empty()) {
+            let items = result.as_array().or_else(|| result.get("items").and_then(|v| v.as_array()));
+            let has_run = result.get("run").and_then(|v| v.as_array()).is_some_and(|c| !c.is_empty());
+            let has_groups = result.get("groups").and_then(|v| v.as_array()).is_some_and(|g| !g.is_empty());
+            if has_run || has_groups {
+                let mut steps = Vec::new();
+                if has_run {
+                    steps.push(action_step("run_tests", "Run the commands in result.run, then record_result for each failure"));
+                }
+                if has_groups {
+                    steps.push(action_step("run_groups", "More tests than limit: run the commands in result.groups, best first"));
+                }
+                steps
+            } else if items.is_some_and(|a| !a.is_empty()) {
                 vec![action_step("run_tests", "Execute impacted tests to verify changes")]
-            } else if result.as_array().is_some() {
+            } else if items.is_some() {
                 vec![tool_step("test_gaps", Value::object(vec![]), "Check if new code needs tests")]
             } else {
                 Vec::new()

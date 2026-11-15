@@ -157,6 +157,19 @@ fn since_cutoff(since: &str, now: f64) -> Option<f64> {
     impact::parse_iso_unix(&format!("{t}T00:00:00Z"))
 }
 
+/// What the hunks of one file's diff touched (`Engine::hunk_attribution`).
+#[derive(Default, Debug)]
+pub(super) struct HunkAttribution {
+    /// Changed code units: name and start line (0 when only git's hunk header named it).
+    pub defs: Vec<(String, usize)>,
+    /// Of `defs`, the ones that are types (a struct whose field changed), not functions.
+    pub types: Vec<String>,
+    /// Test ids whose own lines changed.
+    pub tests: Vec<String>,
+    /// A hunk touched lines in no unit and no test.
+    pub other: bool,
+}
+
 impl Engine {
     /// Map a runner's test name onto the snapshot's test ids, so issues meet test edges.
     fn resolve_test(&self, o: &Outcome, units: &HashMap<String, Vec<(String, String)>>, ids: &BTreeSet<String>) -> String {
@@ -375,6 +388,94 @@ impl Engine {
         out
     }
 
+    /// What each hunk of a diff section touched, for `diff_impact`: the innermost code unit
+    /// whose lines it overlaps (functions, and types such as a struct whose field changed), or
+    /// the test whose lines it overlaps. A hunk in no unit (a `use` line, a comment) is only
+    /// counted in `other`; git's hunk header names a function only for such a hunk, so an edit
+    /// inside a test is never credited to the helper above it.
+    pub(super) fn hunk_attribution(&self, file: &str, section: &str) -> HunkAttribution {
+        let all = self.store.units_by_file(file);
+        let mut code: Vec<(usize, usize, &str, bool)> = Vec::new();
+        for u in &all {
+            if is_test_unit_row(u) {
+                continue;
+            }
+            let (Some(s), Some(e), Some(n)) = (u.get("line_start").and_then(|v| v.as_i64()), u.get("line_end").and_then(|v| v.as_i64()), u.get("name").and_then(|v| v.as_str())) else { continue };
+            let function = matches!(u.get("unit_type").and_then(|v| v.as_str()), Some("function" | "async_function" | "method"));
+            code.push((s as usize, e as usize, n, function));
+        }
+        let tests: Vec<(usize, usize, String)> = self
+            .store
+            .rows("test_units")
+            .iter()
+            .filter(|t| t.get("file_path").and_then(|v| v.as_str()) == Some(file))
+            .filter_map(|t| Some((t.get("line_start")?.as_i64()? as usize, t.get("line_end")?.as_i64()? as usize, t.get("id")?.as_str()?.to_string())))
+            .filter(|(s, e, _)| e > s || *s > 1)
+            .collect();
+        let mut out = HunkAttribution::default();
+        let push_def = |out: &mut HunkAttribution, name: &str, start: usize, function: bool| {
+            if !out.defs.iter().any(|(n, s)| n == name && *s == start) {
+                out.defs.push((name.to_string(), start));
+            }
+            if !function && !out.types.iter().any(|t| t == name) {
+                out.types.push(name.to_string());
+            }
+        };
+        for line in section.lines() {
+            let Some(rest) = line.strip_prefix("@@ -") else { continue };
+            let mut sides = rest.split(' ');
+            let span = |t: Option<&str>| -> Option<(usize, usize)> {
+                let t = t?.trim_start_matches(['-', '+']);
+                let (start, len) = match t.split_once(',') {
+                    Some((a, b)) => (a.parse::<usize>().ok()?, b.parse::<usize>().ok()?),
+                    None => (t.parse::<usize>().ok()?, 1),
+                };
+                Some((start.max(1), (start + len.max(1) - 1).max(start.max(1))))
+            };
+            let old = span(sides.next());
+            let new = span(sides.next());
+            let mut hit = false;
+            // The snapshot may hold the file before or after the edit: try both sides. The
+            // innermost of the units and tests covering the hunk wins.
+            for (a, b) in [new, old].into_iter().flatten() {
+                let unit = code.iter().filter(|(s, e, _, _)| *s <= b && a <= *e).min_by_key(|(s, e, _, _)| e.saturating_sub(*s));
+                let test = tests.iter().filter(|(s, e, _)| *s <= b && a <= *e).min_by_key(|(s, e, _)| e.saturating_sub(*s));
+                match (unit, test) {
+                    (Some(u), Some(t)) if t.1.saturating_sub(t.0) <= u.1.saturating_sub(u.0) => {
+                        if !out.tests.contains(&t.2) {
+                            out.tests.push(t.2.clone());
+                        }
+                    }
+                    (Some(&(s, _, n, function)), _) => push_def(&mut out, n, s, function),
+                    (None, Some(t)) => {
+                        if !out.tests.contains(&t.2) {
+                            out.tests.push(t.2.clone());
+                        }
+                    }
+                    (None, None) => continue,
+                }
+                hit = true;
+                break;
+            }
+            if !hit {
+                out.other = true;
+                let header = rest.split_once("@@").map(|(_, c)| c.trim()).unwrap_or("");
+                if let Some(name) = git::func_name_from_context(header) {
+                    if let Some(&(_, _, n, function)) = code.iter().find(|(_, _, n, f)| *n == name && *f) {
+                        push_def(&mut out, n, 0, function);
+                    }
+                }
+            }
+        }
+        // A function added or removed on a changed line, that the snapshot has.
+        for name in git::defined_on_changed_lines(section) {
+            if code.iter().any(|(_, _, n, f)| *n == name && *f) && !out.defs.iter().any(|(n, _)| *n == name) && !tests.iter().any(|(_, _, id)| id.rsplit(':').next() == Some(name.as_str())) {
+                out.defs.push((name, 0));
+            }
+        }
+        out
+    }
+
     /// Files changed between the failing commit and the working tree, for a closed issue.
     /// `dirty_at_failure` is the uncommitted diff recorded when the issue was opened.
     fn fix_summary(&self, failing_commit: &str, head: &str, dirty_at_failure: &[Value]) -> (String, Vec<Value>) {
@@ -436,6 +537,8 @@ impl Engine {
             }
         }
         passing.retain(|id| !failing.contains_key(id));
+        // "First failure after N passes": the passes in a row each failing test had before now.
+        let streaks: HashMap<String, usize> = failing.keys().map(|id| (id.clone(), passes_in_a_row(&self.store.doc, id))).filter(|(_, n)| *n > 0).collect();
         let head = git::head_commit_fast(&self.project_dir).unwrap_or_default();
         let mut issues = self.store.array("issues");
         let runner = parsed.runners.first().copied().unwrap_or("");
@@ -522,6 +625,9 @@ impl Engine {
                 issue.insert("count", Value::Int(issue.get("count").and_then(|v| v.as_i64()).unwrap_or(1) + 1));
                 issue.insert("last_at", Value::Float(now));
                 issue.insert("last_commit", Value::String(head.clone()));
+                if let Some(n) = streaks.get(id) {
+                    issue.insert("passes_before", Value::Int(*n as i64));
+                }
                 if reopened {
                     issue.insert("status", Value::String("open".into()));
                     issue.insert("reopened", Value::Int(issue.get("reopened").and_then(|v| v.as_i64()).unwrap_or(0) + 1));
@@ -548,6 +654,9 @@ impl Engine {
             ];
             if let Some(pkg) = &o.package {
                 row.push(("package".into(), Value::String(pkg.clone())));
+            }
+            if let Some(n) = streaks.get(&id) {
+                row.push(("passes_before".into(), Value::Int(*n as i64)));
             }
             row.extend([
                 ("count".into(), Value::Int(1)),
@@ -577,7 +686,7 @@ impl Engine {
         if record {
             prune_old_results(doc, now);
             for (id, o) in &resolved {
-                append_test_result(doc, id, o.passed, now);
+                append_test_result_full(doc, id, o.passed, now, None, Some(&o.message), Some(std::env::consts::OS));
                 summary.recorded += 1;
             }
         }
@@ -655,6 +764,9 @@ impl Engine {
             out.push(("location".into(), Value::String(s(i, "location"))));
         }
         out.push(("count".into(), Value::Int(i.get("count").and_then(|v| v.as_i64()).unwrap_or(1))));
+        if let Some(n) = i.get("passes_before").and_then(|v| v.as_i64()) {
+            out.push(("first_failure_after".into(), Value::Int(n)));
+        }
         if let Some(n) = i.get("reopened").and_then(|v| v.as_i64()) {
             out.push(("reopened".into(), Value::Int(n)));
         }

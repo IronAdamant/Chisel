@@ -74,7 +74,8 @@ fn tools_list_is_short_and_every_description_is_distinct() {
     let list = chisel::schemas::tool_list_json();
     let text = chisel::json::to_string(&list).unwrap();
     // 0.23.0 added worktree_root to the 15 tools that answer for a worktree (about 1.8 KB).
-    assert!(text.len() < 15_000, "tools/list is {} bytes", text.len());
+    // 0.24.0: record_result's message and platform, stats' result lists, auto_update_limit (0.6 KB).
+    assert!(text.len() < 15_500, "tools/list is {} bytes", text.len());
     let tools = list.get("tools").and_then(|v| v.as_array()).unwrap();
     let mut seen = std::collections::BTreeSet::new();
     for tool in tools {
@@ -88,4 +89,15 @@ fn tools_list_is_short_and_every_description_is_distinct() {
             assert!(spec.get("description").and_then(|v| v.as_str()).is_some_and(|d| !d.is_empty()), "{name}.{arg} has no description");
         }
     }
+}
+
+/// 0.24.0: a diff_impact reply with `run` or `groups` points at them, not at a generic run.
+#[test]
+fn diff_impact_steps_point_at_run_and_groups() {
+    use chisel::json::{parse, to_string};
+    let steps = |text: &str| to_string(&chisel::json::Value::Array(chisel::next_steps::compute_next_steps("diff_impact", &parse(text).unwrap()))).unwrap();
+    let with_run = steps(r#"{"items":[{"test_id":"a"}],"run":["cargo test -p a -- t"]}"#);
+    assert!(with_run.contains("result.run") && !with_run.contains("run_groups"), "{with_run}");
+    let tied = steps(r#"{"items":[],"truncated":true,"total":4,"tied":4,"groups":[{"group":"a","tests":4,"top":1.0,"run":"cargo test -p a"}]}"#);
+    assert!(tied.contains("run_groups") && !tied.contains("test_gaps"), "{tied}");
 }
