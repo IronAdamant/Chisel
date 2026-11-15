@@ -8,7 +8,7 @@ After an edit, an agent asks Chisel **which tests to run**, **which files are ri
 
 ## Install
 
-Download a binary for Linux (musl), macOS (arm64, x64), or Windows from [Releases](https://github.com/IronAdamant/Chisel/releases), put it on your `PATH` as `chisel`, and make sure `git` is installed. Or build it:
+Download a binary for Linux (musl), macOS (arm64, x64), or Windows from [Releases](https://github.com/IronAdamant/Chisel/releases), check it against `SHA256SUMS`, put it on your `PATH` as `chisel`, and make sure `git` is installed. Or build it:
 
 ```bash
 git clone https://github.com/IronAdamant/Chisel.git

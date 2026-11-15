@@ -1,6 +1,6 @@
 # Chisel
 
-Updated: 2026-11-03.
+Updated: 2026-11-15.
 
 Purpose: inventory of this repository. The program you run is the Rust binary from `src/`. Read `AGENTS.md` for calls and `ARCHITECTURE.md` for how the pieces fit.
 
@@ -83,7 +83,7 @@ Status values: `no_data`, `no_changes`, `no_edges`, `git_error`, `stale_db`, `er
 | Path | Purpose |
 |---|---|
 | `.github/workflows/ci.yml` | Test on Linux, macOS, and Windows. Release builds for the publish targets. |
-| `.github/workflows/publish.yml` | Tagged release builds. |
+| `.github/workflows/publish.yml` | Tagged release builds, plus `SHA256SUMS` for the four binaries. |
 | `docs/AGENT_PLAYBOOK.md` | Short pointer at `AGENTS.md`. |
 | `docs/CUSTOM_EXTRACTORS.md` | External extractor program. |
 | `docs/EXTRACTOR_ECOSYSTEM.md` | Where an external extractor fits. |

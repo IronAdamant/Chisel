@@ -473,9 +473,9 @@ let e = "esc \" up(4)";"##;
 
     #[test]
     fn use_lines() {
-        let text = "use specula_locus::geom::yaw_toward;\nuse crate::solve::{solve, Plan as P};\nuse super::*;\nuse a::b::{self, c::d};";
+        let text = "use kit_locus::geom::yaw_toward;\nuse crate::solve::{solve, Plan as P};\nuse super::*;\nuse a::b::{self, c::d};";
         let u = use_paths(text);
-        assert_eq!(u["yaw_toward"], vec![vec!["specula_locus".to_string(), "geom".into(), "yaw_toward".into()]]);
+        assert_eq!(u["yaw_toward"], vec![vec!["kit_locus".to_string(), "geom".into(), "yaw_toward".into()]]);
         assert_eq!(u["P"], vec![vec!["crate".to_string(), "solve".into(), "Plan".into()]]);
         assert_eq!(u["*"], vec![vec!["super".to_string()]]);
         assert_eq!(u["b"], vec![vec!["a".to_string(), "b".into()]]);

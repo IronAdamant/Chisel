@@ -1,4 +1,4 @@
-//! Fixes from the Specula M5 lanes, through the binary: `diff-impact --since`, the merge-base
+//! Fixes from the M5 lanes on a large Rust workspace, through the binary: `diff-impact --since`, the merge-base
 //! default on a branch, deleted files never "missing", worktree overlays (`--worktree`,
 //! `worktree_root`, and a process started inside a linked worktree), Rust calls resolved by type
 //! rather than name, help for every command, and exit codes.

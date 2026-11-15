@@ -47,7 +47,7 @@ Not allowed: crates.io crates, a vendored SQLite amalgamation or tree-sitter gra
 
 ## CI
 
-`.github/workflows/ci.yml` runs `cargo test` on Linux, macOS, and Windows. Release builds still cover Linux musl, macOS arm64, macOS x64, and Windows. `chisel --version` prints the package version from `Cargo.toml`.
+`.github/workflows/ci.yml` runs `cargo test` on Linux, macOS, and Windows. Release builds still cover Linux musl, macOS arm64, macOS x64, and Windows, and the release uploads `SHA256SUMS` for those binaries. `chisel --version` prints the package version from `Cargo.toml`.
 
 ## Out of scope
 

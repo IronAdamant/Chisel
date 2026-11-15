@@ -64,6 +64,34 @@ jobs:
         with:
           path: assets
           merge-multiple: true
+      - name: SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd assets
+          shopt -s nullglob
+          found=(chisel-*)
+          expected=(
+            chisel-aarch64-apple-darwin
+            chisel-x86_64-apple-darwin
+            chisel-x86_64-pc-windows-msvc.exe
+            chisel-x86_64-unknown-linux-musl
+          )
+          if [[ ${#found[@]} -ne 4 ]]; then
+            echo "expected 4 release binaries, found ${#found[@]}" >&2
+            printf '  %s\n' "${found[@]}" >&2
+            exit 1
+          fi
+          for bin in "${expected[@]}"; do
+            if [[ ! -f "$bin" ]]; then
+              echo "missing ${bin}" >&2
+              ls -la >&2
+              exit 1
+            fi
+          done
+          sha256sum -- "${expected[@]}" | LC_ALL=C sort -k2 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          cat SHA256SUMS
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -72,9 +100,11 @@ jobs:
           body: |
             Rust binaries for ${{ github.ref_name }}.
             `chisel-mcp` is this same `chisel` program.
+            Check `SHA256SUMS` before use.
           files: |
             assets/chisel-x86_64-unknown-linux-musl
             assets/chisel-aarch64-apple-darwin
             assets/chisel-x86_64-apple-darwin
             assets/chisel-x86_64-pc-windows-msvc.exe
+            assets/SHA256SUMS
           fail_on_unmatched_files: true
