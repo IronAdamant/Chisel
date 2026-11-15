@@ -35,7 +35,7 @@ Status values: `no_data`, `no_changes`, `no_edges`, `git_error`, `stale_db`, `er
 
 `looks_like_test` is the only path classifier. The hint printed when analyze finds no tests uses that same pattern list.
 
-Cargo integration tests are `.rs` files under the top-level `tests/` directory, including `tests/a.rs`. Rust functions marked `#[test]`, `#[tokio::test]`, `#[rstest]`, or `#[test_case]` are test units even when the surrounding file is source. A source file that also contains `#[test]` stays a code file for `risk-map` and `test-gaps`. The test functions themselves are not reported as untested code.
+Cargo integration tests are `.rs` files under a crate's `tests/` directory: the root crate's (`tests/a.rs`) or a workspace member's (`crates/a/tests/a.rs`). `src/tests/` is code. Rust functions marked `#[test]`, `#[tokio::test]`, `#[rstest]`, or `#[test_case]` are test units even when the surrounding file is source. A source file that also contains `#[test]` stays a code file for `risk-map` and `test-gaps`. The test functions themselves are not reported as untested code.
 
 ## Dependency rule
 

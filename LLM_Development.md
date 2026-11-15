@@ -4,6 +4,17 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## 2026-11-15 -- 0.24.0: diff_impact on real diffs
+
+- Measured on a clone of Specula (747 code files, 3,084 tests) before and after. Wide diff `ref=HEAD~6`: 778 rows, 236 at 1.0, first page one file, before; 889 ranked rows, 3 at 1.0, 33 distinct scores, after, with 22 changed tests and 45 guard tests above them. One-function diff (`toolkits::tags`): 1.0 direct row unchanged; the 0.5 call-graph row it had came through a closure misread as `fn call`, and is gone. One changed assertion: 8 tests through a helper before; that test first after.
+- Ranking: `rank_by_breadth` in `engine/query.rs` sums, per test, edge weight times the rarity of each changed unit it reaches (`reach_log` from `impacted`).
+- Hunks: `hunk_attribution` in `engine/issues.rs` maps each hunk to the innermost code unit or test unit.
+- Calls: `call_sites_scoped` drops names the text binds; `RustResolver::narrow_free` resolves free calls by path, parent module and visibility, std modules to nothing.
+- `engine/selection.rs`: always-run rules, `reads` detection, `run` commands, grouped summary.
+- `auto_update`: a job past `auto_update_limit`; record_result message/platform/first failure; `stats` result lists.
+
+---
+
 ## 2026-11-03 -- Cargo test discovery, docs, CI, version
 
 - One test-file classifier. Rust files under `tests/` and `#[test]`-family functions are test units.
