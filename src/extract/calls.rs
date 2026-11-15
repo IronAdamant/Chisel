@@ -129,6 +129,147 @@ fn skip_non_code(text: &str, i: usize) -> Option<usize> {
     }
 }
 
+/// Names the text binds itself: `let` patterns, closure parameters (`|a, b: T|`) and function
+/// parameters (`fn f(write: impl Fn())`). A bare `write(..)` on such a name calls the local
+/// value, not a function of the project.
+pub fn local_bindings(text: &str) -> BTreeSet<String> {
+    let code = code_only(text);
+    let bytes = code.as_bytes();
+    let mut out = BTreeSet::new();
+    // In a pattern or a parameter, the bound names are its lowercase identifiers: `Some(x)`
+    // binds `x`, `Point { x: a }` binds `a` (a word ending in `:` is a field), `a::B` binds none.
+    let add_idents = |seg: &str, out: &mut BTreeSet<String>| {
+        for w in seg.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':')) {
+            if w.is_empty() || w.contains("::") || w.ends_with(':') {
+                continue;
+            }
+            let name = w.trim_start_matches(':');
+            if name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_') && !matches!(name, "mut" | "ref" | "_" | "self" | "impl" | "dyn" | "move") {
+                out.insert(name.to_string());
+            }
+        }
+    };
+    let mut i = 0;
+    while i < bytes.len() {
+        let word_start = i == 0 || !ident_char(bytes[i - 1]);
+        if word_start && code[i..].starts_with("let") && bytes.get(i + 3).is_some_and(|b| !ident_char(*b)) {
+            // `let PATTERN [: T] = ..;` / `if let PATTERN = ..`
+            let rest = &code[i + 3..];
+            let end = rest.find(['=', ';']).unwrap_or(rest.len());
+            let pat = &rest[..end];
+            // The pattern ends at a top-level `:` (its type); `::` is a path.
+            let mut cut = pat.len();
+            let pb = pat.as_bytes();
+            let mut depth = 0i32;
+            let mut k = 0;
+            while k < pb.len() {
+                match pb[k] {
+                    b'(' | b'[' | b'{' | b'<' => depth += 1,
+                    b')' | b']' | b'}' | b'>' => depth -= 1,
+                    b':' if depth == 0 => {
+                        if pb.get(k + 1) == Some(&b':') {
+                            k += 2;
+                            continue;
+                        }
+                        cut = k;
+                        break;
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+            add_idents(&pat[..cut], &mut out);
+            i += 3;
+            continue;
+        }
+        if word_start && code[i..].starts_with("fn") && bytes.get(i + 2).is_some_and(|b| !ident_char(*b)) {
+            // `fn name<..>(params)`: the parameter names, each written `name: Type`.
+            let mut angle = 0i32;
+            let open = bytes.iter().enumerate().skip(i + 2).find_map(|(k, b)| {
+                match b {
+                    b'<' => angle += 1,
+                    b'>' => angle -= 1,
+                    b'(' if angle <= 0 => return Some(Some(k)),
+                    b'{' | b';' => return Some(None),
+                    _ => {}
+                }
+                None
+            }).flatten();
+            if let Some(open) = open {
+                let mut depth = 0i32;
+                let mut close = open;
+                for (k, b) in bytes.iter().enumerate().skip(open) {
+                    match b {
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                close = k;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let params = &code[open + 1..close.max(open + 1)];
+                let mut d = 0i32;
+                let mut part = String::new();
+                for c in params.chars().chain(std::iter::once(',')) {
+                    match c {
+                        '(' | '<' | '[' => d += 1,
+                        ')' | '>' | ']' => d -= 1,
+                        _ => {}
+                    }
+                    if c == ',' && d <= 0 {
+                        if let Some((p, _)) = part.split_once(':').filter(|(_, t)| !t.starts_with(':')) {
+                            add_idents(p, &mut out);
+                        }
+                        part.clear();
+                    } else {
+                        part.push(c);
+                    }
+                }
+                i = close.max(i + 2);
+                continue;
+            }
+        }
+        if bytes[i] == b'|' && bytes.get(i + 1) != Some(&b'|') && (i == 0 || bytes[i - 1] != b'|') {
+            // A closure's `|params|`, only where an expression starts (not `a | b`).
+            let before = skip_ws_back(bytes, i);
+            let opens = before == 0 || matches!(bytes[before - 1], b'=' | b'(' | b',' | b'{' | b';' | b'[') || ident_before(bytes, before).is_some_and(|w| matches!(&code[w..before], "move" | "return"));
+            if opens {
+                if let Some(close) = code[i + 1..].find('|').map(|p| i + 1 + p) {
+                    let params = &code[i + 1..close];
+                    if !params.contains(['\n', ';']) {
+                        for p in params.split(',') {
+                            let p = p.split_once(':').map(|(a, _)| a).unwrap_or(p);
+                            add_idents(p, &mut out);
+                        }
+                    }
+                    i = close + 1;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// `call_sites`, except that a bare call of a name the text binds itself (a closure in a
+/// `let`, a parameter) is not a free call: `let page = || ..; page()` calls no project `page`.
+pub fn call_sites_scoped(text: &str) -> HashMap<String, CallSite> {
+    let mut sites = call_sites(text);
+    let bound = local_bindings(text);
+    sites.retain(|name, site| {
+        if bound.contains(name) {
+            site.free = false;
+        }
+        site.free || site.method || !site.quals.is_empty()
+    });
+    sites
+}
+
 pub fn call_sites(text: &str) -> HashMap<String, CallSite> {
     let bytes = text.as_bytes();
     let mut out: HashMap<String, CallSite> = HashMap::new();
@@ -310,6 +451,24 @@ let e = "esc \" up(4)";"##;
             assert!(!sites.contains_key(name), "{name} is in a literal or comment: {sites:?}");
         }
         assert!(sites["real"].free, "code after a lifetime is still read: {sites:?}");
+    }
+
+    #[test]
+    fn names_bound_in_the_text_are_not_free_calls() {
+        let text = "fn helper<F: Fn(u8)>(write: F, (a, b): (u8, u8)) { write(1); }\n#[test]\nfn t() {\n    let err = |m: &str| m.len();\n    let mut page = move || 3;\n    let Some(found) = lookup() else { return };\n    let Point { x: px, .. } = p;\n    err(\"x\");\n    page();\n    found(1);\n    px(2);\n    real(1);\n    crate::io::write(2);\n    let total = a | b;\n    total(3);\n}";
+        let bound = local_bindings(text);
+        for n in ["write", "a", "b", "err", "m", "page", "found", "px", "total"] {
+            assert!(bound.contains(n), "{n} is bound: {bound:?}");
+        }
+        for n in ["real", "lookup", "Point", "x", "Some", "helper", "t"] {
+            assert!(!bound.contains(n), "{n} is not bound: {bound:?}");
+        }
+        let sites = call_sites_scoped(text);
+        for n in ["err", "page", "found", "px", "total"] {
+            assert!(!sites.contains_key(n), "{n}(..) calls a local: {sites:?}");
+        }
+        assert!(sites["real"].free && sites["lookup"].free);
+        assert!(!sites["write"].free && sites["write"].quals.contains("io"), "a qualified call of a bound name stays");
     }
 
     #[test]

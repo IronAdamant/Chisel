@@ -14,6 +14,8 @@ use std::rc::Rc;
 #[derive(Debug, Default)]
 struct Manifest {
     package: bool,
+    /// `[package] name`.
+    name: Option<String>,
     workspace: bool,
     /// Crate directories of `[dependencies]` (and target-specific ones) that are path or workspace deps.
     deps: Vec<String>,
@@ -116,6 +118,7 @@ fn parse_manifest(dir: &str, text: &str) -> Manifest {
     // `[dependencies.foo]` tables: the key comes from the header, fields from the lines.
     let mut table_dep: Option<String> = None;
     let mut fields = String::new();
+    let mut in_package = false;
     let flush = |m: &mut Manifest, kind: Kind, key: &str, fields: &str| {
         let (path, ws) = dep_fields(fields);
         match (kind, path, ws) {
@@ -137,6 +140,7 @@ fn parse_manifest(dir: &str, text: &str) -> Manifest {
             }
             fields.clear();
             let header = line.trim_start_matches('[').trim_end_matches(']');
+            in_package = header.trim() == "package";
             match header.trim() {
                 "package" => m.package = true,
                 "workspace" => m.workspace = true,
@@ -152,9 +156,17 @@ fn parse_manifest(dir: &str, text: &str) -> Manifest {
                 flush(&mut m, kind, &key, &fields);
             }
             kind = Kind::Other;
+            in_package = false;
             continue;
         }
         if kind == Kind::Other {
+            if in_package && m.name.is_none() {
+                if let Some((key, value)) = line.split_once('=') {
+                    if key.trim() == "name" {
+                        m.name = Some(value.trim().trim_matches('"').to_string());
+                    }
+                }
+            }
             continue;
         }
         let Some((key, value)) = line.split_once('=') else { continue };
@@ -260,6 +272,12 @@ impl Crates {
         r
     }
 
+    /// The Cargo package name of the crate a file belongs to (`cargo test -p <name>`).
+    pub fn package_of(&mut self, file: &str) -> Option<String> {
+        let dir = self.crate_of(file)?;
+        self.manifest(&dir).and_then(|m| m.name.clone())
+    }
+
     /// Whether a Rust test in `test_file` can call code in `code_file`. Anything outside a
     /// package, and tests that are not Rust, are allowed.
     pub fn allows(&mut self, test_file: &str, code_file: &str) -> bool {
@@ -303,6 +321,7 @@ h = { path = "../h" }
 "#,
         );
         assert!(m.package && !m.workspace);
+        assert_eq!(m.name.as_deref(), Some("a"), "the package name, for cargo test -p");
         assert_eq!(m.deps, vec!["crates/c", "crates/g", "crates/h"]);
         assert_eq!(m.ws_deps, vec!["b", "d"]);
         assert_eq!(m.dev, vec!["crates/e"]);

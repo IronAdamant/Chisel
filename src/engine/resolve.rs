@@ -8,7 +8,8 @@
 //! What cannot be resolved is matched by name only when the name is rare and not a standard
 //! method, at a lower weight (`NAME_ONLY`), so resolved edges rank first.
 
-use super::analyze::{declared_types, narrow_by_call_site};
+use super::analyze::{crate_dir, declared_types, path_segments};
+use super::callers::{in_module, rust_reach, Reach};
 use crate::extract::calls::CallSite;
 use crate::extract::rust_items::{self, ImplBlock};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -47,6 +48,33 @@ const STD_TYPES: &[&str] = &[
     "RwLock", "Send", "Sized", "Some", "String", "Sub", "Sync", "SystemTime", "ToOwned", "ToString", "TryFrom", "TryInto",
     "Vec", "VecDeque", "Write",
 ];
+
+/// Modules of the standard library. `fs::write(..)` with no project module `fs` is std's.
+const STD_MODULES: &[&str] = &[
+    "alloc", "any", "array", "ascii", "borrow", "boxed", "cell", "char", "cmp", "collections", "convert", "core", "default",
+    "env", "error", "f32", "f64", "ffi", "fmt", "fs", "future", "hash", "hint", "i128", "i16", "i32", "i64", "i8", "io",
+    "isize", "iter", "marker", "mem", "net", "num", "ops", "option", "os", "panic", "path", "pin", "process", "ptr", "rc",
+    "result", "slice", "std", "str", "string", "sync", "task", "thread", "time", "u128", "u16", "u32", "u64", "u8", "usize",
+    "vec",
+];
+
+/// The files that can be the parent module of `file` (`src/a/b.rs` -> `src/a.rs`, `src/a/mod.rs`;
+/// `src/a/b/mod.rs` -> the same). A crate root (`lib.rs`, `main.rs`) has none.
+fn parent_module_files(file: &str) -> Vec<String> {
+    let Some((dir, base)) = file.rsplit_once('/') else { return Vec::new() };
+    if matches!(base, "lib.rs" | "main.rs") && !dir.contains('/') || dir.ends_with("/src") && matches!(base, "lib.rs" | "main.rs") {
+        return Vec::new();
+    }
+    // The module's own directory: `src/a/b` for both `src/a/b.rs` and `src/a/b/mod.rs`.
+    let module = if base == "mod.rs" { dir.to_string() } else { format!("{dir}/{}", base.trim_end_matches(".rs")) };
+    let Some((parent, _)) = module.rsplit_once('/') else { return Vec::new() };
+    let mut out = vec![format!("{parent}.rs"), format!("{parent}/mod.rs")];
+    if parent.ends_with("src") || !parent.contains('/') {
+        out.push(format!("{parent}/lib.rs"));
+        out.push(format!("{parent}/main.rs"));
+    }
+    out
+}
 
 /// Where a call is made from.
 pub(super) struct Ctx<'a> {
@@ -96,6 +124,8 @@ pub(super) struct RustResolver {
     defs: HashMap<String, Vec<(usize, String)>>,
     owners: HashMap<String, Vec<Option<Owner>>>,
     type_files: std::rc::Rc<HashMap<String, BTreeSet<String>>>,
+    /// Id -> whether a definition behind it is `pub` in some form.
+    visible: HashMap<String, bool>,
 }
 
 impl RustResolver {
@@ -116,6 +146,7 @@ impl RustResolver {
             defs,
             owners: HashMap::new(),
             type_files: std::rc::Rc::new(type_files),
+            visible: HashMap::new(),
         }
     }
 
@@ -188,6 +219,144 @@ impl RustResolver {
         }
     }
 
+    /// Free functions a bare `name(..)` or a module-qualified `m::name(..)` call can reach, each
+    /// with its weight factor. A `use` path, a glob import, the calling file or its parent module
+    /// resolve at 1. The same-crate guess for a bare name nothing imports, and a qualifier
+    /// Chisel cannot map to a file, are name-only matches (`NAME_ONLY`), and only functions
+    /// visible from the caller count. A qualifier naming a std module (`std::fs::write`, `io::`)
+    /// with no project module of that name reaches nothing.
+    fn narrow_free<'a>(&mut self, ctx: &Ctx, name: &str, ids: &[String], quals: &BTreeSet<String>, free: bool, id_file: &HashMap<&'a str, &'a str>) -> Vec<(String, f64)> {
+        let files: BTreeSet<&'a str> = ids.iter().filter_map(|c| id_file.get(c.as_str()).copied()).collect();
+        let mut keep: BTreeMap<&'a str, f64> = BTreeMap::new();
+        let add = |keep: &mut BTreeMap<&'a str, f64>, f: &str, conf: f64| {
+            if let Some(&f) = files.get(f) {
+                let slot = keep.entry(f).or_insert(0.0);
+                *slot = slot.max(conf);
+            }
+        };
+        // Files whose path segments best match a `use` or call path (`geom::yaw_toward`).
+        let by_segments = |segs: &[String]| -> Vec<&'a str> {
+            let wanted: Vec<&String> = segs.iter().filter(|s| !matches!(s.as_str(), "crate" | "self" | "super") && s.as_str() != name).collect();
+            let score = |f: &str| {
+                let fs = path_segments(f);
+                wanted.iter().filter(|w| fs.iter().any(|s| s == w.as_str())).count()
+            };
+            let best = files.iter().map(|f| score(f)).max().unwrap_or(0);
+            if best == 0 {
+                return Vec::new();
+            }
+            files.iter().copied().filter(|f| score(f) == best).collect()
+        };
+        let std_path = |p: &[String]| p.first().is_some_and(|s| matches!(s.as_str(), "std" | "core" | "alloc"));
+        let parents = parent_module_files(ctx.file);
+        let crate_root = |f: &str| matches!(f.rsplit('/').next(), Some("lib.rs" | "main.rs")) && crate_dir(f) == crate_dir(ctx.file);
+        for q in quals {
+            match q.as_str() {
+                "self" => add(&mut keep, ctx.file, 1.0),
+                "super" => {
+                    // An inline `mod tests` in the file, or the parent module's file.
+                    add(&mut keep, ctx.file, 1.0);
+                    for p in &parents {
+                        add(&mut keep, p, 1.0);
+                    }
+                }
+                "crate" => {
+                    for f in files.iter().copied().filter(|f| crate_root(f)) {
+                        add(&mut keep, f, 1.0);
+                    }
+                }
+                _ => {
+                    if ctx.uses.get(q.as_str()).is_some_and(|paths| paths.iter().all(|p| std_path(p))) {
+                        continue;
+                    }
+                    let hits = by_segments(std::slice::from_ref(q));
+                    if !hits.is_empty() {
+                        for f in hits {
+                            add(&mut keep, f, 1.0);
+                        }
+                    } else if !STD_MODULES.contains(&q.as_str()) && files.len() <= 3 {
+                        // A crate name or a re-export: the definitions of the name, by name only.
+                        for f in files.iter().copied() {
+                            add(&mut keep, f, NAME_ONLY);
+                        }
+                    }
+                }
+            }
+        }
+        if free {
+            match ctx.uses.get(name) {
+                Some(paths) => {
+                    for p in paths.iter().filter(|p| !std_path(p)) {
+                        let hits = by_segments(p);
+                        if hits.is_empty() && files.len() <= 3 {
+                            for f in files.iter().copied() {
+                                add(&mut keep, f, NAME_ONLY);
+                            }
+                        }
+                        for f in hits {
+                            add(&mut keep, f, 1.0);
+                        }
+                    }
+                }
+                None if files.contains(ctx.file) => add(&mut keep, ctx.file, 1.0),
+                None => {
+                    let mut found = false;
+                    for p in ctx.uses.get("*").into_iter().flatten() {
+                        let hits: Vec<&'a str> = if p.len() == 1 && p[0] == "super" {
+                            parents.iter().filter_map(|f| files.get(f.as_str()).copied()).collect()
+                        } else if std_path(p) {
+                            Vec::new()
+                        } else {
+                            by_segments(p)
+                        };
+                        for f in hits {
+                            found = true;
+                            add(&mut keep, f, 1.0);
+                        }
+                    }
+                    if !found {
+                        // Nothing imports the name: a guess among the caller's own crate, kept to
+                        // the functions the caller can see.
+                        let own = crate_dir(ctx.file);
+                        for f in files.iter().copied().filter(|f| crate_dir(f) == own) {
+                            add(&mut keep, f, NAME_ONLY);
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for id in ids {
+            let Some(f) = id_file.get(id.as_str()).copied() else { continue };
+            let Some(&conf) = keep.get(f) else { continue };
+            if conf < 1.0 && !in_module(f, ctx.file) && !self.visible_outside(id, f) {
+                continue;
+            }
+            out.push((id.clone(), conf));
+        }
+        out
+    }
+
+    /// Whether any definition behind `id` is `pub` (in any form), so code outside its module
+    /// can call it.
+    fn visible_outside(&mut self, id: &str, file: &str) -> bool {
+        if let Some(v) = self.visible.get(id) {
+            return *v;
+        }
+        let v = self.visible_outside_read(id, file);
+        self.visible.insert(id.to_string(), v);
+        v
+    }
+
+    fn visible_outside_read(&mut self, id: &str, file: &str) -> bool {
+        let lines: Vec<usize> = self.defs.get(id).map(|d| d.iter().map(|(l, _)| *l).collect()).unwrap_or_default();
+        if lines.is_empty() {
+            return true;
+        }
+        let text = self.read(file);
+        lines.iter().any(|l| rust_reach(&text, *l) != Reach::Module)
+    }
+
     /// Of `matched` (every unit called `name`), the ones this call can reach. Each comes with a
     /// weight factor (1 when resolved through a type or path, `TYPE_MENTIONED` or `NAME_ONLY`
     /// when only the name matched) and the owner type it was resolved through (empty when none:
@@ -218,14 +387,11 @@ impl RustResolver {
         let free_ids: Vec<String> = cands.iter().filter(|c| c.owners.iter().any(|o| o.is_none())).map(|c| c.id.clone()).collect();
         let from_std = |q: &str| ctx.uses.get(q).is_some_and(|paths| paths.iter().all(|p| p.first().is_some_and(|s| matches!(s.as_str(), "std" | "core" | "alloc"))));
         // Free functions through a module path or a bare call: the file-level narrowing.
-        let free_narrow = |this: &mut Self, quals: BTreeSet<String>, free: bool| -> Vec<String> {
+        let free_narrow = |this: &mut Self, quals: BTreeSet<String>, free: bool| -> Vec<(String, f64)> {
             if free_ids.is_empty() {
                 return Vec::new();
             }
-            let path_site = CallSite { quals, method: false, free, recvs: BTreeSet::new() };
-            let type_files = std::rc::Rc::clone(&this.type_files);
-            let mut declares = |f: &str, ty: &str| this.declares(f, ty);
-            narrow_by_call_site(ctx.file, name, free_ids.clone(), Some(&path_site), ctx.uses, id_file, &type_files, &mut declares)
+            this.narrow_free(ctx, name, &free_ids, &quals, free, id_file)
         };
         for q in &site.quals {
             if from_std(q) {
@@ -247,8 +413,8 @@ impl RustResolver {
                 continue;
             }
             if !q.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                for id in free_narrow(self, [q.clone()].into_iter().collect(), false) {
-                    keep(&mut out, &id, "", 1.0);
+                for (id, conf) in free_narrow(self, [q.clone()].into_iter().collect(), false) {
+                    keep(&mut out, &id, "", conf);
                 }
                 continue;
             }
@@ -334,8 +500,8 @@ impl RustResolver {
             }
         }
         if site.free {
-            for id in free_narrow(self, BTreeSet::new(), true) {
-                keep(&mut out, &id, "", 1.0);
+            for (id, conf) in free_narrow(self, BTreeSet::new(), true) {
+                keep(&mut out, &id, "", conf);
             }
         }
         // One row per id: its best factor, and the owner when only one owner was resolved.
@@ -467,6 +633,54 @@ mod tests {
         let none: HashSet<String> = HashSet::new();
         let ctx = Ctx { file: "tests/t.rs", uses: &empty, locals: &locals, self_type: None, idents: &none };
         assert_eq!(ids(r.resolve(&ctx, "glyph", sites.get("glyph"), &all("glyph"), &id_file)), vec![format!("src/atlas.rs:glyph:function@{NAME_ONLY}/GlyphAtlas")]);
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod free_call_tests {
+    use super::*;
+    use crate::extract::calls::{call_sites_scoped, use_paths};
+    use crate::json::Value;
+
+    fn unit(id: &str, file: &str, line: i64) -> Value {
+        Value::object(vec![
+            ("id".into(), Value::String(id.into())),
+            ("file_path".into(), Value::String(file.into())),
+            ("name".into(), Value::String(id.split(':').nth(1).unwrap_or("").into())),
+            ("unit_type".into(), Value::String("function".into())),
+            ("line_start".into(), Value::Int(line)),
+        ])
+    }
+
+    /// A bare or module-qualified call: std modules reach nothing, a path or a parent module
+    /// resolves, and a guess across the crate is a name-only match of a function the caller sees.
+    #[test]
+    fn free_calls_resolve_by_path_and_visibility() {
+        let dir = std::env::temp_dir().join(format!("chisel-free-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(dir.join("src/alpha")).unwrap();
+        fs::write(dir.join("src/alpha.rs"), "pub fn write() {}\nfn hidden() {}\n").unwrap();
+        let units = vec![unit("src/alpha.rs:write:function", "src/alpha.rs", 1), unit("src/alpha.rs:hidden:function", "src/alpha.rs", 2)];
+        let id_file: HashMap<&str, &str> = units.iter().map(|u| (u.get("id").unwrap().as_str().unwrap(), u.get("file_path").unwrap().as_str().unwrap())).collect();
+        let mut r = RustResolver::new(super::super::Sources::new(&dir, None), &units, HashMap::new());
+        let ids = |name: &str| vec![format!("src/alpha.rs:{name}:function")];
+        let run = |r: &mut RustResolver, file: &str, text: &str, name: &str| -> Vec<(String, f64)> {
+            let sites = call_sites_scoped(text);
+            let uses = use_paths(text);
+            let locals = HashMap::new();
+            let idents = HashSet::new();
+            let ctx = Ctx { file, uses: &uses, locals: &locals, self_type: None, idents: &idents };
+            r.resolve(&ctx, name, sites.get(name), &ids(name), &id_file).into_iter().map(|x| (x.id, x.conf)).collect()
+        };
+        assert!(run(&mut r, "src/beta.rs", "fn t() { std::fs::write(\"a\", \"b\").ok(); }", "write").is_empty(), "std::fs::write is std's");
+        assert!(run(&mut r, "src/beta.rs", "use std::fs;\nfn t() { fs::write(\"a\", \"b\").ok(); }", "write").is_empty());
+        assert_eq!(run(&mut r, "src/beta.rs", "fn t() { crate::alpha::write(); }", "write"), vec![("src/alpha.rs:write:function".to_string(), 1.0)]);
+        assert_eq!(run(&mut r, "src/beta.rs", "fn t() { write(); }", "write"), vec![("src/alpha.rs:write:function".to_string(), NAME_ONLY)], "nothing imports it: a guess, by name");
+        assert!(run(&mut r, "src/beta.rs", "fn t() { hidden(); }", "hidden").is_empty(), "a private function of another module is out of reach");
+        assert!(run(&mut r, "src/beta.rs", "fn t() { let write = |x: u8| x; write(1); }", "write").is_empty(), "a closure");
+        assert_eq!(run(&mut r, "src/alpha/tests.rs", "use super::*;\nfn t() { hidden(); }", "hidden"), vec![("src/alpha.rs:hidden:function".to_string(), 1.0)], "the parent module, through its glob import");
+        assert_eq!(parent_module_files("src/alpha/tests.rs"), vec!["src/alpha.rs", "src/alpha/mod.rs"]);
+        assert!(parent_module_files("src/lib.rs").is_empty());
         let _ = fs::remove_dir_all(dir);
     }
 }

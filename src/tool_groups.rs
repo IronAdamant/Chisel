@@ -212,8 +212,35 @@ pub struct AgentLines {
     pub block: bool,
     pub tools: Option<String>,
     pub disable: Option<String>,
+    /// `chisel: always-run <paths> -> <tests>` rules: when a changed file matches one of the
+    /// path patterns, `diff_impact` names the tests first, whatever the call graph says.
+    pub always_run: Vec<AlwaysRun>,
     /// One line per ignored entry, for the instructions and `stats`.
     pub warnings: Vec<String>,
+}
+
+/// One `always-run` rule from AGENTS.md.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AlwaysRun {
+    /// Path patterns (`*` within a folder, `**` across folders), matched against changed files.
+    pub paths: Vec<String>,
+    /// Tests: a test file (all its tests), a test id (`path:name`), or a test name.
+    pub tests: Vec<String>,
+    /// The line as written, for the reason of each row it adds.
+    pub line: String,
+}
+
+/// `<paths> -> <tests>`, each a list split by commas or spaces.
+fn parse_always_run(list: &str) -> Result<AlwaysRun, String> {
+    let Some((paths, tests)) = list.split_once("->") else {
+        return Err("always-run needs \"<paths> -> <tests>\", e.g. \"chisel: always-run crates/a/src/** -> crates/a/tests/guard.rs\"".to_string());
+    };
+    let split = |t: &str| -> Vec<String> { t.split(|c: char| c == ',' || c.is_whitespace()).map(|x| x.trim().trim_start_matches("./").to_string()).filter(|x| !x.is_empty()).collect() };
+    let (paths, tests) = (split(paths), split(tests));
+    if paths.is_empty() || tests.is_empty() {
+        return Err("always-run needs at least one path pattern before \"->\" and one test after it".to_string());
+    }
+    Ok(AlwaysRun { paths, tests, line: list.trim().to_string() })
 }
 
 /// A fence line: its character, its length, and the info string after it.
@@ -269,8 +296,15 @@ pub fn parse_agents_md(text: &str) -> AgentLines {
         let (slot, disable) = match key.as_str() {
             "tools" => (&mut out.tools, false),
             "disable" => (&mut out.disable, true),
+            "always-run" | "always_run" => {
+                match parse_always_run(list) {
+                    Ok(rule) => out.always_run.push(rule),
+                    Err(e) => out.warnings.push(format!("AGENTS.md agent-tools: {e} for {AGENT_NAME}")),
+                }
+                continue;
+            }
             _ => {
-                out.warnings.push(warn(format!("unknown key \"{key}\" (use tools or disable)")));
+                out.warnings.push(warn(format!("unknown key \"{key}\" (use tools, disable or always-run)")));
                 continue;
             }
         };

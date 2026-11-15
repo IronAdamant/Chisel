@@ -51,6 +51,7 @@ fn session_in(dir: &std::path::Path, vars: &[(&str, &str)], requests: &[&str]) -
 /// initialize + tools/list with no switches set (golden). 0.19.0 changed only
 /// `capabilities.tools.listChanged` against 0.18.0; 0.20.0 adds the `issues` group's tools.
 /// 0.23.0: `since` and `worktree_root` arguments, and descriptions that say when to call.
+/// 0.24.0: `auto_update_limit`, record_result's `message` and `platform`, stats' result lists.
 fn release_output() -> Vec<String> {
     include_str!("fixtures/mcp/default.jsonl")
         .lines()
@@ -262,4 +263,19 @@ fn examples_in_this_repos_docs_switch_nothing() {
     }
     let dir = project_with(include_str!("../AGENTS.md"));
     assert_eq!(session_in(&dir, &[], &[INIT, LIST]), release_output());
+}
+
+/// 0.24.0: `chisel: always-run <paths> -> <tests>` lines are rules for diff_impact; a line
+/// without `->` is a warning, and other tools' lines are untouched.
+#[test]
+fn always_run_lines_are_rules_and_a_bad_one_is_a_warning() {
+    let text = "```agent-tools\nchisel: always-run crates/a/src/**, scripts/*.py -> crates/a/tests/guard.rs crates/a/tests/x.rs:named\nchisel: always-run crates/b/src/**\ntrammel: always-run whatever\nchisel: disable locks\n```\n";
+    let lines = chisel::tool_groups::parse_agents_md(text);
+    assert_eq!(lines.always_run.len(), 1, "{lines:?}");
+    let rule = &lines.always_run[0];
+    assert_eq!(rule.paths, vec!["crates/a/src/**", "scripts/*.py"]);
+    assert_eq!(rule.tests, vec!["crates/a/tests/guard.rs", "crates/a/tests/x.rs:named"]);
+    assert_eq!(lines.disable.as_deref(), Some("locks"), "other keys still read");
+    assert_eq!(lines.warnings.len(), 1, "{:?}", lines.warnings);
+    assert!(lines.warnings[0].contains("always-run needs \"<paths> -> <tests>\""), "{:?}", lines.warnings);
 }

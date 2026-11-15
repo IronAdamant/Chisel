@@ -22,7 +22,7 @@ chisel --json update
 chisel run -- pytest tests/
 ```
 
-Prefer MCP when `chisel-mcp` is connected (26 tools). The server speaks newline-delimited JSON and also Content-Length. HTTP `chisel serve` is `GET /health`, `GET /tools`, and `POST /call` only. It is not an MCP URL and it has no `/mcp` path.
+Prefer MCP when `chisel-mcp` is connected (29 tools). The server speaks newline-delimited JSON and also Content-Length. HTTP `chisel serve` is `GET /health`, `GET /tools`, and `POST /call` only. It is not an MCP URL and it has no `/mcp` path.
 
 Always pass `--json` on the CLI and branch on `status` before treating a payload as a list. `no_data`, `stale_db`, and `no_changes` exit 0. `error` and `git_error` exit 1. Usage errors exit 2.
 
@@ -39,7 +39,9 @@ Always pass `--json` on the CLI and branch on `status` before treating a payload
 | `auto_queued` | `force` analyze on more than 300 code files. Poll `job_status` with the returned `job_id` |
 | `unsupported` | That call is not available. Read `message` |
 
-`auto_update` runs inline only when at most 50 files changed and no job is running. Otherwise the tool still returns and sets `auto_update_skip_reason` to `too_many_changed_files` or `background_job_running`.
+`auto_update` runs inline only when at most 50 files changed (`auto_update_limit`) and no job is running. Otherwise the tool answers from the snapshot as it is, sets `auto_update_skip_reason` (`too_many_changed_files` or `background_job_running`) and `auto_update_job_id`: poll `job_status` with that id, then call again.
+
+`diff_impact` rows come in tiers: `changed_test` (the test's own lines changed), then `direct`, `call_graph`, `sibling`, `co_change`. Within a tier, more changed units reached (`units`) and rarer ones rank higher. Guard tests come per test file in `guards`: `always_run` (an AGENTS.md `chisel: always-run <paths> -> <tests>` rule) or `reads_source` (a test that reads a changed folder; never the project root or a folder of several packages). The reply is `{"items", "guards", "run"}`: run the `run` commands. Past `limit` (default 50), `groups` summarise the rest per package with a command each.
 
 ## Flags that change results
 

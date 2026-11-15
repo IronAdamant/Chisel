@@ -6,7 +6,7 @@ Build with `cargo build --release`. The `chisel` binary is `src/main.rs`. The `c
 
 Do not pip-install Chisel. Do not use SQLite as the store. `Cargo.toml` dependency tables stay empty. There is no `build.rs`.
 
-`looks_like_test` in `src/engine/mod.rs` is the only test-file classifier. Rust files under `tests/` are tests. `#[test]` functions are test units.
+`looks_like_test` in `src/engine/mod.rs` is the only test-file classifier. Rust files under a crate's `tests/` directory (root or `crates/a/tests/`, not `src/tests/`) are tests. `#[test]` functions are test units.
 
 Status values: `no_data`, `no_changes`, `no_edges`, `git_error`, `stale_db`, `error`, `unsupported`, `auto_queued`. `no_data` and `stale_db` exit 0. `error` and `git_error` exit 1. Usage errors exit 2.
 

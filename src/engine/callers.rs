@@ -11,7 +11,7 @@ use super::analyze::{declared_types, narrow_by_call_site, type_files};
 use super::resolve::{type_idents, Ctx, RustResolver, TYPE_MENTIONED};
 use crate::extract::rust_items::local_types;
 use super::*;
-use crate::extract::calls::{call_sites, use_paths, CallSite};
+use crate::extract::calls::{call_sites, call_sites_scoped, use_paths, CallSite};
 
 /// A function that calls a changed function, `hops` calls away (1: calls it directly).
 pub(super) struct Caller {
@@ -93,7 +93,7 @@ pub(super) fn rust_reach(text: &str, line: usize) -> Reach {
 }
 
 /// Files a private item in `file` is visible from: the file and its child modules.
-fn in_module(file: &str, other: &str) -> bool {
+pub(super) fn in_module(file: &str, other: &str) -> bool {
     if file == other {
         return true;
     }
@@ -227,7 +227,7 @@ impl Engine {
                         if !body.contains(name.as_str()) {
                             continue;
                         }
-                        let sites = call_sites(&body);
+                        let sites = call_sites_scoped(&body);
                         let Some(site) = sites.get(name.as_str()) else { continue };
                         let hit = if rust {
                             let file_uses = rust_uses.entry(cand.to_string()).or_insert_with(|| use_paths(text));

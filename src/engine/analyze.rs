@@ -740,6 +740,22 @@ impl Engine {
 
     pub(super) fn build_tests_and_edges(&mut self, files: &[String], units_by_file: &BTreeMap<String, Vec<CodeUnit>>) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
         let mut test_units = Vec::new();
+        // Cargo package folders: a detected read scope that holds two or more is not kept.
+        let package_dirs: BTreeSet<String> = {
+            let mut crates = crate::cargo::Crates::new(&self.project_dir);
+            let mut dirs: BTreeSet<String> = BTreeSet::new();
+            let mut seen: BTreeSet<String> = BTreeSet::new();
+            for u in self.store.array("code_units") {
+                let Some(f) = u.get("file_path").and_then(|v| v.as_str()) else { continue };
+                let dir = f.rsplit_once('/').map(|(d, _)| d).unwrap_or("").to_string();
+                if seen.insert(dir) {
+                    if let Some(c) = crates.crate_of(f) {
+                        dirs.insert(c);
+                    }
+                }
+            }
+            dirs
+        };
         for rel in files {
             let units = units_by_file.get(rel).cloned().unwrap_or_default();
             let abs = self.sources().path(rel);
@@ -778,8 +794,13 @@ impl Engine {
                 ]));
                 continue;
             }
+            // Paths a Rust test reads by a path it writes down (a guard over `src/`): a change
+            // there names the test, whatever the call graph says. A test file is read whole (its
+            // helpers do the reading); an inline test by its own lines and helpers.
+            let file_reads = if rel.ends_with(".rs") && as_file { super::selection::detected_scopes(&content, rel, &package_dirs) } else { Vec::new() };
+            let all_units = units_by_file.get(rel).map(|u| u.as_slice()).unwrap_or(&[]);
             for u in selected {
-                test_units.push(Value::object(vec![
+                let mut row = Value::object(vec![
                     ("id".into(), Value::String(format!("{rel}:{}", u.name))),
                     ("file_path".into(), Value::String(rel.clone())),
                     ("name".into(), Value::String(u.name.clone())),
@@ -787,7 +808,18 @@ impl Engine {
                     ("line_start".into(), Value::Int(u.line_start as i64)),
                     ("line_end".into(), Value::Int(u.line_end as i64)),
                     ("content_hash".into(), Value::String(hash.clone())),
-                ]));
+                ]);
+                let reads = if !rel.ends_with(".rs") {
+                    Vec::new()
+                } else if as_file {
+                    file_reads.clone()
+                } else {
+                    super::selection::detected_scopes(&test_body_with_helpers(&content, &row, all_units), rel, &package_dirs)
+                };
+                if !reads.is_empty() {
+                    row.insert("reads", Value::Array(reads.into_iter().map(Value::String).collect()));
+                }
+                test_units.push(row);
             }
         }
         let code_units = self.store.array("code_units");
@@ -844,7 +876,7 @@ impl Engine {
             // Names called in many files (new, len, parse) are narrowed by how they are called.
             let narrowing = matches!(extract::detect_language(file), Some("rust" | "c" | "cpp")).then(|| {
                 let uses = use_cache.entry(file.to_string()).or_insert_with(|| extract::calls::use_paths(content));
-                (extract::calls::call_sites(call_text), uses.clone())
+                (extract::calls::call_sites_scoped(call_text), uses.clone())
             });
             let is_rust = extract::detect_language(file) == Some("rust");
             let rust_scope = narrowing.as_ref().filter(|_| is_rust).map(|(_, uses)| {
@@ -950,36 +982,66 @@ impl Engine {
     }
 
     pub fn record_result(&mut self, test_id: &str, passed: bool) -> Result<Value, String> {
-        self.record_result_with(test_id, passed, None)
+        self.record_result_with(test_id, passed, None, None, None)
     }
 
-    pub fn record_result_with(&mut self, test_id: &str, passed: bool, duration_ms: Option<f64>) -> Result<Value, String> {
+    /// One result. `message` (a failure's own words) and `platform` (default: this OS) are kept
+    /// with it. A pass also updates `test_passes` with the commit it passed on. A failure after
+    /// passes says so: `first_failure_after` is how many passes in a row came before it.
+    pub fn record_result_with(&mut self, test_id: &str, passed: bool, duration_ms: Option<f64>, message: Option<&str>, platform: Option<&str>) -> Result<Value, String> {
         let stored = normalize_test_id(test_id);
         let now = now_secs();
+        let platform = platform.map(str::trim).filter(|p| !p.is_empty()).map(|p| p.to_ascii_lowercase()).unwrap_or_else(|| std::env::consts::OS.to_string());
+        let head = if passed { git::head_commit_fast(&self.project_dir).unwrap_or_default() } else { String::new() };
+        let mut streak = 0;
         self.store.edit_and_save(|doc| {
             prune_old_results(doc, now);
-            append_test_result_full(doc, test_id, passed, now, duration_ms);
+            streak = if passed { 0 } else { passes_in_a_row(doc, test_id) };
+            append_test_result_full(doc, test_id, passed, now, duration_ms, message, Some(&platform));
+            if passed && !head.is_empty() {
+                note_pass(doc, &stored, &head, now);
+            }
         })?;
-        Ok(Value::object(vec![
+        let mut out = vec![
             ("test_id".into(), Value::String(stored)),
             ("passed".into(), Value::Bool(passed)),
             ("recorded".into(), Value::Bool(true)),
-        ]))
+            ("platform".into(), Value::String(platform)),
+        ];
+        if streak > 0 {
+            out.push(("first_failure_after".into(), Value::Int(streak as i64)));
+        }
+        Ok(Value::object(out))
     }
 
     pub fn record_results_batch(&mut self, rows: &[(String, bool)]) -> Result<Value, String> {
         let before = self.store.doc.get("generation").and_then(|v| v.as_i64()).unwrap_or(0);
         let now = now_secs();
+        let head = if rows.iter().any(|(_, p)| *p) { git::head_commit_fast(&self.project_dir).unwrap_or_default() } else { String::new() };
         prune_old_results(&mut self.store.doc, now);
+        let mut first_failures: Vec<Value> = Vec::new();
         for (test_id, passed) in rows {
+            if !*passed {
+                let n = passes_in_a_row(&self.store.doc, test_id);
+                if n > 0 {
+                    first_failures.push(Value::object(vec![("test_id".into(), Value::String(normalize_test_id(test_id))), ("after_passes".into(), Value::Int(n as i64))]));
+                }
+            }
             append_test_result(&mut self.store.doc, test_id, *passed, now);
+            if *passed && !head.is_empty() {
+                note_pass(&mut self.store.doc, &normalize_test_id(test_id), &head, now);
+            }
         }
         self.store.save()?;
         let after = self.store.doc.get("generation").and_then(|v| v.as_i64()).unwrap_or(0);
-        Ok(Value::object(vec![
+        let mut out = vec![
             ("recorded".into(), Value::Int(rows.len() as i64)),
             ("generation_delta".into(), Value::Int(after - before)),
-        ]))
+        ];
+        if !first_failures.is_empty() {
+            out.push(("first_failures".into(), Value::Array(first_failures)));
+        }
+        Ok(Value::object(out))
     }
 
     pub(super) fn rebuild_cross_shard(&mut self) -> Result<(), String> {
@@ -1449,7 +1511,7 @@ impl Engine {
                     skipped += 1;
                     continue;
                 }
-                append_test_result_full(doc, &row.test_id, row.passed, row.recorded_at, row.duration_ms);
+                append_test_result_full(doc, &row.test_id, row.passed, row.recorded_at, row.duration_ms, None, None);
                 added += 1;
             }
         }).map_err(|e| e.to_string())?;
@@ -1501,7 +1563,7 @@ pub(super) fn declared_types(text: &str) -> BTreeSet<String> {
 }
 
 /// The crate directory of a path (`crates/a/src/x.rs` -> `crates/a`), `""` for a root crate.
-fn crate_dir(path: &str) -> &str {
+pub(super) fn crate_dir(path: &str) -> &str {
     for marker in ["/src/", "/tests/", "/benches/", "/examples/"] {
         if let Some(p) = path.find(marker) {
             return &path[..p];
@@ -1514,7 +1576,7 @@ fn crate_dir(path: &str) -> &str {
 }
 
 /// Path segments of a file, as Rust names them (`-` becomes `_`, `.rs` dropped).
-fn path_segments(path: &str) -> Vec<String> {
+pub(super) fn path_segments(path: &str) -> Vec<String> {
     path.trim_end_matches(".rs").split('/').map(|s| s.replace('-', "_")).collect()
 }
 
@@ -1599,7 +1661,7 @@ fn test_body_with_helpers(content: &str, test: &Value, units: &[CodeUnit]) -> St
     let start = test.get("line_start").and_then(|v| v.as_i64()).unwrap_or(1).max(1) as usize;
     let end = test.get("line_end").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
     let mut text = slice(start, end);
-    let called = extract::calls::call_sites(&text);
+    let called = extract::calls::call_sites_scoped(&text);
     for u in units {
         if is_test_unit_type(&u.unit_type) || (u.line_start >= start && u.line_end <= end) {
             continue;

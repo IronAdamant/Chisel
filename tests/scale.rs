@@ -354,27 +354,62 @@ fn cli_record_result_without_passed_exits_nonzero() {
     assert!(snap.contains("\"passed\":true") || snap.contains("\"passed\": true"), "{snap}");
 }
 
+/// 0.24.0: over the inline limit (50, or `auto_update_limit`) the refresh starts an update
+/// job and names it, so the next step is one call; at or under the limit it runs inline.
 #[test]
-fn auto_update_skips_above_50_files() {
+fn auto_update_above_the_limit_starts_an_update_job_and_names_it() {
+    use chisel::json::Value;
     let dir = scratch("auto");
     fs::create_dir_all(dir.join("src")).unwrap();
-    fs::write(dir.join("src/a.py"), "def a():\n    return 1\n").unwrap();
+    fs::write(dir.join("src/a.py"), "def a():
+    return 1
+").unwrap();
     init_repo(&dir);
     commit_all(&dir, "init");
     let store = dir.join("store");
     let mut engine = chisel::Engine::open(&dir, Some(&store)).unwrap();
     engine.analyze().unwrap();
     for i in 0..51 {
-        fs::write(dir.join(format!("src/n{i}.py")), "def n():\n    return 1\n").unwrap();
+        fs::write(dir.join(format!("src/n{i}.py")), "def n():
+    return 1
+").unwrap();
     }
-    let args = chisel::json::Value::object(vec![
-        ("auto_update".into(), chisel::json::Value::Bool(true)),
-        ("file_path".into(), chisel::json::Value::String("src/a.py".into())),
-    ]);
-    let result = engine.dispatch("suggest_tests", &args).unwrap();
+    let args = |limit: Option<i64>| {
+        let mut pairs = vec![("auto_update".into(), Value::Bool(true)), ("file_path".into(), Value::String("src/a.py".into()))];
+        if let Some(n) = limit {
+            pairs.push(("auto_update_limit".into(), Value::Int(n)));
+        }
+        Value::object(pairs)
+    };
+    let result = engine.dispatch("suggest_tests", &args(None)).unwrap();
     let text = chisel::json::to_string(&result).unwrap();
-    assert!(text.contains("too_many_changed_files"), "{text}");
-    assert!(text.contains("Auto-update skipped: more than 50 files changed"), "{text}");
+    assert_eq!(result.get("auto_update_skip_reason").and_then(|v| v.as_str()), Some("too_many_changed_files"), "{text}");
+    let job = result.get("auto_update_job_id").and_then(|v| v.as_str()).unwrap_or_else(|| panic!("no job id: {text}")).to_string();
+    assert!(text.contains("51 files changed (auto_update_limit 50)") && text.contains(&format!("job_status with job_id {job}")), "{text}");
+    let steps = chisel::next_steps::compute_next_steps("suggest_tests", &result);
+    assert_eq!(steps[0].get("tool").and_then(|v| v.as_str()), Some("job_status"), "the next step is the job, not a synchronous update: {steps:?}");
+    let mut status = String::new();
+    for _ in 0..600 {
+        let st = engine.dispatch("job_status", &Value::object(vec![("job_id".into(), Value::String(job.clone()))])).unwrap();
+        status = st.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if status == "completed" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(status, "completed");
+    let after = engine.dispatch("suggest_tests", &args(None)).unwrap();
+    assert!(after.get("auto_update_skip_reason").is_none(), "the job refreshed the snapshot: {}", chisel::json::to_string(&after).unwrap());
+    // A higher limit refreshes inline.
+    for i in 0..60 {
+        fs::write(dir.join(format!("src/m{i}.py")), "def m():
+    return 1
+").unwrap();
+    }
+    let inline = engine.dispatch("suggest_tests", &args(Some(100))).unwrap();
+    assert!(inline.get("auto_update_skip_reason").is_none() && inline.get("auto_update_job_id").is_none(), "{}", chisel::json::to_string(&inline).unwrap());
+    let stats = engine.dispatch("stats", &Value::object(vec![])).unwrap();
+    assert_eq!(stats.get("file_hashes").and_then(|v| v.as_i64()), Some(112), "every new file is in the snapshot");
 }
 
 #[test]
