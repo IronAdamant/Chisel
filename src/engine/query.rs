@@ -423,9 +423,10 @@ impl Engine {
         let untracked = untracked.unwrap_or_default();
         let untracked_code: BTreeSet<String> = untracked.iter().filter(|p| extract::path_has_code_extension(p)).cloned().collect();
         // Every changed path, code or not: always-run rules and read paths may name data or docs.
-        let mut every_path: Vec<String> = diff_files.iter().chain(untracked.iter()).cloned().collect();
+        let mut every_path: Vec<String> = diff_files.iter().chain(untracked.iter()).filter(|p| !p.starts_with(".chisel/")).cloned().collect();
         every_path.sort();
         every_path.dedup();
+        self.diff_paths = every_path.len();
         let known: BTreeSet<String> = self.store.array("file_hashes").into_iter().filter_map(|h| h.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
         // A file deleted since the base is gone from the tree: its tests are still worth listing
         // while the snapshot has it, and it is never "missing" from the snapshot.
@@ -441,7 +442,8 @@ impl Engine {
             // Only data or docs changed: the tests a rule or a read path names, if any.
             let always = self.always_run_rows(&every_path);
             if !always.is_empty() {
-                return Ok(Value::Array(always));
+                self.guard_rows = always;
+                return Ok(Value::Array(Vec::new()));
             }
             return Ok(Value::object(vec![
                 ("status".into(), Value::String("no_changes".into())),
@@ -531,15 +533,13 @@ impl Engine {
         self.attach_working_tree_hits(&mut rows, &changed, &untracked_code);
         let total_tests = self.store.array("test_units").len();
         let mut rows = dedupe_rows(rows);
-        let mut first: Vec<Value> = self.changed_test_rows(&changed_tests);
-        for row in self.always_run_rows(&every_path) {
-            let id = row.get("test_id").and_then(|v| v.as_str()).unwrap_or("");
-            if !first.iter().any(|f| f.get("test_id").and_then(|v| v.as_str()) == Some(id)) {
-                first.push(row);
-            }
-        }
+        let first: Vec<Value> = self.changed_test_rows(&changed_tests);
         let first_ids: BTreeSet<String> = first.iter().filter_map(|r| r.get("test_id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
-        rows.retain(|r| !r.get("test_id").and_then(|v| v.as_str()).is_some_and(|t| first_ids.contains(t)));
+        // Guard tests are listed per file in `guards`, not row by row; a changed one stays a row.
+        let guards: Vec<Value> = self.always_run_rows(&every_path).into_iter().filter(|r| !r.get("test_id").and_then(|v| v.as_str()).is_some_and(|t| first_ids.contains(t))).collect();
+        let guard_ids: BTreeSet<String> = guards.iter().filter_map(|r| r.get("test_id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
+        self.guard_rows = guards;
+        rows.retain(|r| !r.get("test_id").and_then(|v| v.as_str()).is_some_and(|t| first_ids.contains(t) || guard_ids.contains(t)));
         rank_by_breadth(&mut rows, &reach, total_tests);
         let mut out = first;
         out.extend(rows);
@@ -1832,7 +1832,8 @@ impl Engine {
             Some(n) => n.max(0) as usize,
             None => std::env::var("CHISEL_AUTO_UPDATE_LIMIT").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(DEFAULT_AUTO_UPDATE_LIMIT),
         };
-        self.diff_limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000) as usize;
+        self.guard_rows.clear();
+        self.diff_limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(DEFAULT_DIFF_LIMIT).clamp(1, 1000) as usize;
         self.impact_depth = args.get("depth").and_then(|v| v.as_i64()).map(|d| d.clamp(1, 3) as usize).unwrap_or(DEFAULT_IMPACT_DEPTH);
         self.directory = args.get("directory").and_then(|v| v.as_str()).filter(|s| !s.is_empty() && *s != ".").map(|s| s.trim_end_matches('/').to_string());
         self.exclude_tests = args.get("exclude_tests").and_then(|v| v.as_bool()).unwrap_or(true);

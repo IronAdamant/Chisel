@@ -203,6 +203,9 @@ pub(crate) enum AutoPlan {
     Queued { reason: &'static str, job_id: String, changed: usize, limit: usize },
 }
 
+/// `diff_impact` rows listed unless `limit` says otherwise; the rest is summarised in groups.
+pub(crate) const DEFAULT_DIFF_LIMIT: i64 = 50;
+
 /// `auto_update` refreshes inline at or under this many changed files unless told otherwise.
 pub(crate) const DEFAULT_AUTO_UPDATE_LIMIT: usize = 50;
 
@@ -225,6 +228,12 @@ pub struct Engine {
     /// `impacted`: (test id, changed unit it reaches, weight) for every hit, so `diff_impact`
     /// can rank by how many changed units a test reaches and how rare each one is.
     reach_log: Vec<(String, String, f64)>,
+    /// `diff_impact`: tests an always-run rule or a read path names, one row per test; the reply
+    /// lists them collapsed per test file in `guards`.
+    guard_rows: Vec<Value>,
+    /// How many paths the diff changed: a guard entry names the file that brought it in only
+    /// when there is more than one.
+    diff_paths: usize,
     /// `diff_impact`: the reply's row cap (`limit`); past it rows are summarised in groups.
     diff_limit: usize,
     /// `auto_update`: refresh inline at or under this many changed files (`auto_update_limit`,
@@ -300,7 +309,9 @@ impl Engine {
             diff_ref_override: None,
             changed_owners: HashMap::new(),
             reach_log: Vec::new(),
-            diff_limit: 100,
+            guard_rows: Vec::new(),
+            diff_paths: 0,
+            diff_limit: DEFAULT_DIFF_LIMIT as usize,
             auto_update_limit: DEFAULT_AUTO_UPDATE_LIMIT,
             diff_since: None,
             reply_meta: Vec::new(),

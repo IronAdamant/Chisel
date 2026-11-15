@@ -303,7 +303,7 @@ fn a_wide_diff_ranks_by_changed_units_reached_and_a_narrow_one_keeps_its_scores(
 }
 
 #[test]
-fn rules_and_source_reading_guards_come_first_with_their_own_source() {
+fn rules_and_source_reading_guards_are_folded_per_file_beside_the_ranked_rows() {
     let agents = "# Project\n\n```agent-tools\nchisel: disable locks\nchisel: always-run src/alpha.rs -> tests/it.rs:only_fixture\ntrammel: disable notes\n```\n";
     let dir = project(Some(agents), true);
     let store = Store::open(&dir.join(".chisel")).unwrap();
@@ -311,25 +311,75 @@ fn rules_and_source_reading_guards_come_first_with_their_own_source() {
     assert_eq!(guard.get("reads").and_then(|v| v.as_array()).map(|a| a.to_vec()), Some(vec![Value::String("src/**".into())]));
     edit(&dir, "src/alpha.rs", "path.len()", "path.len() + 1");
     let reply = diff_impact(&dir, &[]);
-    let rows = items(&reply);
-    let top: Vec<(&str, &str)> = rows.iter().take(2).map(|r| (s(r, "test_id"), s(r, "source"))).collect();
-    assert_eq!(top, vec![("tests/it.rs:only_fixture", "always_run"), ("tests/print_guard.rs:no_prints_in_the_library", "reads_source")], "{rows:?}");
-    assert_eq!(s(&rows[0], "reason"), "AGENTS.md always-run src/alpha.rs -> tests/it.rs:only_fixture (src/alpha.rs changed)");
-    assert_eq!(s(&rows[1], "reason"), "reads src/** (src/alpha.rs changed)");
+    // The ranked list holds no guard rows: they are folded per file in `guards`, rules first.
+    assert!(items(&reply).iter().all(|r| !matches!(s(r, "source"), "always_run" | "reads_source")), "{}", json::to_string(&reply).unwrap());
+    let guards = reply.get("guards").and_then(|v| v.as_array()).unwrap().to_vec();
+    let want = r#"[{"file":"tests/it.rs","tests":1,"source":"always_run","rule":"src/alpha.rs -> tests/it.rs:only_fixture"},{"file":"tests/print_guard.rs","tests":1,"source":"reads_source","reads":"src/**"}]"#;
+    assert_eq!(json::to_string(&Value::Array(guards)).unwrap(), want, "one changed file: it is why, and is not repeated");
+    let run: Vec<&str> = reply.get("run").and_then(|v| v.as_array()).unwrap().iter().filter_map(|v| v.as_str()).collect();
+    assert!(run.contains(&"cargo test -p demo --test print_guard"), "a guard file named whole runs as its binary: {run:?}");
+    assert!(run.contains(&"cargo test -p demo --test it -- only_fixture"), "a rule naming one test runs it by name: {run:?}");
+    // Two changed paths: each entry says which one brought it in.
+    std::fs::write(dir.join("NOTES.md"), "x\n").unwrap();
+    let reply = diff_impact(&dir, &[]);
+    let guards = reply.get("guards").and_then(|v| v.as_array()).unwrap();
+    assert!(guards.iter().all(|g| s(g, "changed") == "src/alpha.rs"), "{guards:?}");
+    std::fs::remove_file(dir.join("NOTES.md")).unwrap();
     // A change outside every rule and read path brings neither in.
     restore(&dir);
     edit(&dir, "tests/it.rs", "add(fixture(), 2), 4", "add(fixture(), 2), 2 + 2");
-    let rows = items(&diff_impact(&dir, &[]));
-    assert!(rows.iter().all(|r| !matches!(s(r, "source"), "always_run" | "reads_source")), "{rows:?}");
+    let reply = diff_impact(&dir, &[]);
+    assert!(reply.get("guards").is_none(), "{}", json::to_string(&reply).unwrap());
+}
+
+/// A detected scope that is the project root or holds two or more packages (`crates/**`) is
+/// not kept; a crate's own folder is.
+#[test]
+fn detected_scopes_stay_within_one_package() {
+    let dir = scratch("ws");
+    let scan = "use std::path::Path;\n#[test]\nfn scans_every_crate() {\n    let root = Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"../..\");\n    for e in std::fs::read_dir(root.join(\"crates\")).unwrap() {\n        let _ = std::fs::read_to_string(e.unwrap().path());\n    }\n}\n";
+    let own = "use std::path::Path;\n#[test]\nfn scans_its_crate() {\n    let src = Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"src\");\n    for e in std::fs::read_dir(src).unwrap() {\n        let _ = std::fs::read_to_string(e.unwrap().path());\n    }\n}\n";
+    let files: &[(&str, &str)] = &[
+        ("Cargo.toml", "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n"),
+        ("crates/a/Cargo.toml", "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        ("crates/a/src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n"),
+        ("crates/a/tests/scan.rs", scan),
+        ("crates/a/tests/own.rs", own),
+        ("crates/b/Cargo.toml", "[package]\nname = \"b\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        ("crates/b/src/lib.rs", "pub fn two() -> u8 {\n    2\n}\n"),
+    ];
+    for (p, t) in files {
+        let path = dir.join(p);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, t).unwrap();
+    }
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-qm", "init"]);
+    chisel(&dir, &["analyze", "--json"]);
+    let store = Store::open(&dir.join(".chisel")).unwrap();
+    let reads = |id: &str| store.rows("test_units").iter().find(|t| s(t, "id") == id).and_then(|t| t.get("reads").cloned());
+    assert_eq!(reads("crates/a/tests/scan.rs:scans_every_crate"), None, "crates/** holds two packages: a rule is needed");
+    assert_eq!(reads("crates/a/tests/own.rs:scans_its_crate"), Some(Value::Array(vec![Value::String("crates/a/src/**".into())])));
+    edit(&dir, "crates/b/src/lib.rs", "    2\n", "    2 + 0\n");
+    assert!(diff_impact(&dir, &[]).get("guards").is_none(), "a change in b names neither guard");
+    restore(&dir);
+    edit(&dir, "crates/a/src/lib.rs", "    1\n", "    1 + 0\n");
+    let reply = diff_impact(&dir, &[]);
+    let guards = reply.get("guards").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(guards.iter().map(|g| s(g, "file")).collect::<Vec<_>>(), vec!["crates/a/tests/own.rs"]);
+    let run: Vec<&str> = reply.get("run").and_then(|v| v.as_array()).unwrap().iter().filter_map(|v| v.as_str()).collect();
+    assert_eq!(run, vec!["cargo test -p a --test own"]);
 }
 
 #[test]
-fn the_reply_carries_the_command_and_summarises_ties_past_the_limit() {
+fn the_reply_carries_narrow_commands_and_summarises_ties_past_the_limit() {
     let dir = project(None, false);
     edit(&dir, "src/beta.rs", "Rig { n: 3 }", "Rig { n: 3 + 0 }");
     let reply = diff_impact(&dir, &[]);
     let run: Vec<&str> = reply.get("run").and_then(|v| v.as_array()).unwrap().iter().filter_map(|v| v.as_str()).collect();
-    assert_eq!(run, vec!["cargo test -p demo -- quad_of_three saves_a_file scale_by_two scale_by_zero"], "{}", json::to_string(&reply).unwrap());
+    assert_eq!(run, vec!["cargo test -p demo --lib -- quad_of_three saves_a_file scale_by_two scale_by_zero"], "{}", json::to_string(&reply).unwrap());
+    assert!(reply.get("run_note").is_none());
     // Four tests tie at 1.0; a limit of 2 cannot list two of them fairly, so none are listed
     // and the group says how many and how to run them.
     let reply = diff_impact(&dir, &["--limit", "2"]);
@@ -338,7 +388,29 @@ fn the_reply_carries_the_command_and_summarises_ties_past_the_limit() {
     let groups = reply.get("groups").and_then(|v| v.as_array()).unwrap();
     assert_eq!(groups.len(), 1);
     assert_eq!((s(&groups[0], "group"), groups[0].get("tests").and_then(|v| v.as_i64()), f(&groups[0], "top")), ("demo", Some(4), 1.0));
-    assert_eq!(s(&groups[0], "run"), "cargo test -p demo -- quad_of_three saves_a_file scale_by_two scale_by_zero");
+    assert_eq!(s(&groups[0], "run"), "cargo test -p demo --lib -- quad_of_three saves_a_file scale_by_two scale_by_zero");
+    restore(&dir);
+    // An integration test runs in its own binary.
+    edit(&dir, "src/alpha.rs", "    a + b\n", "    a + b + 0\n");
+    let reply = diff_impact(&dir, &["--depth", "1"]);
+    let run: Vec<&str> = reply.get("run").and_then(|v| v.as_array()).unwrap().iter().filter_map(|v| v.as_str()).collect();
+    assert_eq!(run, vec!["cargo test -p demo --test it -- adds"], "{}", json::to_string(&reply).unwrap());
+}
+
+/// Past 30 names the command drops the filter, keeps the targets, and says so.
+#[test]
+fn too_many_names_fall_back_to_the_targets_and_say_so() {
+    let dir = project(None, false);
+    let many: String = (0..31).map(|i| format!("    #[test]\n    fn uses_rig_{i}() {{\n        assert_eq!(rig().n, 3);\n    }}\n\n")).collect();
+    edit(&dir, "src/beta.rs", "    #[test]\n    fn scale_by_two() {", &format!("{many}    #[test]\n    fn scale_by_two() {{"));
+    git(&dir, &["commit", "-qam", "more tests"]);
+    chisel(&dir, &["update", "--json"]);
+    edit(&dir, "src/beta.rs", "Rig { n: 3 }", "Rig { n: 3 + 0 }");
+    let reply = diff_impact(&dir, &[]);
+    let run: Vec<&str> = reply.get("run").and_then(|v| v.as_array()).unwrap().iter().filter_map(|v| v.as_str()).collect();
+    assert_eq!(run, vec!["cargo test -p demo --lib"], "{}", json::to_string(&reply).unwrap());
+    let note = reply.get("run_note").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(note[0].as_str(), Some("demo: 35 tests, too many to name; the command runs their targets whole"));
 }
 
 #[test]

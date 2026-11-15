@@ -10,7 +10,7 @@ Chronological record of development activity on the Chisel project.
 - Ranking: `rank_by_breadth` in `engine/query.rs` sums, per test, edge weight times the rarity of each changed unit it reaches (`reach_log` from `impacted`).
 - Hunks: `hunk_attribution` in `engine/issues.rs` maps each hunk to the innermost code unit or test unit.
 - Calls: `call_sites_scoped` drops names the text binds; `RustResolver::narrow_free` resolves free calls by path, parent module and visibility, std modules to nothing.
-- `engine/selection.rs`: always-run rules, `reads` detection, `run` commands, grouped summary.
+- `engine/selection.rs`: always-run rules, `reads` detection (dropped when the scope is the root or spans two packages), guards folded per test file, narrow `run` commands (`--lib`, `--test <name>`), grouped summary. Review round: the one-function Specula reply went from 13,535 bytes (36 guard rows) to 1,723; the wide `HEAD~6` default reply is 27,536 bytes (0.23.0: 33,082).
 - `auto_update`: a job past `auto_update_limit`; record_result message/platform/first failure; `stats` result lists.
 
 ---

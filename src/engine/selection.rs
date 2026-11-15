@@ -6,8 +6,11 @@
 //! dispatched by a string name are invisible to a call graph. A project declares them in its
 //! `agent-tools` block (`chisel: always-run crates/a/src/** -> crates/a/tests/guard.rs`); the
 //! analyzer also records, per test, the files it reads by a path written in the test
-//! (`reads`), and a change under one of them names the test. A test that reads the whole
-//! project or its whole crate gets no `reads`: it would be named for every change.
+//! (`reads`), and a change under one of them names the test. One rule bounds what is detected:
+//! a scope that is the project root, or a folder holding two or more Cargo packages
+//! (`crates/**`), is dropped; a test reading that wide needs an always-run rule. A crate's own
+//! folders (`crates/a/src/**`, `crates/a/**`) are kept. The reply folds these tests per
+//! test file in `guards`, beside the ranked rows.
 
 use super::analyze::crate_dir;
 use super::*;
@@ -65,9 +68,9 @@ pub(crate) fn source_reads(text: &str, test_file: &str) -> Vec<String> {
         }
         parts.join("/")
     };
-    // The project root or the whole crate would name the test for any change: no scope.
+    // The project root is never a scope; `detected_scopes` drops folders of several packages.
     let as_pattern = |p: String| -> String {
-        if p.is_empty() || p == krate {
+        if p.is_empty() {
             return String::new();
         }
         let leaf = p.rsplit('/').next().unwrap_or("");
@@ -176,23 +179,42 @@ pub(crate) fn source_reads(text: &str, test_file: &str) -> Vec<String> {
                 push(as_pattern(l));
             }
         } else {
-            // The project root or the test's own crate, read whole, would name the test for
-            // every change: no scope (an AGENTS.md always-run rule says it when it is meant).
             push(as_pattern(base));
         }
     }
     out
 }
 
+/// Detected read scopes a test keeps (`reads`): `source_reads`, less any that is the project
+/// root or a folder holding two or more Cargo packages (`crates/**`, `games/**`). A crate's own
+/// folders and files stay (`crates/a/src/**`). A test reading wider than one package is named
+/// only by an AGENTS.md always-run rule.
+pub(crate) fn detected_scopes(text: &str, test_file: &str, package_dirs: &BTreeSet<String>) -> Vec<String> {
+    source_reads(text, test_file).into_iter().filter(|p| !spans_packages(p, package_dirs)).collect()
+}
+
+/// Whether a scope is the project root or a folder with two or more packages in it.
+pub(crate) fn spans_packages(pattern: &str, package_dirs: &BTreeSet<String>) -> bool {
+    let Some(dir) = pattern.strip_suffix("**").map(|d| d.trim_end_matches('/')) else { return false };
+    if dir.is_empty() {
+        return true;
+    }
+    package_dirs.iter().filter(|d| d.as_str() == dir || d.starts_with(&format!("{dir}/"))).take(2).count() >= 2
+}
+
+/// Most guard entries listed; the rest are counted in `guards_total`.
+const MAX_GUARDS: usize = 10;
+
 impl Engine {
-    /// Tests named first because a project rule or the test's own source reads cover a
-    /// changed file. Each row says which rule or path brought it in.
+    /// Tests a project rule or the test's own read paths name for these changed files, one row
+    /// per test. `scope` (the rule or the read path) and `changed` (the file that matched) say
+    /// why; `diff_impact` folds the rows per test file into `guards`.
     pub(super) fn always_run_rows(&self, changed: &[String]) -> Vec<Value> {
         let agents = fs::read_to_string(self.project_dir.join("AGENTS.md")).map(|t| crate::tool_groups::parse_agents_md(&t)).unwrap_or_default();
         let tests = self.store.rows("test_units");
         let mut out: Vec<Value> = Vec::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
-        let mut add = |t: &Value, source: &str, reason: String, out: &mut Vec<Value>| {
+        let mut add = |t: &Value, source: &str, scope: &str, hit: &str, out: &mut Vec<Value>| {
             let id = t.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if id.is_empty() || !seen.insert(id.clone()) {
                 return;
@@ -201,9 +223,9 @@ impl Engine {
                 ("test_id".into(), Value::String(id)),
                 ("file_path".into(), t.get("file_path").cloned().unwrap_or(Value::String(String::new()))),
                 ("name".into(), t.get("name").cloned().unwrap_or(Value::String(String::new()))),
-                ("reason".into(), Value::String(reason)),
-                ("score".into(), Value::Float(1.0)),
                 ("source".into(), Value::String(source.into())),
+                ("scope".into(), Value::String(scope.into())),
+                ("changed".into(), Value::String(hit.into())),
             ]));
         };
         for rule in &agents.always_run {
@@ -214,7 +236,7 @@ impl Engine {
                     let file = t.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
                     let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     if id == wanted || file == wanted || name == wanted || glob_match(wanted, file) && wanted.contains('*') {
-                        add(t, "always_run", format!("AGENTS.md always-run {} ({hit} changed)", rule.line), &mut out);
+                        add(t, "always_run", &rule.line, hit, &mut out);
                     }
                 }
             }
@@ -224,7 +246,7 @@ impl Engine {
             let own = t.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             for r in reads.iter().filter_map(|v| v.as_str()) {
                 if let Some(hit) = changed.iter().find(|f| f.as_str() != own && glob_match(r, f)) {
-                    add(t, "reads_source", format!("reads {r} ({hit} changed)"), &mut out);
+                    add(t, "reads_source", r, hit, &mut out);
                     break;
                 }
             }
@@ -232,10 +254,39 @@ impl Engine {
         out
     }
 
-    /// Ready-to-run commands for these rows: per Cargo package `cargo test -p <pkg> -- <names>`,
-    /// for pytest the node ids. A package with more than `max_names` names runs whole.
-    pub(super) fn run_commands(&self, rows: &[Value], crates: &mut crate::cargo::Crates, max_names: usize) -> Vec<String> {
-        let mut cargo: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    /// The Cargo target a test file is built in: `--test <name>` for `tests/<name>.rs` or
+    /// `tests/<name>/main.rs`, `--lib` for a library's `src/`, `--bins` for a binary-only
+    /// crate's `src/`. `None` when Chisel cannot tell (then no target is named).
+    fn cargo_target(&self, file: &str, crates: &mut crate::cargo::Crates) -> Option<String> {
+        let krate = crates.crate_of(file)?;
+        let rel = if krate.is_empty() { file } else { file.strip_prefix(&format!("{krate}/"))? };
+        if let Some(rest) = rel.strip_prefix("tests/") {
+            return match rest.split_once('/') {
+                None => rest.strip_suffix(".rs").map(|n| format!("--test {n}")),
+                Some((dir, "main.rs")) => Some(format!("--test {dir}")),
+                Some(_) => None,
+            };
+        }
+        if rel.starts_with("src/") {
+            let root = if krate.is_empty() { self.project_dir.clone() } else { self.project_dir.join(&krate) };
+            if root.join("src/lib.rs").is_file() {
+                return Some("--lib".into());
+            }
+            if root.join("src/main.rs").is_file() {
+                return Some("--bins".into());
+            }
+        }
+        None
+    }
+
+    /// Ready-to-run commands for these rows, and notes for any that could not be narrowed.
+    /// Cargo: per package, the test targets the rows live in (`--lib`, `--test <name>`) and
+    /// their names as filters: `cargo test -p <pkg> --lib --test it -- a b`. Past `max_names`
+    /// names the filter is dropped (the targets still narrow it) and a note says so. pytest:
+    /// the node ids.
+    pub(super) fn run_commands(&self, rows: &[Value], crates: &mut crate::cargo::Crates, max_names: usize) -> (Vec<String>, Vec<String>) {
+        // package -> (targets, every row had a known target, names)
+        let mut cargo: BTreeMap<String, (BTreeSet<String>, bool, Vec<String>)> = BTreeMap::new();
         let mut pytest: Vec<String> = Vec::new();
         for r in rows {
             let file = r.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
@@ -245,9 +296,16 @@ impl Engine {
             }
             if file.ends_with(".rs") {
                 let pkg = crates.package_of(file).unwrap_or_default();
-                let names = cargo.entry(pkg).or_default();
-                if !names.iter().any(|n| n == name) {
-                    names.push(name.to_string());
+                let target = self.cargo_target(file, crates);
+                let slot = cargo.entry(pkg).or_insert((BTreeSet::new(), true, Vec::new()));
+                match target {
+                    Some(t) => {
+                        slot.0.insert(t);
+                    }
+                    None => slot.1 = false,
+                }
+                if !slot.2.iter().any(|n| n == name) {
+                    slot.2.push(name.to_string());
                 }
             } else if file.ends_with(".py") {
                 let id = format!("{file}::{}", name.replace('.', "::"));
@@ -256,35 +314,106 @@ impl Engine {
                 }
             }
         }
-        let mut out = Vec::new();
-        for (pkg, names) in cargo {
-            let p = if pkg.is_empty() { String::new() } else { format!(" -p {pkg}") };
-            if names.len() > max_names {
-                out.push(format!("cargo test{p}"));
-            } else {
-                out.push(format!("cargo test{p} -- {}", names.join(" ")));
+        let (mut out, mut notes) = (Vec::new(), Vec::new());
+        for (pkg, (targets, known, names)) in cargo {
+            let mut cmd = "cargo test".to_string();
+            if !pkg.is_empty() {
+                cmd.push_str(&format!(" -p {pkg}"));
             }
+            if known {
+                for t in &targets {
+                    cmd.push(' ');
+                    cmd.push_str(t);
+                }
+            }
+            if names.len() > max_names {
+                let label = if pkg.is_empty() { "the package".to_string() } else { pkg.clone() };
+                notes.push(format!("{label}: {} tests, too many to name; the command runs {}", names.len(), if known { "their targets whole" } else { "the package whole" }));
+            } else {
+                cmd.push_str(" -- ");
+                cmd.push_str(&names.join(" "));
+            }
+            out.push(cmd);
         }
         if !pytest.is_empty() {
             if pytest.len() > max_names {
                 let mut files: Vec<&str> = pytest.iter().filter_map(|i| i.split("::").next()).collect();
                 files.dedup();
+                notes.push(format!("pytest: {} tests, too many to name; the command runs their files", pytest.len()));
                 out.push(format!("pytest {}", files.join(" ")));
             } else {
                 out.push(format!("pytest {}", pytest.join(" ")));
             }
         }
-        out
+        (out, notes)
     }
 
-    /// The `diff_impact` reply: rows that fit within `limit` and the commands to run them.
-    /// Past the limit the reply stops before the tie that crosses it (rows of equal tier and
-    /// score cannot be told apart, so listing some of them would be arbitrary) and summarises
-    /// the rest per Cargo package (or per test folder): how many tests, the best score, and a
-    /// command for each group.
-    pub(super) fn shape_diff_impact(&self, result: Value) -> Value {
+    /// Guard rows folded per test file: `{file, tests, source, rule | reads, changed}` (`changed`
+    /// when the diff has more than one file), rules
+    /// first, at most `MAX_GUARDS` (and the total). The commands: a Cargo test file all of
+    /// whose tests are named runs as `--test <name>`, one command per package; a file of which
+    /// only some are named (a rule naming tests, an inline test in `src/`) runs them by name.
+    fn guard_section(&self, rows: &[Value], crates: &mut crate::cargo::Crates) -> (Vec<Value>, usize, Vec<String>) {
+        let s = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        // (file, source, scope) -> (changed, tests)
+        let mut by: BTreeMap<(String, String, String), (String, usize)> = BTreeMap::new();
+        for r in rows {
+            let slot = by.entry((s(r, "file_path"), s(r, "source"), s(r, "scope"))).or_insert((s(r, "changed"), 0));
+            slot.1 += 1;
+        }
+        let mut per_file: BTreeMap<String, usize> = BTreeMap::new();
+        for t in self.store.rows("test_units") {
+            *per_file.entry(s(t, "file_path")).or_insert(0) += 1;
+        }
+        let mut entries: Vec<(bool, Value)> = Vec::new();
+        for ((file, source, scope), (hit, n)) in &by {
+            let rule = source == "always_run";
+            let mut entry = vec![
+                ("file".into(), Value::String(file.clone())),
+                ("tests".into(), Value::Int(*n as i64)),
+                ("source".into(), Value::String(source.clone())),
+                ((if rule { "rule" } else { "reads" }).into(), Value::String(scope.clone())),
+            ];
+            // With one changed file, that file is why; name it only when there is a choice.
+            if self.diff_paths != 1 {
+                entry.push(("changed".into(), Value::String(hit.clone())));
+            }
+            entries.push((rule, Value::object(entry)));
+        }
+        entries.sort_by(|a, b| b.0.cmp(&a.0));
+        let total = entries.len();
+        let list: Vec<Value> = entries.into_iter().take(MAX_GUARDS).map(|(_, v)| v).collect();
+        let mut whole: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut partial: Vec<Value> = Vec::new();
+        let files: BTreeSet<String> = rows.iter().map(|r| s(r, "file_path")).collect();
+        for file in files {
+            let named: Vec<&Value> = rows.iter().filter(|r| s(r, "file_path") == file).collect();
+            let target = if file.ends_with(".rs") { self.cargo_target(&file, crates) } else { None };
+            match target.filter(|t| t.starts_with("--test ") && per_file.get(&file).copied().unwrap_or(0) == named.len()) {
+                Some(t) => {
+                    whole.entry(crates.package_of(&file).unwrap_or_default()).or_default().insert(t);
+                }
+                None => partial.extend(named.into_iter().cloned()),
+            }
+        }
+        let mut run = Vec::new();
+        for (pkg, targets) in whole {
+            let p = if pkg.is_empty() { String::new() } else { format!(" -p {pkg}") };
+            run.push(format!("cargo test{p} {}", targets.into_iter().collect::<Vec<_>>().join(" ")));
+        }
+        run.extend(self.run_commands(&partial, crates, MAX_FILTER_NAMES).0);
+        (list, total, run)
+    }
+
+    /// The `diff_impact` reply: rows that fit within `limit`, the guard tests folded per file
+    /// (`guards`), and the commands to run both. Past the limit the reply stops before the tie
+    /// that crosses it (rows of equal tier and score cannot be told apart, so listing some of
+    /// them would be arbitrary) and summarises the rest per Cargo package (or per test folder):
+    /// how many tests, the best score, and a command for each group.
+    pub(super) fn shape_diff_impact(&mut self, result: Value) -> Value {
+        let guard_rows = std::mem::take(&mut self.guard_rows);
         let Value::Array(rows) = result else { return result };
-        if rows.is_empty() {
+        if rows.is_empty() && guard_rows.is_empty() {
             return Value::Array(rows);
         }
         let mut crates = crate::cargo::Crates::new(&self.project_dir);
@@ -303,8 +432,16 @@ impl Engine {
         let mut items = rows;
         let rest = items.split_off(cut);
         let mut pairs: Vec<(crate::json::SharedStr, Value)> = Vec::new();
-        let run = self.run_commands(&items, &mut crates, MAX_FILTER_NAMES);
+        let (mut run, notes) = self.run_commands(&items, &mut crates, MAX_FILTER_NAMES);
         pairs.push(("items".into(), Value::Array(items)));
+        if !guard_rows.is_empty() {
+            let (guards, guards_total, guard_run) = self.guard_section(&guard_rows, &mut crates);
+            if guards_total > guards.len() {
+                pairs.push(("guards_total".into(), Value::Int(guards_total as i64)));
+            }
+            pairs.push(("guards".into(), Value::Array(guards)));
+            run.extend(guard_run);
+        }
         if !rest.is_empty() {
             pairs.push(("truncated".into(), Value::Bool(true)));
             pairs.push(("total".into(), Value::Int(total as i64)));
@@ -320,6 +457,9 @@ impl Engine {
         }
         if !run.is_empty() {
             pairs.push(("run".into(), Value::Array(run.into_iter().map(Value::String).collect())));
+        }
+        if !notes.is_empty() {
+            pairs.push(("run_note".into(), Value::Array(notes.into_iter().map(Value::String).collect())));
         }
         Value::Object(pairs)
     }
@@ -345,7 +485,7 @@ impl Engine {
         list.into_iter()
             .map(|(label, members, top)| {
                 let owned: Vec<Value> = members.iter().map(|v| (*v).clone()).collect();
-                let run = self.run_commands(&owned, crates, MAX_GROUP_FILTER_NAMES);
+                let (run, _) = self.run_commands(&owned, crates, MAX_GROUP_FILTER_NAMES);
                 let mut row = vec![
                     ("group".into(), Value::String(if label.is_empty() { ".".into() } else { label })),
                     ("tests".into(), Value::Int(members.len() as i64)),
@@ -376,6 +516,14 @@ mod tests {
     }
 
     #[test]
+    fn a_scope_over_two_packages_or_the_root_is_too_wide() {
+        let pkgs: BTreeSet<String> = ["crates/a", "crates/b", "games/one"].iter().map(|s| s.to_string()).collect();
+        assert!(spans_packages("**", &pkgs) && spans_packages("crates/**", &pkgs));
+        assert!(!spans_packages("crates/a/src/**", &pkgs) && !spans_packages("crates/a/**", &pkgs) && !spans_packages("games/**", &pkgs));
+        assert!(!spans_packages("crates/a/src/lib.rs", &pkgs) && !spans_packages("docs/**", &pkgs));
+    }
+
+    #[test]
     fn source_reads_from_paths_written_in_tests() {
         let guard = "#[test]\nfn no_prints() {\n    let src = Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"src\");\n    for e in std::fs::read_dir(src).unwrap() {}\n}";
         assert_eq!(source_reads(guard, "crates/a/tests/print_guard.rs"), vec!["crates/a/src/**"]);
@@ -384,7 +532,7 @@ mod tests {
         let cat = "let t = std::fs::read_to_string(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/src/lib.rs\")).unwrap();";
         assert_eq!(source_reads(cat, "tests/x.rs"), vec!["src/lib.rs"]);
         assert!(source_reads("let p = env!(\"CARGO_MANIFEST_DIR\"); let x = 1;", "tests/x.rs").is_empty(), "nothing is read");
-        assert!(source_reads("fn t() { std::fs::read_to_string(p).unwrap(); let d = env!(\"CARGO_MANIFEST_DIR\"); }", "tests/x.rs").is_empty(), "the whole crate is no scope");
+        assert!(source_reads("fn t() { std::fs::read_to_string(p).unwrap(); let d = env!(\"CARGO_MANIFEST_DIR\"); }", "tests/x.rs").is_empty(), "the root crate is the project root: no scope");
         let root = "fn t() { let r = Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"../..\"); std::fs::read_dir(r).unwrap(); }";
         assert!(source_reads(root, "crates/a/tests/x.rs").is_empty(), "the whole project is no scope; a rule says it");
         let sub = "fn t() {

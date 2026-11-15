@@ -41,7 +41,7 @@ Always pass `--json` on the CLI and branch on `status` before treating a payload
 
 `auto_update` runs inline only when at most 50 files changed (`auto_update_limit`) and no job is running. Otherwise the tool answers from the snapshot as it is, sets `auto_update_skip_reason` (`too_many_changed_files` or `background_job_running`) and `auto_update_job_id`: poll `job_status` with that id, then call again.
 
-`diff_impact` rows come in tiers: `changed_test` (the test's own lines changed), `always_run` and `reads_source` (an AGENTS.md `chisel: always-run <paths> -> <tests>` rule, or a test that reads a changed folder), then `direct`, `call_graph`, `sibling`, `co_change`. Within a tier, more changed units reached (`units`) and rarer ones rank higher. The reply is `{"items", "run"}`: run the `run` commands. Past `limit`, `groups` summarise the rest per package with a command each.
+`diff_impact` rows come in tiers: `changed_test` (the test's own lines changed), then `direct`, `call_graph`, `sibling`, `co_change`. Within a tier, more changed units reached (`units`) and rarer ones rank higher. Guard tests come per test file in `guards`: `always_run` (an AGENTS.md `chisel: always-run <paths> -> <tests>` rule) or `reads_source` (a test that reads a changed folder; never the project root or a folder of several packages). The reply is `{"items", "guards", "run"}`: run the `run` commands. Past `limit` (default 50), `groups` summarise the rest per package with a command each.
 
 ## Flags that change results
 

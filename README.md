@@ -57,7 +57,7 @@ chisel run -- pytest tests/                # run tests and record pass/fail
 | Tool | Answers |
 |---|---|
 | `analyze`, `update` | Build or incrementally refresh the snapshot. `start_job`, `job_status`, `cancel_job` run them in the background. |
-| `diff_impact` | Which tests should I run after this edit? Tests you changed first, then tests a project rule or a source-reading guard names, then tests that call the changed functions and tests of their callers, ranked by how much of the change they reach. `run` holds the command. `since` covers committed work. |
+| `diff_impact` | Which tests should I run after this edit? Tests you changed first, then tests that call the changed functions and tests of their callers, ranked by how much of the change they reach. Guard tests and always-run rules come per test file in `guards`. `run` holds narrow commands. `since` covers committed work. |
 | `impact`, `suggest_tests` | Which tests cover these files, ranked? |
 | `triage`, `risk_map`, `test_gaps` | Where is risk: churn, coupling, coverage gaps, one-author code, flaky tests? |
 | `churn`, `coupling`, `history` | How often does this change, and what changes with it? |
@@ -100,7 +100,7 @@ Turn off `locks` when one agent works on the project or CoordinationHub/Trammel 
 
 ### Tests to always run
 
-Some tests no call graph reaches: a guard that reads every file under `src/` and asserts on the text, a tool dispatched by its name. Name them in the same block, and `diff_impact` lists them first (`source: always_run`) whenever a changed file matches:
+Some tests no call graph reaches: a guard that reads every file under `src/` and asserts on the text, a tool dispatched by its name. Name them in the same block, and `diff_impact` lists them in `guards` (`source: always_run`, one entry per test file) whenever a changed file matches:
 
 ````markdown
 ```agent-tools
@@ -108,7 +108,7 @@ chisel: always-run crates/app/src/**, scripts/*.py -> crates/app/tests/disk_guar
 ```
 ````
 
-Paths take `*` (one folder) and `**` (any depth). Tests are a test file (all its tests), a test id (`path:name`) or a test name. Chisel also finds guards that build a folder from `env!("CARGO_MANIFEST_DIR")` or read a file with `include_str!`, and lists them as `reads_source` when that folder changes; one that reads the whole project needs a rule.
+Paths take `*` (one folder) and `**` (any depth). Tests are a test file (all its tests), a test id (`path:name`) or a test name. Chisel also finds guards that build a folder from `env!("CARGO_MANIFEST_DIR")` or read a file with `include_str!`, and lists them in `guards` as `reads_source` when that folder changes. A detected scope is dropped when it is the project root or a folder holding two or more Cargo packages (`crates/**`); a crate's own folders (`crates/a/src/**`) are kept. A test that reads wider needs a rule. A guard file whose tests are all named runs as `cargo test -p <package> --test <name>`.
 
 ## Issues and traceability
 

@@ -740,6 +740,22 @@ impl Engine {
 
     pub(super) fn build_tests_and_edges(&mut self, files: &[String], units_by_file: &BTreeMap<String, Vec<CodeUnit>>) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
         let mut test_units = Vec::new();
+        // Cargo package folders: a detected read scope that holds two or more is not kept.
+        let package_dirs: BTreeSet<String> = {
+            let mut crates = crate::cargo::Crates::new(&self.project_dir);
+            let mut dirs: BTreeSet<String> = BTreeSet::new();
+            let mut seen: BTreeSet<String> = BTreeSet::new();
+            for u in self.store.array("code_units") {
+                let Some(f) = u.get("file_path").and_then(|v| v.as_str()) else { continue };
+                let dir = f.rsplit_once('/').map(|(d, _)| d).unwrap_or("").to_string();
+                if seen.insert(dir) {
+                    if let Some(c) = crates.crate_of(f) {
+                        dirs.insert(c);
+                    }
+                }
+            }
+            dirs
+        };
         for rel in files {
             let units = units_by_file.get(rel).cloned().unwrap_or_default();
             let abs = self.sources().path(rel);
@@ -781,7 +797,7 @@ impl Engine {
             // Paths a Rust test reads by a path it writes down (a guard over `src/`): a change
             // there names the test, whatever the call graph says. A test file is read whole (its
             // helpers do the reading); an inline test by its own lines and helpers.
-            let file_reads = if rel.ends_with(".rs") && as_file { super::selection::source_reads(&content, rel) } else { Vec::new() };
+            let file_reads = if rel.ends_with(".rs") && as_file { super::selection::detected_scopes(&content, rel, &package_dirs) } else { Vec::new() };
             let all_units = units_by_file.get(rel).map(|u| u.as_slice()).unwrap_or(&[]);
             for u in selected {
                 let mut row = Value::object(vec![
@@ -798,7 +814,7 @@ impl Engine {
                 } else if as_file {
                     file_reads.clone()
                 } else {
-                    super::selection::source_reads(&test_body_with_helpers(&content, &row, all_units), rel)
+                    super::selection::detected_scopes(&test_body_with_helpers(&content, &row, all_units), rel, &package_dirs)
                 };
                 if !reads.is_empty() {
                     row.insert("reads", Value::Array(reads.into_iter().map(Value::String).collect()));
