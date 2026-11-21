@@ -1344,6 +1344,9 @@ impl Engine {
                 project: self.project_dir.clone(),
                 storage: self.store.dir().to_path_buf(),
                 kind: kind.to_string(),
+                directory: self.directory.clone(),
+                result: None,
+                error: None,
             });
             id
         };
@@ -1356,25 +1359,42 @@ impl Engine {
         ]));
         self.store.save()?;
         let id_thread = id.clone();
+        let (include_ignored, allow_repo_extractor) = (self.include_ignored, self.allow_repo_extractor);
         thread::spawn(move || {
-            let (project, storage, kind) = {
+            let (project, storage, kind, directory) = {
                 let guard = job_lock().lock().ok();
                 let Some(jobs) = guard else { return };
                 let Some(job) = jobs.iter().find(|j| j.id == id_thread) else { return };
-                (job.project.clone(), job.storage.clone(), job.kind.clone())
+                (job.project.clone(), job.storage.clone(), job.kind.clone(), job.directory.clone())
             };
             set_job(&id_thread, "running", 1);
-            let Ok(mut engine) = Engine::open(&project, Some(&storage)) else {
-                set_job(&id_thread, "error", 0);
-                return;
+            let mut engine = match Engine::open(&project, Some(&storage)) {
+                Ok(engine) => engine,
+                Err(err) => {
+                    set_job_outcome(&id_thread, None, Some(err));
+                    set_job(&id_thread, "failed", 0);
+                    return;
+                }
             };
             engine.active_job = Some(id_thread.clone());
+            engine.directory = directory;
+            engine.include_ignored = include_ignored;
+            engine.allow_repo_extractor = allow_repo_extractor;
             let result = if kind == "update" { engine.update() } else { engine.analyze() };
-            let status = result.ok().and_then(|v| v.get("status").and_then(|s| s.as_str()).map(|s| s.to_string()));
-            if status.as_deref() == Some("cancelled") || job_should_stop(&id_thread, engine.store.dir()) {
-                engine.note_job(&id_thread, "cancelled", 0);
-            } else {
-                engine.note_job(&id_thread, "completed", 100);
+            match result {
+                Ok(value) => {
+                    let status = value.get("status").and_then(|s| s.as_str()).map(|s| s.to_string());
+                    if status.as_deref() == Some("cancelled") || job_should_stop(&id_thread, engine.store.dir()) {
+                        engine.note_job(&id_thread, "cancelled", 0);
+                    } else {
+                        set_job_outcome(&id_thread, Some(value), None);
+                        engine.note_job(&id_thread, "completed", 100);
+                    }
+                }
+                Err(err) => {
+                    set_job_outcome(&id_thread, None, Some(err));
+                    engine.note_job(&id_thread, "failed", 0);
+                }
             }
         });
         Ok(Value::object(vec![
@@ -1387,11 +1407,19 @@ impl Engine {
     pub fn job_status_value(&mut self, id: &str) -> Value {
         if let Ok(jobs) = job_lock().lock() {
             if let Some(job) = jobs.iter().find(|j| j.id == id) {
-                return Value::object(vec![
+                let mut pairs = vec![
                     ("job_id".into(), Value::String(job.id.clone())),
                     ("status".into(), Value::String(job.status.clone())),
+                    ("kind".into(), Value::String(job.kind.clone())),
                     ("progress_pct".into(), Value::Int(job.progress)),
-                ]);
+                ];
+                if let Some(result) = &job.result {
+                    pairs.push(("result".into(), result.clone()));
+                }
+                if let Some(error) = &job.error {
+                    pairs.push(("error".into(), Value::String(error.clone())));
+                }
+                return Value::object(pairs);
             }
         }
         self.store.reload().ok();
@@ -1405,6 +1433,60 @@ impl Engine {
             ("message".into(), Value::String(format!("unknown job: {id}"))),
             ("job_id".into(), Value::String(id.into())),
         ])
+    }
+
+    /// `job_status`, after waiting up to `budget` for the job to leave `queued`/`running`.
+    pub fn wait_job(&mut self, id: &str, budget: Duration) -> Value {
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            let status = self.job_status_value(id);
+            let busy = matches!(status.get("status").and_then(|v| v.as_str()), Some("queued" | "running"));
+            if !busy || std::time::Instant::now() >= deadline {
+                return status;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// `analyze` or `update` under a call budget: run as a job, wait up to `budget`, and return
+    /// its reply, or `auto_queued` with the `job_id` while it still runs. A job already running
+    /// on this snapshot is waited for instead of starting another.
+    pub(super) fn run_bounded(&mut self, kind: &str, budget: Duration) -> Result<Value, String> {
+        let begun = std::time::Instant::now();
+        let started = self.start_job(kind)?;
+        let Some(id) = started.get("job_id").and_then(|v| v.as_str()).map(|s| s.to_string()) else {
+            return Ok(started);
+        };
+        let other = started.get("status").and_then(|v| v.as_str()) == Some("error");
+        let status = self.wait_job(&id, budget);
+        match status.get("status").and_then(|v| v.as_str()) {
+            Some("completed") if !other => {
+                // The job wrote the snapshot from its own engine: read it here too.
+                let _ = self.store.reload();
+                Ok(status.get("result").cloned().unwrap_or(status))
+            }
+            Some("failed") if !other => Err(status.get("error").and_then(|v| v.as_str()).unwrap_or("job failed").to_string()),
+            Some("queued" | "running") => {
+                let secs = budget.as_secs();
+                let job_kind = status.get("kind").and_then(|v| v.as_str()).unwrap_or(kind).to_string();
+                let message = if other {
+                    format!("A {job_kind} job ({id}) was already running and is still indexing after {secs} s.")
+                } else {
+                    format!("Still indexing after {secs} s: {kind} goes on in the background as job {id}.")
+                };
+                Ok(Value::object(vec![
+                    ("status".into(), Value::String("auto_queued".into())),
+                    ("job_id".into(), Value::String(id.clone())),
+                    ("kind".into(), Value::String(job_kind)),
+                    ("progress_pct".into(), status.get("progress_pct").cloned().unwrap_or(Value::Int(0))),
+                    ("message".into(), Value::String(message)),
+                    ("hint".into(), Value::String(format!("Call job_status with job_id {id}; it waits up to {secs} s for the result. Other tools answer from the snapshot as it is meanwhile."))),
+                ]))
+            }
+            // Another job finished (or was cancelled) while this call waited: do this one now.
+            _ if other => self.run_bounded(kind, budget.saturating_sub(begun.elapsed())),
+            _ => Ok(status),
+        }
     }
 
     pub fn cancel_job_value(&mut self, id: &str) -> Value {

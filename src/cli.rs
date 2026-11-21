@@ -22,6 +22,8 @@ pub struct Args {
     pub working_tree: bool,
     pub depth: Option<i64>,
     pub auto_update: bool,
+    /// `--no-auto-update`: diff-impact answers `stale_db` instead of refreshing a small diff.
+    pub no_auto_update: bool,
     pub limit: Option<i64>,
     pub shard: Option<String>,
     pub directory: Option<String>,
@@ -60,6 +62,9 @@ pub struct Args {
     /// The linked worktree this process started in, when neither the project nor the storage
     /// directory was given: read tools answer for it from the main checkout's snapshot.
     pub default_worktree: Option<PathBuf>,
+    /// Set when no project was given (`CHISEL_PROJECT_DIR`, `--project-dir`) and the working
+    /// directory is not inside a git repository: the one-line refusal. Nothing is scanned.
+    pub no_project: Option<String>,
     /// Flags passed through as tool arguments as they are: `--message`, `--platform`,
     /// `--not-passed-since`, `--not-run-on` (strings) and `--auto-update-limit` (a number).
     pub extra: Vec<(String, Value)>,
@@ -69,6 +74,7 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     let mut command = String::new();
     let env_project = env::var("CHISEL_PROJECT_DIR").ok().map(PathBuf::from);
     let mut explicit_dirs = env_project.is_some();
+    let mut explicit_project = env_project.is_some();
     let mut project_dir = env_project.unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let mut storage_dir = env::var("CHISEL_STORAGE_DIR").ok().map(PathBuf::from);
     explicit_dirs |= storage_dir.is_some();
@@ -84,6 +90,7 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     let mut force = false;
     let mut working_tree = false;
     let mut auto_update = false;
+    let mut no_auto_update = false;
     let mut limit = None;
     let mut shard = None;
     let mut directory = None;
@@ -129,10 +136,12 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
         if let Some(v) = a.strip_prefix("--project-dir=") {
             project_dir = PathBuf::from(v);
             explicit_dirs = true;
+            explicit_project = true;
         } else if a == "--project-dir" {
             i += 1;
             project_dir = PathBuf::from(argv.get(i).ok_or("missing --project-dir")?);
             explicit_dirs = true;
+            explicit_project = true;
         } else if let Some(v) = a.strip_prefix("--storage-dir=") {
             storage_dir = Some(PathBuf::from(v));
             explicit_dirs = true;
@@ -165,6 +174,8 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
             working_tree = true;
         } else if a == "--auto-update" {
             auto_update = true;
+        } else if a == "--no-auto-update" {
+            no_auto_update = true;
         } else if a == "--limit" {
             i += 1;
             limit = Some(argv.get(i).ok_or("missing --limit")?.parse().map_err(|_| "bad limit")?);
@@ -283,6 +294,15 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     }
     // Started inside a linked git worktree with no directory given: the main checkout's snapshot
     // is the base and this worktree the overlay, when main has a snapshot and this tree has none.
+    // No project given: the git root of the working directory. Outside any repository there is
+    // no project (an umbrella folder of many repos would be scanned whole), so nothing is opened.
+    let mut no_project = None;
+    if !explicit_project {
+        match crate::engine::git_root(&project_dir) {
+            Some(root) => project_dir = root,
+            None => no_project = Some(no_project_message(&project_dir)),
+        }
+    }
     let mut default_worktree = None;
     if !explicit_dirs {
         if let Some((main, tree)) = crate::engine::linked_worktree(&project_dir) {
@@ -294,11 +314,19 @@ pub fn parse(argv: &[String]) -> Result<Args, String> {
     }
     Ok(Args {
         command, project_dir, storage_dir, json, positionals, host, port, ttl, purpose, test_command,
-        force, working_tree, auto_update, limit, shard, directory, git_ref, depth, kind, passed,
+        force, working_tree, auto_update, no_auto_update, limit, shard, directory, git_ref, depth, kind, passed,
         coverage_mode, proximity_adjustment, exclude_new_file_boost, allow_repo_extractor, once, interval_secs,
         functions, fallback, unit, min_count, no_exclude_tests, top_n, agent_id, duration_ms, help,
-        capture_command, hook, all, since, brief, write, worktree, default_worktree, extra,
+        capture_command, hook, all, since, brief, write, worktree, default_worktree, extra, no_project,
     })
+}
+
+/// The refusal when no project was given and `dir` is not inside a git repository.
+pub fn no_project_message(dir: &std::path::Path) -> String {
+    format!(
+        "No project: {} is not inside a git repository, so Chisel does not scan it (a folder of many repositories would be indexed whole). Set CHISEL_PROJECT_DIR to the repository's path (the MCP server's env), pass --project-dir, or start Chisel inside the repository. MCP tools also take project_dir.",
+        dir.display()
+    )
 }
 
 fn tool_name(command: &str) -> String {
@@ -326,11 +354,16 @@ fn tool_name(command: &str) -> String {
 pub fn run(args: &Args) -> Result<i32, String> {
     match args.command.as_str() {
         "serve" => {
+            if let Some(msg) = &args.no_project {
+                eprintln!("Error: {msg}");
+                return Ok(1);
+            }
             crate::http::serve(&args.project_dir, args.storage_dir.as_deref(), args.default_worktree.as_deref(), &args.host, args.port)?;
             return Ok(0);
         }
         "serve-mcp" | "mcp" => {
-            crate::mcp::serve(&args.project_dir, args.storage_dir.as_deref(), args.default_worktree.as_deref())?;
+            let project = args.no_project.is_none().then_some(args.project_dir.as_path());
+            crate::mcp::serve(project, &args.project_dir, args.storage_dir.as_deref(), args.default_worktree.as_deref())?;
             return Ok(0);
         }
         "help" => {
@@ -341,6 +374,19 @@ pub fn run(args: &Args) -> Result<i32, String> {
                     0
                 }
             });
+        }
+        // A hook reads the payload's cwd, and hook-install only writes a settings file.
+        cmd if args.no_project.is_some() && !matches!(cmd, "capture" | "hook-install") && crate::cli_text::command_entry(cmd).is_some() => {
+            let body = Value::object(vec![
+                ("status".into(), Value::String("error".into())),
+                ("message".into(), Value::String(args.no_project.clone().unwrap_or_default())),
+            ]);
+            if args.json {
+                emit(true, cmd, &body)?;
+            } else {
+                eprintln!("Error: {}", args.no_project.as_deref().unwrap_or_default());
+            }
+            return Ok(1);
         }
         "run" => return crate::run_cmd::run_tests(args),
         "capture" => return Ok(crate::capture::capture_cmd(args)),
@@ -465,6 +511,8 @@ fn call_args(args: &Args) -> Value {
     }
     if args.auto_update {
         pairs.push(("auto_update".into(), Value::Bool(true)));
+    } else if args.no_auto_update {
+        pairs.push(("auto_update".into(), Value::Bool(false)));
     }
     if let Some(limit) = args.limit {
         pairs.push(("limit".into(), Value::Int(limit)));

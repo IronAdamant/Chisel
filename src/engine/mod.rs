@@ -10,7 +10,7 @@ mod query;
 mod resolve;
 mod selection;
 mod overlay;
-pub use overlay::linked_worktree;
+pub use overlay::{git_root, linked_worktree};
 mod locks;
 
 use crate::extract::{self, CodeUnit, Dep};
@@ -33,6 +33,11 @@ pub(crate) struct LiveJob {
     project: PathBuf,
     storage: PathBuf,
     kind: String,
+    /// `analyze`'s `directory`, carried into the job's own engine.
+    directory: Option<String>,
+    /// The finished job's reply (`completed`) or error (`failed`), for `job_status`.
+    result: Option<Value>,
+    error: Option<String>,
 }
 
 pub(crate) fn job_lock() -> &'static Mutex<Vec<LiveJob>> {
@@ -150,6 +155,15 @@ pub(crate) fn job_should_stop(id: &str, dir: &Path) -> bool {
     }).unwrap_or(false)
 }
 
+pub(crate) fn set_job_outcome(id: &str, result: Option<Value>, error: Option<String>) {
+    if let Ok(mut jobs) = job_lock().lock() {
+        if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
+            job.result = result;
+            job.error = error;
+        }
+    }
+}
+
 pub(crate) fn set_job(id: &str, status: &str, progress: i64) {
     if let Ok(mut jobs) = job_lock().lock() {
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
@@ -261,6 +275,10 @@ pub struct Engine {
     pub default_worktree: Option<PathBuf>,
     /// CLI: no client timeout, so `analyze` with `force` runs inline instead of as a job.
     pub inline_jobs: bool,
+    /// MCP: the longest a call may take. `analyze` and `update` run as a job and answer
+    /// `auto_queued` with its `job_id` when it is still running then; `job_status` waits as long
+    /// for the job to finish. `None` (CLI, HTTP, library): calls run to completion.
+    pub call_budget: Option<std::time::Duration>,
     /// `impact`/`diff_impact` depth: 1 is direct edges only; 2 and 3 add tests of the changed
     /// functions' callers, and their callers.
     pub impact_depth: usize,
@@ -322,6 +340,7 @@ impl Engine {
             overlays: HashMap::new(),
             default_worktree: None,
             inline_jobs: false,
+            call_budget: None,
             impact_depth: DEFAULT_IMPACT_DEPTH,
             directory: None,
             source_reads: 0,

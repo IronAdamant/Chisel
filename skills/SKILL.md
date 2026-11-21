@@ -36,7 +36,7 @@ Always pass `--json` on the CLI and branch on `status` before treating a payload
 | `no_edges` | No test edges yet. Check that test filenames match the discovery patterns |
 | `git_error` | Git failed. Read `error`, `cwd`, and `project_dir` |
 | `error` | Missing required argument or unknown shard. Read `message` |
-| `auto_queued` | `force` analyze on more than 300 code files. Poll `job_status` with the returned `job_id` |
+| `auto_queued` | Still indexing (MCP `analyze`/`update` past 25 s, or `force` analyze on more than 300 code files). Call `job_status` with the returned `job_id`; over MCP it waits for the result |
 | `unsupported` | That call is not available. Read `message` |
 
 `auto_update` runs inline only when at most 50 files changed (`auto_update_limit`) and no job is running. Otherwise the tool answers from the snapshot as it is, sets `auto_update_skip_reason` (`too_many_changed_files` or `background_job_running`) and `auto_update_job_id`: poll `job_status` with that id, then call again.
@@ -47,7 +47,7 @@ Always pass `--json` on the CLI and branch on `status` before treating a payload
 
 - `working_tree` true re-reads the worktree. Leave it false to use the snapshot.
 - `suggest_tests` requires `file_path`. `impact` requires `files`. A missing required argument is `status: "error"`, not an empty list.
-- `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` apply when the CLI flags are absent.
+- `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` apply when the CLI flags are absent. Without them the project is the git root of the working directory; outside a repository nothing is scanned and MCP calls need `project_dir` (an absolute path in a repository; any call may pass it).
 - `CHISEL_INCLUDE_IGNORED=1` scans ignored files. Non-git projects are unfiltered.
 - Shards: `CHISEL_SHARDS` or `.chisel/shards.toml`. One snapshot per shard. Unscoped reads aggregate. Unknown shard is `status: "error"`. Cross-shard test edges are overlaid from the parent snapshot. `flakiness_trend` is set when dated results span two of the last four weeks.
 - Function churn and blame come from one batched `git log -p` stream; only files it cannot replay (dirty, untracked, diff-driver attributes) spawn `git log -L` or `git blame`.

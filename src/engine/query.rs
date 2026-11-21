@@ -1848,6 +1848,10 @@ impl Engine {
             let _ = self.update();
         }
         let result = match name {
+            "analyze" | "update" if self.call_budget.is_some() && !self.inline_jobs && self.shards.is_empty() => {
+                let budget = self.call_budget.unwrap_or_default();
+                self.run_bounded(name, budget)
+            }
             "analyze" => {
                 let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
                 if force && !self.inline_jobs && self.count_code_files() > 300 {
@@ -1859,7 +1863,7 @@ impl Engine {
             }
             "update" => self.update(),
             "risk_map" => self.risk_map(),
-            "diff_impact" => self.diff_impact(),
+            "diff_impact" => self.diff_impact_refreshing(args),
             "suggest_tests" => {
                 let file = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
                 if file.is_empty() {
@@ -1929,7 +1933,10 @@ impl Engine {
             }
             "job_status" => {
                 let id = args.get("job_id").and_then(|v| v.as_str()).unwrap_or("");
-                Ok(self.job_status_value(id))
+                match self.call_budget {
+                    Some(budget) if !self.inline_jobs => Ok(self.wait_job(id, budget)),
+                    _ => Ok(self.job_status_value(id)),
+                }
             }
             "cancel_job" => {
                 let id = args.get("job_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -1950,6 +1957,30 @@ impl Engine {
         let limited = self.apply_limit(name, args, result);
         let finished = self.finish_auto(auto, compact_risk_rows(name, limited));
         Ok(self.with_reply_meta(finished))
+    }
+
+    /// `diff_impact`, and when the snapshot lacks changed files (`stale_db`) and `auto_update`
+    /// was not passed: one `update` (it stats every file and re-indexes the changed ones) and the
+    /// answer again, when the diff has at most `auto_update_limit` code files. The reply names
+    /// the files in `auto_updated`. `auto_update: false` keeps the `stale_db` answer.
+    fn diff_impact_refreshing(&mut self, args: &Value) -> Result<Value, String> {
+        let first = self.diff_impact()?;
+        if args.get("auto_update").is_some() || !self.shards.is_empty() || first.get("status").and_then(|v| v.as_str()) != Some("stale_db") {
+            return Ok(first);
+        }
+        let changed = first.get("changed_files").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(usize::MAX);
+        if changed > self.auto_update_limit {
+            return Ok(first);
+        }
+        let missing = first.get("missing_from_db").cloned().unwrap_or(Value::Array(Vec::new()));
+        if self.update().is_err() {
+            return Ok(first);
+        }
+        self.reply_meta.clear();
+        self.guard_rows.clear();
+        let again = self.diff_impact()?;
+        self.reply_meta.push(("auto_updated".into(), missing));
+        Ok(again)
     }
 
     /// Adds `reply_meta` to a reply: keys on an object, or `{"items": [...], ..}` around a list.
