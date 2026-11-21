@@ -34,6 +34,8 @@ Add to `.mcp.json` in your project (or `~/.claude.json`):
 }
 ```
 
+Without `CHISEL_PROJECT_DIR` the project is the git root of the folder the client starts the server in. Started outside any git repository (a folder that holds many), the server indexes nothing: each call must pass `project_dir`, the absolute path of a repository, and one without it is refused at once. Any call may pass `project_dir`, so one server can answer for several repositories. Over MCP, `analyze` and `update` return within 25 s (`CHISEL_MCP_WAIT_SECS`): a longer one answers `auto_queued` with a `job_id` and goes on in the background, and `job_status` waits as long for its result.
+
 The snapshot goes to `<project>/.chisel/store` unless `CHISEL_STORAGE_DIR` says otherwise. Any stdio MCP client works the same way. `chisel serve --port 8377` is a separate JSON HTTP API (`GET /health`, `GET /tools`, `POST /call`), not an MCP URL.
 
 The agent loop: call `analyze` once, `diff_impact` after each edit to pick which tests to run (grep finds names; Chisel knows which tests call the code you changed, and their callers), run those tests, then `record_result`. Work in a git worktree? Pass `worktree_root` (CLI `--worktree`), or start the server inside the worktree: Chisel answers for that tree from the main checkout's snapshot. Committed work: `since: "main"`. When something needs doing, the response has a `status` (`no_data`: call `analyze`; `stale_db`: call `update`), and most responses suggest `next_steps`. The full calling contract is in [AGENTS.md](AGENTS.md). A ready-made Claude Code skill is in [skills/SKILL.md](skills/SKILL.md).

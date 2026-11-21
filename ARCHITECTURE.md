@@ -46,7 +46,7 @@ Shards are one snapshot each under `.chisel/shards/<shard>/`. Writes use the lon
 
 ## Storage and git
 
-`.chisel/store` is the snapshot. `chisel migrate` reads a legacy `chisel.db` once and copies `test_results`. Other commands do not open it. `:memory:` and `file:` storage paths are rejected. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` apply when the CLI flags are absent.
+`.chisel/store` is the snapshot. `chisel migrate` reads a legacy `chisel.db` once and copies `test_results`. Other commands do not open it. `:memory:` and `file:` storage paths are rejected. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` apply when the CLI flags are absent. Without a project, `cli::parse` takes the git root of the working directory (`engine::git_root`), and sets `no_project` outside any repository; `mcp::serve` then opens no engine and refuses calls without `project_dir`. `mcp::Projects` keeps one engine per repository a call names. Over MCP `Engine::call_budget` is set: `analyze`/`update` go through `run_bounded` (a job, waited for up to the budget) and `job_status` through `wait_job`.
 
 Git is a subprocess. Locks are advisory records. They do not lock source files.
 

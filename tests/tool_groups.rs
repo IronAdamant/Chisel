@@ -52,6 +52,7 @@ fn session_in(dir: &std::path::Path, vars: &[(&str, &str)], requests: &[&str]) -
 /// `capabilities.tools.listChanged` against 0.18.0; 0.20.0 adds the `issues` group's tools.
 /// 0.23.0: `since` and `worktree_root` arguments, and descriptions that say when to call.
 /// 0.24.0: `auto_update_limit`, record_result's `message` and `platform`, stats' result lists.
+/// Next release: `project_dir` on five tools; analyze and job_status say a call waits at most 25 s.
 fn release_output() -> Vec<String> {
     include_str!("fixtures/mcp/default.jsonl")
         .lines()
