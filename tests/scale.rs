@@ -596,9 +596,13 @@ fn statuses_and_small_auto_update_and_queued_job() {
     let text = chisel::json::to_string(&stale).unwrap();
     assert!(text.contains("no_edges") || text.contains("stale_tests"), "{text}");
     fs::write(dir.join("src/new.py"), "def n():\n    return 1\n").unwrap();
-    let stale_db = engine.dispatch("diff_impact", &chisel::json::Value::object(vec![])).unwrap();
+    // `auto_update: false` keeps the stale answer; unset, a small diff is indexed first (next release).
+    let stale_db = engine.dispatch("diff_impact", &chisel::json::Value::object(vec![("auto_update".into(), chisel::json::Value::Bool(false))])).unwrap();
     let text = chisel::json::to_string(&stale_db).unwrap();
     assert!(text.contains("stale_db"), "{text}");
+    let refreshed = engine.dispatch("diff_impact", &chisel::json::Value::object(vec![])).unwrap();
+    let text = chisel::json::to_string(&refreshed).unwrap();
+    assert!(!text.contains("stale_db") && text.contains("\"auto_updated\":[\"src/new.py\"]"), "{text}");
     let suggested = engine.dispatch("suggest_tests", &chisel::json::Value::object(vec![("file_path".into(), chisel::json::Value::String("src/a.py".into()))])).unwrap();
     let text = chisel::json::to_string(&suggested).unwrap();
     assert!(text.contains("direct") || text.contains("static_require") || text.contains("no_data") || text.contains("[]"), "{text}");

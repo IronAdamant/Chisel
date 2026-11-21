@@ -15,6 +15,67 @@
 use super::analyze::crate_dir;
 use super::*;
 
+/// `tests/test_a.py` -> `tests.test_a`, the name `python -m unittest` takes.
+fn unittest_module(file: &str) -> String {
+    file.strip_suffix(".py").unwrap_or(file).trim_start_matches("./").replace(['/', '\\'], ".")
+}
+
+/// Whether the project runs its Python tests with pytest: a pytest config (`pytest.ini`,
+/// `conftest.py`, `[tool.pytest...]` in `pyproject.toml`, `[tool:pytest]` in `setup.cfg`,
+/// `[pytest]` in `tox.ini`), a test file that imports pytest, or pytest importable by the
+/// project's Python (`.venv`/`venv`, else `python3`). Otherwise the commands use unittest.
+/// The import check runs once per project per process.
+pub(crate) fn uses_pytest(project: &Path, test_files: &[&str]) -> bool {
+    let read = |name: &str| fs::read_to_string(project.join(name)).unwrap_or_default();
+    if project.join("pytest.ini").is_file() || project.join("conftest.py").is_file() {
+        return true;
+    }
+    if read("pyproject.toml").lines().any(|l| l.trim_start().starts_with("[tool.pytest")) {
+        return true;
+    }
+    if read("setup.cfg").lines().any(|l| l.trim() == "[tool:pytest]") || read("tox.ini").lines().any(|l| l.trim() == "[pytest]") {
+        return true;
+    }
+    // A conftest.py beside the tests counts too (pytest finds it there).
+    if test_files.iter().any(|f| Path::new(f).parent().is_some_and(|d| !d.as_os_str().is_empty() && project.join(d).join("conftest.py").is_file())) {
+        return true;
+    }
+    if test_files.iter().any(|f| fs::read_to_string(project.join(f)).unwrap_or_default().lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("import pytest") || t.starts_with("from pytest") || t.starts_with("from _pytest")
+    })) {
+        return true;
+    }
+    pytest_importable(project)
+}
+
+fn pytest_importable(project: &Path) -> bool {
+    static SEEN: std::sync::Mutex<Option<HashMap<PathBuf, bool>>> = std::sync::Mutex::new(None);
+    if let Some(known) = SEEN.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(project).copied())) {
+        return known;
+    }
+    if std::env::var("CHISEL_PYTEST_PROBE").ok().as_deref() == Some("0") {
+        return false;
+    }
+    let bin = if cfg!(windows) { "Scripts/python.exe" } else { "bin/python" };
+    let mut pythons: Vec<PathBuf> = [".venv", "venv"].iter().map(|v| project.join(v).join(bin)).filter(|p| p.is_file()).collect();
+    pythons.push(PathBuf::from(if cfg!(windows) { "python" } else { "python3" }));
+    let found = pythons.iter().any(|py| {
+        std::process::Command::new(py)
+            .args(["-c", "import pytest"])
+            .current_dir(project)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    });
+    if let Ok(mut guard) = SEEN.lock() {
+        guard.get_or_insert_with(HashMap::new).insert(project.to_path_buf(), found);
+    }
+    found
+}
+
 /// Most test names one command filters by; past it the command runs the whole package.
 const MAX_FILTER_NAMES: usize = 30;
 /// The same for a group's command: a group is the part of the answer that did not fit.
@@ -336,13 +397,30 @@ impl Engine {
             out.push(cmd);
         }
         if !pytest.is_empty() {
-            if pytest.len() > max_names {
-                let mut files: Vec<&str> = pytest.iter().filter_map(|i| i.split("::").next()).collect();
-                files.dedup();
-                notes.push(format!("pytest: {} tests, too many to name; the command runs their files", pytest.len()));
-                out.push(format!("pytest {}", files.join(" ")));
+            let mut files: Vec<&str> = pytest.iter().filter_map(|i| i.split("::").next()).collect();
+            files.dedup();
+            // A module-level `def test_x()` runs only under pytest; unittest finds TestCase methods.
+            let bare = pytest.iter().any(|id| id.split_once("::").is_some_and(|(_, rest)| !rest.contains("::") && rest.starts_with("test")));
+            if bare || uses_pytest(&self.project_dir, &files) {
+                if pytest.len() > max_names {
+                    notes.push(format!("pytest: {} tests, too many to name; the command runs their files", pytest.len()));
+                    out.push(format!("pytest {}", files.join(" ")));
+                } else {
+                    out.push(format!("pytest {}", pytest.join(" ")));
+                }
             } else {
-                out.push(format!("pytest {}", pytest.join(" ")));
+                // unittest names a test by its dotted module path: `tests.test_a.TestX.test_y`.
+                let python = if cfg!(windows) { "python" } else { "python3" };
+                let ids: Vec<String> = if pytest.len() > max_names {
+                    notes.push(format!("unittest: {} tests, too many to name; the command runs their modules", pytest.len()));
+                    files.iter().map(|f| unittest_module(f)).collect()
+                } else {
+                    pytest.iter().map(|id| match id.split_once("::") {
+                        Some((file, rest)) => format!("{}.{}", unittest_module(file), rest.replace("::", ".")),
+                        None => unittest_module(id),
+                    }).collect()
+                };
+                out.push(format!("{python} -m unittest {}", ids.join(" ")));
             }
         }
         (out, notes)

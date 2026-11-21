@@ -7,9 +7,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+From an A/B run (MiniSQL, 2026-11-21): `serve-mcp` with `"env": {}` started in a folder of about 50 repositories that is not itself one, indexed all of it as one project, and `analyze` hung for the client's 30-minute timeout twice, after which the server disconnected. `diff_impact` also suggested `pytest` for a unittest project with no pytest installed, and answered `stale_db` until `update` was run by hand.
+
+### Fixed
+
+- **The project is the git root, never a folder of repositories.** With no `CHISEL_PROJECT_DIR` and no `--project-dir`, the project is the git root of the working directory (started in `repo/src`, it is `repo`). Outside any git repository nothing is scanned: the MCP server starts, says so in its `initialize` instructions, and answers every call that names no `project_dir` at once with `status: "error"` naming `CHISEL_PROJECT_DIR` and `project_dir`. The CLI exits 1 with the same message (`capture` and `hook-install` excepted), and `chisel serve` does not start. An explicit `--project-dir` or `CHISEL_PROJECT_DIR` is used as given, repository or not. Started in `coding_projects/`, `analyze` now refuses in under 0.3 s instead of hanging for 30 minutes.
+- **No MCP call blocks for minutes.** Over MCP, `analyze` and `update` run as a job. A job done within `CHISEL_MCP_WAIT_SECS` (default 25, 0 to 600) answers as before. One still running answers `status: "auto_queued"` with its `job_id`, `kind`, `progress_pct` and a hint. `job_status` waits as long for the job and returns its reply in `result` when `completed` (`error` when `failed`). A second `analyze` while one runs waits on that job instead of starting another. Sharded snapshots and `worktree_root` overlays still run inline. The CLI and HTTP server are unchanged.
+- **`diff_impact` suggests the project's own Python runner.** `run` uses `python3 -m unittest tests.test_a.TestX.test_y` (dotted module names; module names past 30 tests) unless the project uses pytest: a `pytest.ini`, a `conftest.py` at the root or beside the tests, `[tool.pytest...]` in `pyproject.toml`, `[tool:pytest]` in `setup.cfg`, `[pytest]` in `tox.ini`, a test file that imports pytest, a module-level `def test_x()` (only pytest runs those), or pytest importable by `.venv`/`venv` or `python3` (checked once per project per process; `CHISEL_PYTEST_PROBE=0` skips the check).
+- A job that failed was reported `completed`. It is now `failed`, with `error`. `analyze`'s `directory` is carried into its job.
+
+### Added
+
+- **`project_dir` on every MCP call**: the repository to answer for (absolute path; a folder inside a repository answers for its git root). One server serves several repositories; each gets its own snapshot under its `.chisel/`, opened on first use. Listed on `analyze`, `update`, `diff_impact`, `suggest_tests` and `start_job`.
+- **`diff_impact` indexes a small diff before answering.** When changed files are missing from the snapshot and `auto_update` is not passed, it runs one `update` and answers again when the diff has at most `auto_update_limit` (50) code files; `auto_updated` lists the files that were missing. `auto_update: false` (CLI `--no-auto-update`) keeps the `stale_db` answer.
+
 ### Changed
 
 - The release workflow uploads `SHA256SUMS` for the four binaries. Check it before use.
+- `tools/list` is about 0.7 KB larger (`project_dir`, and descriptions of the call budget).
 
 ## [0.24.0]: 2026-11-15
 

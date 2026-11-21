@@ -38,6 +38,12 @@ fn find_dotgit(dir: &Path) -> Option<(PathBuf, PathBuf)> {
     }
 }
 
+/// The root of the git checkout (main or linked worktree) that holds `dir`, canonical. `None`
+/// outside any repository.
+pub fn git_root(dir: &Path) -> Option<PathBuf> {
+    find_dotgit(dir).map(|(root, _)| root)
+}
+
 /// A linked worktree's git dir and common dir, read from its `.git` file.
 fn linked_dirs(root: &Path, dotgit: &Path) -> Option<(PathBuf, PathBuf)> {
     let text = fs::read_to_string(dotgit).ok()?;

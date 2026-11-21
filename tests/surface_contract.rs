@@ -75,7 +75,8 @@ fn tools_list_is_short_and_every_description_is_distinct() {
     let text = chisel::json::to_string(&list).unwrap();
     // 0.23.0 added worktree_root to the 15 tools that answer for a worktree (about 1.8 KB).
     // 0.24.0: record_result's message and platform, stats' result lists, auto_update_limit (0.6 KB).
-    assert!(text.len() < 15_500, "tools/list is {} bytes", text.len());
+    // Next release: project_dir on 5 tools, auto_queued and job_status waiting in descriptions (0.7 KB).
+    assert!(text.len() < 16_200, "tools/list is {} bytes", text.len());
     let tools = list.get("tools").and_then(|v| v.as_array()).unwrap();
     let mut seen = std::collections::BTreeSet::new();
     for tool in tools {

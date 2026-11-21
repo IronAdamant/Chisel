@@ -14,6 +14,11 @@ pub fn compute_next_steps(tool_name: &str, result: &Value) -> Vec<Value> {
         if status == "no_data" {
             return vec![tool_step("analyze", Value::object(vec![]), "Populate analysis data")];
         }
+        if status == "auto_queued" {
+            if let Some(id) = result.get("job_id").and_then(|v| v.as_str()) {
+                return vec![tool_step("job_status", Value::object(vec![("job_id".into(), Value::String(id.into()))]), "Wait for the job; job_status waits for the result")];
+            }
+        }
         if status == "stale_db" {
             return vec![tool_step("update", Value::object(vec![]), "Refresh the snapshot")];
         }
