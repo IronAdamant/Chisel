@@ -24,12 +24,13 @@ The crate exposes two binaries. `chisel` is `src/main.rs`. `chisel-mcp` is `src/
 | `src/engine/resolve.rs` | Rust calls to definitions by type and path: owner types, receivers, std traits and methods; name-only matches at lower weight. |
 | `src/engine/overlay.rs` | `worktree_root`: an overlay of main's snapshot under `.chisel/overlays/<hash>/`, refreshed by `update` against that worktree. |
 | `src/engine/issues.rs` | Issue capture, suspects, hunk-to-unit and hunk-to-test mapping, fix summaries. |
+| `src/engine/rust_tests.rs` | The id of a cargo test the snapshot does not know yet: its module path followed from the crate root to the file that defines it. |
 | `src/cargo.rs` | Cargo manifests: which crates a Rust test can reach (dependencies, dev-dependencies, workspace deps). |
 | `src/engine/locks.rs` | Advisory lock rows in the snapshot. |
 | `src/extract` | Python syntax units, brace-language units, import and call deps. `calls.rs` reads how a name is called (`Type::f`, `x.f()` and its receiver, `f()`, outside strings and comments) and `use` imports. `rust_items.rs` reads impl and trait blocks, struct fields and local variable types. |
 | `src/syntax.rs` | Built-in Python and JavaScript syntax tree used by the scanners. |
 | `src/store.rs` | One snapshot file. Write to a temp file, fsync, rename. |
-| `src/git.rs` | Porcelain via `std::process`. A ref that starts with `-` is rejected. |
+| `src/git.rs` | Porcelain via `std::process`. A ref that starts with `-` is rejected. `worktree_tree` writes the working tree as a tree id through a private copy of the index. |
 | `src/history.rs` | Parses one `git log -p -m -U0` stream and replays git's `-L` line ranges and blame over it. |
 | `src/engine/history_churn.rs` | Runs the batched git calls for analyze and update; spawns `-L`/`blame` only for files the stream cannot replay. |
 | `src/impact.rs` | Churn, coupling, coverage gap, risk score. |
@@ -46,7 +47,7 @@ Shards are one snapshot each under `.chisel/shards/<shard>/`. Writes use the lon
 
 ## Storage and git
 
-`.chisel/store` is the snapshot. `chisel migrate` reads a legacy `chisel.db` once and copies `test_results`. Other commands do not open it. `:memory:` and `file:` storage paths are rejected. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` apply when the CLI flags are absent. Without a project, `cli::parse` takes the git root of the working directory (`engine::git_root`), and sets `no_project` outside any repository; `mcp::serve` then opens no engine and refuses calls without `project_dir`. `mcp::Projects` keeps one engine per repository a call names. Over MCP `Engine::call_budget` is set: `analyze`/`update` go through `run_bounded` (a job, waited for up to the budget) and `job_status` through `wait_job`.
+`.chisel/store` is the snapshot. `test_results` rows are `{test_id, passed, recorded_at, duration_ms?, message?, platform}`. `test_passes` maps a test id to its last pass: `{commit, at, tree?, dirty?}`, where `commit` is HEAD when it ran, `tree` the git tree id of the working tree it ran against (uncommitted and untracked, not ignored, files included; the storage folder keeps the index's version) and `dirty` whether that tree differs from HEAD's. `tree` and `dirty` are absent outside git, on an unborn branch, or when git fails. `chisel migrate` reads a legacy `chisel.db` once and copies `test_results`. Other commands do not open it. `:memory:` and `file:` storage paths are rejected. `CHISEL_PROJECT_DIR` and `CHISEL_STORAGE_DIR` apply when the CLI flags are absent. Without a project, `cli::parse` takes the git root of the working directory (`engine::git_root`), and sets `no_project` outside any repository; `mcp::serve` then opens no engine and refuses calls without `project_dir`. `mcp::Projects` keeps one engine per repository a call names. Over MCP `Engine::call_budget` is set: `analyze`/`update` go through `run_bounded` (a job, waited for up to the budget) and `job_status` through `wait_job`.
 
 Git is a subprocess. Locks are advisory records. They do not lock source files.
 

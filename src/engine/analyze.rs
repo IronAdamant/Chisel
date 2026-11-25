@@ -981,25 +981,42 @@ impl Engine {
         Ok(())
     }
 
+    /// The working tree the tests ran against (`git::worktree_tree`), the snapshot folder left
+    /// out. `None` outside git, on an unborn branch, or when git fails.
+    pub(crate) fn tested_tree(&self) -> Option<git::WorkTree> {
+        let mut exclude = vec![".chisel".to_string()];
+        let dir = self.store.dir();
+        let rel = dir.strip_prefix(&self.project_dir).ok().map(|p| p.to_path_buf()).or_else(|| {
+            let (d, p) = (dir.canonicalize().ok()?, self.project_dir.canonicalize().ok()?);
+            d.strip_prefix(p).ok().map(|r| r.to_path_buf())
+        });
+        if let Some(rel) = rel.map(|r| r.to_string_lossy().replace('\\', "/")).filter(|r| !r.is_empty() && r != ".chisel") {
+            exclude.push(rel);
+        }
+        git::worktree_tree(&self.project_dir, &exclude)
+    }
+
     pub fn record_result(&mut self, test_id: &str, passed: bool) -> Result<Value, String> {
         self.record_result_with(test_id, passed, None, None, None)
     }
 
     /// One result. `message` (a failure's own words) and `platform` (default: this OS) are kept
-    /// with it. A pass also updates `test_passes` with the commit it passed on. A failure after
-    /// passes says so: `first_failure_after` is how many passes in a row came before it.
+    /// with it. A pass also updates `test_passes` with the commit it passed on and the tree it ran
+    /// against (`tree`, `dirty`). A failure after passes says so: `first_failure_after` is how
+    /// many passes in a row came before it.
     pub fn record_result_with(&mut self, test_id: &str, passed: bool, duration_ms: Option<f64>, message: Option<&str>, platform: Option<&str>) -> Result<Value, String> {
         let stored = normalize_test_id(test_id);
         let now = now_secs();
         let platform = platform.map(str::trim).filter(|p| !p.is_empty()).map(|p| p.to_ascii_lowercase()).unwrap_or_else(|| std::env::consts::OS.to_string());
         let head = if passed { git::head_commit_fast(&self.project_dir).unwrap_or_default() } else { String::new() };
+        let tree = if head.is_empty() { None } else { self.tested_tree() };
         let mut streak = 0;
         self.store.edit_and_save(|doc| {
             prune_old_results(doc, now);
             streak = if passed { 0 } else { passes_in_a_row(doc, test_id) };
             append_test_result_full(doc, test_id, passed, now, duration_ms, message, Some(&platform));
             if passed && !head.is_empty() {
-                note_pass(doc, &stored, &head, now);
+                note_pass(doc, &stored, &head, now, tree.as_ref());
             }
         })?;
         let mut out = vec![
@@ -1018,6 +1035,7 @@ impl Engine {
         let before = self.store.doc.get("generation").and_then(|v| v.as_i64()).unwrap_or(0);
         let now = now_secs();
         let head = if rows.iter().any(|(_, p)| *p) { git::head_commit_fast(&self.project_dir).unwrap_or_default() } else { String::new() };
+        let tree = if head.is_empty() { None } else { self.tested_tree() };
         prune_old_results(&mut self.store.doc, now);
         let mut first_failures: Vec<Value> = Vec::new();
         for (test_id, passed) in rows {
@@ -1029,7 +1047,7 @@ impl Engine {
             }
             append_test_result(&mut self.store.doc, test_id, *passed, now);
             if *passed && !head.is_empty() {
-                note_pass(&mut self.store.doc, &normalize_test_id(test_id), &head, now);
+                note_pass(&mut self.store.doc, &normalize_test_id(test_id), &head, now, tree.as_ref());
             }
         }
         self.store.save()?;
@@ -1635,7 +1653,7 @@ pub(super) fn declared_types(text: &str) -> BTreeSet<String> {
     for pair in words.windows(2) {
         let kw = pair[0].split('<').next().unwrap_or("");
         if matches!(kw, "struct" | "enum" | "trait" | "union" | "type" | "class" | "impl" | "for") {
-            let name: String = pair[1].trim_start_matches(|c| c == '<' || c == '>').chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            let name: String = pair[1].trim_start_matches(['<', '>']).chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
             if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
                 out.insert(name);
             }
@@ -1663,6 +1681,7 @@ pub(super) fn path_segments(path: &str) -> Vec<String> {
 }
 
 /// Of the files defining a called name, keep those the call site points at.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn narrow_by_call_site(
     test_file: &str,
     name: &str,
@@ -1703,7 +1722,7 @@ pub(super) fn narrow_by_call_site(
                 None => keep.extend(files.iter().copied().filter(|f| declares(f, q))),
             }
         } else {
-            keep.extend(by_segments(&[q.clone()]));
+            keep.extend(by_segments(std::slice::from_ref(q)));
         }
     }
     if site.free {

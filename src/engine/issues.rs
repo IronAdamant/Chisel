@@ -172,9 +172,15 @@ pub(super) struct HunkAttribution {
 
 impl Engine {
     /// Map a runner's test name onto the snapshot's test ids, so issues meet test edges.
-    fn resolve_test(&self, o: &Outcome, units: &HashMap<String, Vec<(String, String)>>, ids: &BTreeSet<String>) -> String {
+    /// A test the snapshot does not know yet (added since the last `analyze`) gets the id the next
+    /// `analyze` will give it: cargo's module path is followed to the file that defines it.
+    fn resolve_test(&self, o: &Outcome, units: &HashMap<String, Vec<(String, String)>>, ids: &BTreeSet<String>, crates: &std::cell::OnceCell<BTreeSet<String>>) -> String {
         let base = o.name.rsplit("::").next().unwrap_or(&o.name);
         let base = base.split('[').next().unwrap_or(base).trim();
+        let derived = || match o.package {
+            Some(_) => None,
+            None => super::rust_tests::derived_id(&self.project_dir, &o.name, o.file.as_deref(), crates.get_or_init(|| self.crate_dirs())),
+        };
         if let Some(file) = &o.file {
             let direct = format!("{file}:{base}");
             if ids.contains(&direct) {
@@ -205,11 +211,35 @@ impl Engine {
         if let Some((id, _)) = candidates.iter().find(|(_, f)| matches_hint(f)) {
             return id.clone();
         }
+        if candidates.is_empty() {
+            if let Some(id) = derived() {
+                return id;
+            }
+        }
         match (&o.package, &o.file) {
             (Some(pkg), _) => format!("{pkg}:{}", o.name),
             (None, Some(file)) => format!("{file}:{}", o.name.replace("::", ".")),
             (None, None) => o.name.clone(),
         }
+    }
+
+    /// Cargo package folders the snapshot's files belong to (`""` for the project root).
+    fn crate_dirs(&self) -> BTreeSet<String> {
+        let mut crates = crate::cargo::Crates::new(&self.project_dir);
+        let mut dirs = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        for table in ["code_units", "test_units"] {
+            for u in self.store.rows(table) {
+                let Some(f) = u.get("file_path").and_then(|v| v.as_str()) else { continue };
+                if !f.ends_with(".rs") || !seen.insert(f.rsplit_once('/').map(|(d, _)| d).unwrap_or("").to_string()) {
+                    continue;
+                }
+                if let Some(c) = crates.crate_of(f) {
+                    dirs.insert(c);
+                }
+            }
+        }
+        dirs
     }
 
     /// Code the failing test covers that changed since it last passed, best first.
@@ -495,7 +525,7 @@ impl Engine {
                 Some((a + d, Value::String(format!("{path} +{a} -{d}"))))
             })
             .collect();
-        files.sort_by(|x, y| y.0.cmp(&x.0));
+        files.sort_by_key(|x| std::cmp::Reverse(x.0));
         let commit = if !head.is_empty() && head != failing_commit {
             short_sha(head).to_string()
         } else if !files.is_empty() {
@@ -526,7 +556,8 @@ impl Engine {
             ids.insert(id.to_string());
             units.entry(name.to_string()).or_default().push((id.to_string(), file.to_string()));
         }
-        let resolved: Vec<(String, &Outcome)> = parsed.outcomes.iter().map(|o| (self.resolve_test(o, &units, &ids), o)).collect();
+        let crates = std::cell::OnceCell::new();
+        let resolved: Vec<(String, &Outcome)> = parsed.outcomes.iter().map(|o| (self.resolve_test(o, &units, &ids, &crates), o)).collect();
         let mut failing: BTreeMap<String, &Outcome> = BTreeMap::new();
         let mut passing: BTreeSet<String> = BTreeSet::new();
         for (id, o) in &resolved {
@@ -682,6 +713,7 @@ impl Engine {
                 }
             });
         }
+        let tree = if passing.is_empty() || head.is_empty() { None } else { self.tested_tree() };
         let doc = &mut self.store.doc;
         if record {
             prune_old_results(doc, now);
@@ -692,7 +724,7 @@ impl Engine {
         }
         let mut pass_map: Vec<(SharedStr, Value)> = doc.get("test_passes").and_then(|v| v.as_object()).map(|o| o.to_vec()).unwrap_or_default();
         for id in &passing {
-            let entry = Value::object(vec![("commit".into(), Value::String(head.clone())), ("at".into(), Value::Float(now))]);
+            let entry = pass_entry(&head, now, tree.as_ref());
             match pass_map.iter_mut().find(|(k, _)| k == id.as_str()) {
                 Some(slot) => slot.1 = entry,
                 None => pass_map.push((id.as_str().into(), entry)),

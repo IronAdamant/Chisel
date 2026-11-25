@@ -325,7 +325,7 @@ fn pytest(lines: &[&str], project: Option<&Path>, out: &mut Parsed) {
     let mut i = 0;
     while i < lines.len() {
         let t = lines[i].trim();
-        if t.starts_with("___") && t.ends_with("___") && t.trim_matches('_').trim().len() > 0 {
+        if t.starts_with("___") && t.ends_with("___") && !t.trim_matches('_').trim().is_empty() {
             let title = t.trim_matches('_').trim().to_string();
             let start = i + 1;
             let mut end = start;
