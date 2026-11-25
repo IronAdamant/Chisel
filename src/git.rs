@@ -497,8 +497,8 @@ pub struct WorkTree {
 /// user's index is never written or locked, and nothing is committed. `git add -A` into the
 /// copy (its stat cache keeps unchanged files from being hashed again), then `git write-tree`.
 /// Paths under `exclude` (relative to `project`, such as `.chisel`) keep what the index has
-/// for them (normally HEAD's version, or nothing). An excluded path that git already ignores
-/// is left out of the pathspec, because git refuses to `add` a pathspec naming an ignored path.
+/// for them (normally HEAD's version, or nothing). Excludes are written `**/<path>/**`, the
+/// one pathspec form git accepts whether or not the path is ignored.
 /// About 70 ms on a 5,000-file repository. `None` outside git, on an unborn branch, when git
 /// is missing, or on any git failure: the caller records no tree.
 pub fn worktree_tree(project: &std::path::Path, exclude: &[String]) -> Option<WorkTree> {
@@ -528,19 +528,11 @@ pub fn worktree_tree(project: &std::path::Path, exclude: &[String]) -> Option<Wo
         if std::fs::copy(&real_index, &tmp).is_err() {
             git(Some(&tmp), &["read-tree", "HEAD"])?;
         }
-        // A path git already ignores never enters the tree, and naming an ignored path in
-        // `git add` fails the whole add ("paths are ignored"), so only exclude the rest.
-        // `check-ignore` prints the ignored ones and exits 1 when there are none.
-        let wanted: Vec<&str> = exclude.iter().map(String::as_str).filter(|e| !e.is_empty()).collect();
-        let ignored: Vec<String> = if wanted.is_empty() {
-            Vec::new()
-        } else {
-            let mut check = vec!["check-ignore", "--"];
-            check.extend(wanted.iter().copied());
-            git(None, &check).map(|out| out.lines().map(|l| l.trim().trim_end_matches('/').to_string()).collect()).unwrap_or_default()
-        };
+        // Exclude as `**/<path>/**` (glob). git refuses an `add` whose pathspec names an
+        // ignored path literally (`.chisel/` is usually in .gitignore), and a leading `**/` is
+        // the one form it accepts whether or not the path is ignored, with no extra git call.
         let mut args: Vec<String> = ["add", "-A", "--", ":/"].iter().map(|s| s.to_string()).collect();
-        args.extend(wanted.iter().filter(|e| !ignored.iter().any(|i| i == e.trim_end_matches('/'))).map(|e| format!(":(exclude){e}")));
+        args.extend(exclude.iter().map(|e| e.trim_matches('/')).filter(|e| !e.is_empty()).map(|e| format!(":(exclude,glob)**/{e}/**")));
         let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         git(Some(&tmp), &refs)?;
         let tree = git(Some(&tmp), &["write-tree"])?;
