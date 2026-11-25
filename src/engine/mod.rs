@@ -8,6 +8,7 @@ pub use issues::CaptureSummary;
 mod history_churn;
 mod query;
 mod resolve;
+mod rust_tests;
 mod selection;
 mod overlay;
 pub use overlay::{git_root, linked_worktree};
@@ -517,10 +518,22 @@ pub(crate) fn passes_in_a_row(doc: &Value, test_id: &str) -> usize {
     n
 }
 
-/// Records a pass in `test_passes` (test id -> commit and time of its last pass).
-pub(crate) fn note_pass(doc: &mut Value, test_id: &str, commit: &str, now: f64) {
+/// One `test_passes` entry: the commit (HEAD when the tests ran), the time, and, when git could
+/// tell, `tree` (the working tree the tests ran against, uncommitted work included) and `dirty`
+/// (that tree is not HEAD's).
+pub(crate) fn pass_entry(commit: &str, now: f64, tree: Option<&git::WorkTree>) -> Value {
+    let mut row = vec![("commit".into(), Value::String(commit.to_string())), ("at".into(), Value::Float(now))];
+    if let Some(t) = tree {
+        row.push(("tree".into(), Value::String(t.tree.clone())));
+        row.push(("dirty".into(), Value::Bool(t.dirty)));
+    }
+    Value::object(row)
+}
+
+/// Records a pass in `test_passes` (test id -> commit, tree and time of its last pass).
+pub(crate) fn note_pass(doc: &mut Value, test_id: &str, commit: &str, now: f64, tree: Option<&git::WorkTree>) {
     let mut pass_map: Vec<(crate::json::SharedStr, Value)> = doc.get("test_passes").and_then(|v| v.as_object()).map(|o| o.to_vec()).unwrap_or_default();
-    let entry = Value::object(vec![("commit".into(), Value::String(commit.to_string())), ("at".into(), Value::Float(now))]);
+    let entry = pass_entry(commit, now, tree);
     match pass_map.iter_mut().find(|(k, _)| k == test_id) {
         Some(slot) => slot.1 = entry,
         None => pass_map.push((test_id.into(), entry)),

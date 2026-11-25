@@ -505,6 +505,7 @@ impl History {
             if diffs.iter().flatten().any(|d| d.binary) {
                 return None;
             }
+            #[allow(clippy::type_complexity)]
             let pass = |pi_slot: usize, lines: Vec<(usize, usize)>, ppath: String, pending: &mut BTreeMap<usize, (String, Vec<(usize, usize)>)>| -> Option<()> {
                 let &pi = self.index.get(&c.parents[pi_slot])?;
                 let entry = pending.entry(pi).or_insert_with(|| (ppath.clone(), Vec::new()));

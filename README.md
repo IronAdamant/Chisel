@@ -65,7 +65,7 @@ chisel run -- pytest tests/                # run tests and record pass/fail
 | `churn`, `coupling`, `history` | How often does this change, and what changes with it? |
 | `ownership`, `who_reviews` | Who wrote it, and who maintains it now? |
 | `stale_tests` | Which tests point at code that no longer exists? |
-| `record_result`, `stats`, `optimize_storage` | Feed results back (with a failure's message and the OS), read counts and which tests have not passed since a commit or never ran on an OS, compact the snapshot. |
+| `record_result`, `stats`, `optimize_storage` | Feed results back (with a failure's message and the OS; a pass keeps the commit and the git tree it ran against, so a pass on uncommitted work still matches once that work is committed), read counts and which tests have not passed since a commit or never ran on an OS, compact the snapshot. |
 | `issues`, `issue`, `trace` | Which tests are failing, what probably broke them, and what fixed them before. |
 | `acquire_file_lock` and five more lock tools | Advisory locks with a `purpose` note so parallel agents see who is editing what. |
 

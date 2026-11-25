@@ -4,6 +4,15 @@ Chronological record of development activity on the Chisel project.
 
 ---
 
+## 2026-11-26 -- 0.25.0 (untagged): passes record their tree; new cargo tests keep their analyze id
+
+- From a cost experiment (walkdir, agents writing Adsertio claims at `chisel:.chisel/store#test:<id>`): every claim went stale after the commit that followed a dirty test run, and a test added since `analyze` was recorded as `tests:recursive:<name>`. Both cost an extra test run per task.
+- `git::worktree_tree`: copy the index (keeps its stat cache), `git add -A -- :/ :(exclude).chisel` into the copy, `git write-tree`. Measured on a 5,000-file repository: 65 to 75 ms, clean or dirty; `read-tree HEAD` into an empty index rehashes every file and took 500 ms. `Engine::tested_tree` adds the storage folder to the excludes; `pass_entry` writes `tree` and `dirty` into `test_passes`.
+- `engine/rust_tests.rs`: `derived_id` follows a cargo module path from the crate root to the file that defines the test, the way `build_tests_and_edges` will name it. `resolve_test` uses it when no test unit has that name.
+- Cleared the clippy 1.97 warnings (`cargo clippy --all-targets -- -D warnings` is clean).
+
+---
+
 ## 2026-11-15 -- release checksums, public wording
 
 - Release workflow writes `SHA256SUMS` over the four binaries and uploads it with them. Existing releases are unchanged.

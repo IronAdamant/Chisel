@@ -458,7 +458,7 @@ impl Engine {
             }
             entries.push((rule, Value::object(entry)));
         }
-        entries.sort_by(|a, b| b.0.cmp(&a.0));
+        entries.sort_by_key(|a| std::cmp::Reverse(a.0));
         let total = entries.len();
         let list: Vec<Value> = entries.into_iter().take(MAX_GUARDS).map(|(_, v)| v).collect();
         let mut whole: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
