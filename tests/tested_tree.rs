@@ -109,6 +109,28 @@ fn a_dirty_pass_records_the_tree_that_the_next_commit_has() {
     assert_eq!(git_out(&dir, &["rev-parse", "HEAD^{tree}"]), tree, "the tested tree is the committed tree");
 }
 
+/// The usual set-up: `.chisel/` is in `.gitignore`. Naming an ignored path in `git add`
+/// fails the whole add, which used to leave every pass without a tree.
+#[test]
+fn a_gitignored_snapshot_folder_still_gets_a_tree() {
+    let dir = crate_repo();
+    write(&dir, &[(".gitignore", ".chisel/\ntarget/\n")]);
+    // `commit` names `.chisel` in its pathspec, which git refuses once it is ignored (the
+    // very failure this test covers), so add everything plainly here.
+    let plain = |m: &str| {
+        git_out(&dir, &["add", "-A"]);
+        git_out(&dir, &["commit", "-q", "-m", m]);
+    };
+    plain("ignore the snapshot");
+    std::fs::write(dir.join("src/lib.rs"), LIB.replace("n + 1", "1 + n")).unwrap();
+    chisel(&dir, &["capture", "--command", "cargo test"], &cargo_out(&["tests::recursive::old_walk"]));
+    let entry = pass(&dir, "src/tests/recursive.rs:old_walk");
+    let tree = text(&entry, "tree").expect("tree recorded with .chisel ignored");
+    assert_eq!(entry.get("dirty").and_then(|v| v.as_bool()), Some(true));
+    plain("the tested change");
+    assert_eq!(git_out(&dir, &["rev-parse", "HEAD^{tree}"]), tree);
+}
+
 #[test]
 fn a_clean_pass_records_heads_tree_and_not_dirty() {
     let dir = crate_repo();
